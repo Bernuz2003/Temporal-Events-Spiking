@@ -16,7 +16,7 @@ class PerturbationSpec:
     target_mode: str = "keep"
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "PerturbationSpec":
+    def from_dict(cls, data: dict[str, Any]) -> PerturbationSpec:
         return cls(
             name=str(data["name"]),
             seed=int(data.get("seed", 0)),
