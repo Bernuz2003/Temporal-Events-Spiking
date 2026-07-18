@@ -1,0 +1,39 @@
+Bootstrap: docker
+From: pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
+
+%labels
+    Author Temporal Event Spiking Research
+    Phase phase-1
+
+%post
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        git \
+        screen \
+        htop \
+        ca-certificates
+    rm -rf /var/lib/apt/lists/*
+
+    python -m pip install --no-cache-dir \
+        torchvision==0.17.2 \
+        "numpy<2.0" \
+        PyYAML \
+        matplotlib \
+        tqdm \
+        pytest \
+        ruff \
+        spikingjelly==0.0.0.0.14
+
+    # dvsgc 0.1.2 dichiara ancora SpikingJelly 0.0.0.0.8 nei metadata PyPI.
+    # Le API dataset usate dal package sono mantenute in 0.0.0.0.14.
+    python -m pip install --no-cache-dir --no-deps dvsgc==0.1.2
+
+%environment
+    export PYTHONUNBUFFERED=1
+    export MPLBACKEND=Agg
+    export PYTHONPATH=/workspace/src:$PYTHONPATH
+    export OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
+    export MKL_NUM_THREADS=${MKL_NUM_THREADS:-4}
+
+%runscript
+    exec python "$@"

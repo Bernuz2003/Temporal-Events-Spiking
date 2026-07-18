@@ -1,0 +1,31 @@
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Research data and outputs
+data/*
+!data/README.md
+artifacts/*
+!artifacts/README.md
+checkpoints/*
+!checkpoints/README.md
+
+# Local containers and logs
+*.sif
+*.img
+*.sandbox/
+*.log
+screenlog.*
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
