@@ -39,7 +39,13 @@ Non vengono salvate attivazioni complete o log per batch.
 
 - `reverse_time`: distrugge ordine e direzione interna di ogni gesto;
 - `shuffle_time`: distrugge la continuità mantenendo il contenuto dei frame;
-- `reverse_segments`: approssima lo scambio dell'ordine delle primitive;
-- `reverse_segments + reverse_class`: verifica se il modello riconosce la classe trasformata.
+- `reverse_actions`: sostituisce `AB` con la catena valida `BA` costruita dallo stesso file sorgente,
+  mantenendo il target `AB`; misura quanto la decisione dipende dall'ordine;
+- `reverse_actions + reverse_class`: usa lo stesso input `BA` e rimappa anche il target a `BA`;
+  consente l'analisi accoppiata delle transizioni, ma sull'intero test set è una permutazione dei
+  campioni originali e le sue metriche aggregate sono quindi ridondanti.
+
+Il metodo risolto (`paired_reversed_action_sample`) viene salvato negli artifact. Non va interpretato
+come una permutazione frame-esatta: le due catene sono campioni DVS-GC validi generati separatamente.
 
 Nessuna perturbazione isolata dimostra comprensione causale. I risultati devono essere interpretati congiuntamente.

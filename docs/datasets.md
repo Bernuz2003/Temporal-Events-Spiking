@@ -25,9 +25,18 @@ Le dipendenze si installano con `make install` o `make install-dev`. `dvsgc==0.1
 
 Al primo avvio il package crea gli eventi estratti e i frame integrati. La generazione può richiedere tempo e spazio disco.
 
-### Limitazione importante
+### Inversione delle azioni senza confini stimati
 
-Il package pubblico salva i frame finali ma non espone i confini esatti tra le primitive concatenate. La perturbazione `reverse_segments` divide quindi la sequenza in segmenti temporali approssimativamente uguali. Non va interpretata come ricostruzione perfetta di `B→A` a partire da `A→B`.
+Il package pubblico salva i frame finali ma non espone i confini esatti tra le primitive concatenate.
+L'audit reale non divide quindi il tensore in blocchi temporali arbitrari: per ogni campione della
+classe `AB` cerca, nella classe `BA`, il campione con lo stesso nome di file sorgente. DVS-GC genera
+entrambe le catene dalle stesse istanze dei gesti, perciò la coppia contiene azioni complete in ordine
+inverso.
+
+La coppia inversa rimane una sequenza DVS-GC generata separatamente e può avere durate relative
+diverse; non è una permutazione frame-esatta del tensore `AB`. L'audit fallisce esplicitamente se una
+coppia manca o se la chiave classe/nome-file non è univoca. `reverse_segments` resta disponibile solo
+come perturbazione approssimata per il dataset sintetico di smoke test.
 
 ## Dataset successivi
 

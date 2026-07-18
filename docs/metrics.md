@@ -21,7 +21,7 @@ Perturbazioni iniziali:
 
 - inversione temporale completa;
 - shuffle deterministico dei timestep;
-- inversione approssimata dell'ordine dei segmenti.
+- sostituzione con la catena di azioni inversa accoppiata per file sorgente.
 
 Una degradazione elevata indica sensibilità all'ordine, ma non prova da sola una comprensione corretta. Per questo viene salvata anche la predizione campione-per-campione.
 
@@ -45,7 +45,18 @@ Accuracy e Macro-F1 usando soltanto una frazione iniziale della sequenza.
 
 ### Prefix AUC
 
-Area trapezoidale sotto la curva accuracy–frazione osservata. È una misura compatta della capacità di riconoscimento anticipato.
+Area trapezoidale sotto la curva accuracy–frazione osservata. Vengono salvate entrambe le forme:
+
+```text
+prefix_accuracy_auc_raw = ∫[f_min, f_max] accuracy(f) df
+prefix_accuracy_auc_normalized = prefix_accuracy_auc_raw / (f_max - f_min)
+```
+
+Con la griglia `[0.25, 0.5, 0.75, 1.0]`, una curva perfetta ha quindi AUC raw `0.75` e AUC
+normalizzata `1.0`. La normalizzazione rende esplicita la prestazione media sull'intervallo osservato;
+non estrapola la curva tra `0` e `f_min`. `prefix_accuracy_auc` resta un alias della forma raw per
+compatibilità con artifact precedenti. Se è disponibile un solo punto entrambe le AUC sono `null`,
+perché un'area non è definibile.
 
 ## Complessità
 

@@ -76,11 +76,15 @@ L'audit valuta:
 - sequenza originale;
 - inversione completa del tempo;
 - permutazione deterministica dei timestep;
-- inversione dell'ordine di segmenti temporali, con target mantenuto;
-- inversione dei segmenti con rimappatura della classe, quando disponibile;
+- inversione dell'ordine delle azioni tramite il campione DVS-GC accoppiato, con target mantenuto;
+- la stessa inversione con rimappatura alla classe inversa;
 - accuratezza osservando prefissi crescenti della sequenza.
 
-L'inversione a segmenti è una **sonda approssimata**: il dataset pubblico non espone i confini esatti dei gesti concatenati. La limitazione è documentata negli artifact.
+Per `reverse_actions`, un campione della classe `AB` viene associato a quello della classe `BA`
+che deriva dallo stesso file sorgente. In questo modo vengono scambiate azioni complete senza
+stimare confini temporali inesistenti nei frame salvati. La coppia è una seconda sequenza valida
+generata da DVS-GC, non un riordinamento frame-per-frame dello stesso tensore; questo dettaglio
+viene registrato negli artifact.
 
 ## Artifact e checkpoint
 

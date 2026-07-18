@@ -296,7 +296,7 @@ def audit_experiment(config: dict[str, Any], checkpoint_path: str | Path) -> dic
             prefix_fraction_values, prefix_accuracy_values
         )
     else:
-        raw_area = prefix_rows[0]["accuracy"] if prefix_rows else 0.0
+        raw_area = None
         normalized_area = None
 
     write_csv(rows, artifact_dir / "perturbation_summary.csv")
@@ -326,7 +326,8 @@ def audit_experiment(config: dict[str, Any], checkpoint_path: str | Path) -> dic
         "limitations": limitations,
     }
     write_json(summary, artifact_dir / "audit_summary.json")
-    logger.info("Prefix accuracy AUC raw: %.4f", raw_area)
+    if raw_area is not None:
+        logger.info("Prefix accuracy AUC raw: %.4f", raw_area)
     if normalized_area is not None:
         logger.info("Prefix accuracy AUC normalized: %.4f", normalized_area)
     logger.info("Audit artifacts: %s", artifact_dir)

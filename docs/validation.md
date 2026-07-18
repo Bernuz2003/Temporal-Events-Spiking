@@ -7,6 +7,11 @@ La release è stata verificata prima della consegna con:
 - `bash -n scripts/*.sh`: sintassi degli script shell valida;
 - smoke test end-to-end su dataset sintetico: training, validation, checkpoint, test finale, profiling, perturbation audit e prefix evaluation completati su CPU.
 
+La suite è stata successivamente estesa con test per pairing delle azioni, fallimento su coppie
+mancanti, metriche accoppiate e normalizzazione della Prefix AUC. Questi nuovi test richiedono una
+nuova esecuzione di `pytest -q` nell'ambiente di progetto; i controlli statici sono riportati separatamente
+nel report di audit.
+
 ## Non verificato in questo ambiente
 
 - generazione e training sul dataset DVS-Gesture-Chain reale, perché i file DVS128 Gesture non erano disponibili nel runtime;

@@ -34,6 +34,7 @@ class PerturbedDataset(Dataset):
         self.classes = getattr(dataset, "classes", None)
         self.class_to_idx = getattr(dataset, "class_to_idx", None)
         self._reverse_target_map = self._build_reverse_target_map()
+        self._sample_targets: list[int] | None = None
         self._reverse_sample_map = self._build_reverse_sample_map()
         if self.spec.name == "reverse_actions":
             self.resolved_method = "paired_reversed_action_sample"
@@ -46,15 +47,21 @@ class PerturbedDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, index: int):
-        frames, target, stable_index = self.dataset[index]
         if self.spec.name == "reverse_actions":
-            if self._reverse_sample_map is None or self._reverse_target_map is None:
+            if (
+                self._reverse_sample_map is None
+                or self._reverse_target_map is None
+                or self._sample_targets is None
+            ):
                 raise RuntimeError("reverse_actions requires paired samples and reversible classes.")
             counterpart_index = self._reverse_sample_map[int(index)]
             frames, counterpart_target, _counterpart_stable_index = self.dataset[counterpart_index]
+            target = self._sample_targets[int(index)]
+            stable_index = int(index)
             if int(counterpart_target) != self._reverse_target_map[int(target)]:
                 raise RuntimeError("The paired reverse-action sample has an unexpected target.")
         else:
+            frames, target, stable_index = self.dataset[index]
             frames = apply_temporal_perturbation(frames, self.spec, stable_index)
 
         if self.spec.target_mode == "reverse_class":
@@ -92,10 +99,15 @@ class PerturbedDataset(Dataset):
             raise RuntimeError(
                 "reverse_actions requires DatasetFolder-style samples with source file paths."
             )
+        if len(samples) != len(self.dataset):
+            raise RuntimeError("reverse_actions requires one samples entry per dataset item.")
 
         lookup: dict[tuple[int, str], int] = {}
+        self._sample_targets = []
         for sample_index, (sample_path, target) in enumerate(samples):
-            key = (int(target), Path(sample_path).name)
+            target = int(target)
+            self._sample_targets.append(target)
+            key = (target, Path(sample_path).name)
             if key in lookup:
                 raise RuntimeError(f"Duplicate reverse-action pairing key: {key}")
             lookup[key] = sample_index

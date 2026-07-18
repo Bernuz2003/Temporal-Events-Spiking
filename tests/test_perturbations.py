@@ -13,13 +13,21 @@ class PairedActionDataset(Dataset):
     class_to_idx = {"13": 0, "31": 1}
     samples = [("/dataset/13/sample.npz", 0), ("/dataset/31/sample.npz", 1)]
 
+    def __init__(self):
+        self.read_indices = []
+
     def __len__(self):
         return 2
 
     def __getitem__(self, index):
+        self.read_indices.append(index)
         _path, target = self.samples[index]
         frames = torch.full((4, 1, 1, 1), float(target + 1))
         return frames, target, index
+
+
+class IncompletePairedActionDataset(PairedActionDataset):
+    samples = [("/dataset/13/sample.npz", 0), ("/dataset/31/other.npz", 1)]
 
 
 def test_reverse_time():
@@ -45,9 +53,8 @@ def test_reverse_segments_preserves_internal_order():
 
 
 def test_reverse_actions_uses_paired_sample_and_preserves_original_index():
-    dataset = PerturbedDataset(
-        PairedActionDataset(), PerturbationSpec("reverse_actions", target_mode="keep")
-    )
+    source = PairedActionDataset()
+    dataset = PerturbedDataset(source, PerturbationSpec("reverse_actions", target_mode="keep"))
 
     frames, target, stable_index = dataset[0]
 
@@ -55,6 +62,7 @@ def test_reverse_actions_uses_paired_sample_and_preserves_original_index():
     assert target == 0
     assert stable_index == 0
     assert dataset.resolved_method == "paired_reversed_action_sample"
+    assert source.read_indices == [1]
 
 
 def test_reverse_actions_can_remap_target():
@@ -68,3 +76,12 @@ def test_reverse_actions_can_remap_target():
     assert frames.unique().item() == 2.0
     assert target == 1
     assert stable_index == 0
+
+
+def test_reverse_actions_fails_if_a_source_pair_is_missing():
+    try:
+        PerturbedDataset(IncompletePairedActionDataset(), PerturbationSpec("reverse_actions"))
+    except RuntimeError as error:
+        assert "Missing paired reverse-action sample" in str(error)
+    else:
+        raise AssertionError("reverse_actions accepted an incomplete source pairing")
