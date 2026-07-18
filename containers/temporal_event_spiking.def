@@ -14,12 +14,12 @@ From: pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
         ca-certificates
     rm -rf /var/lib/apt/lists/*
 
-    python -m pip install --no-cache-dir \
+    python -m pip install --no-cache-dir --upgrade \
         torchvision==0.17.2 \
         "numpy<2.0" \
         PyYAML \
         matplotlib \
-        tqdm \
+        "tqdm>=4.66,<5" \
         pytest \
         ruff \
         spikingjelly==0.0.0.0.14
