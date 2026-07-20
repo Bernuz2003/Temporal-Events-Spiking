@@ -17,6 +17,7 @@ artifacts/*
 !artifacts/README.md
 checkpoints/*
 !checkpoints/README.md
+runs/*
 
 # Local containers and logs
 *.sif
