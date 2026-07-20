@@ -23,7 +23,7 @@ Anche quando la temporalità è presente nell'input, un frontend basato quasi es
 
 Se uno stato temporale locale evolve in modo prevedibile, parte della computazione potrebbe essere ridotta senza perdere informazione rilevante.
 
-H3 non viene implementata nella Fase 1. Prima dobbiamo dimostrare che il protocollo misura davvero H1 e H2.
+H3 non viene implementata nel primo audit. Prima dobbiamo dimostrare che il protocollo misura davvero H1 e H2.
 
 ## Principio architetturale aperto
 

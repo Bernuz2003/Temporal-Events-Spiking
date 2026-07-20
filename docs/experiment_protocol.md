@@ -19,7 +19,7 @@ Ogni esperimento deve rispondere a una sola domanda. Un run non è giustificato 
 Il run ID include nome, timestamp e seed. Esempio:
 
 ```text
-phase1_dvsgc_order2_miniqkformer__20260717_210000__seed42
+temporal_audit_dvsgc_order2_miniqkformer__20260717_210000__seed42
 ```
 
 ## Logging
@@ -50,9 +50,9 @@ come una permutazione frame-esatta: le due catene sono campioni DVS-GC validi ge
 
 Nessuna perturbazione isolata dimostra comprensione causale. I risultati devono essere interpretati congiuntamente.
 
-## Protocollo specifico della Fase 2
+## Protocollo dell’audit meccanicistico
 
-La Fase 2 deroga intenzionalmente alla procedura esplorativa a singolo seed: le anomalie della Fase 1
+L’audit meccanicistico deroga intenzionalmente alla procedura esplorativa a singolo seed: le anomalie dell’audit comportamentale
 devono essere replicate sui tre seed `42`, `123` e `2026` prima di orientare l’architettura.
 
 Usa esclusivamente `train_core`, `checkpoint_validation` e `development_audit`, ottenuti dalla

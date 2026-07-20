@@ -1,4 +1,4 @@
-# Perimetro della Fase 1
+# Perimetro del Temporal Audit
 
 ## Implementato
 
@@ -30,7 +30,7 @@
 
 ## Criterio di completamento
 
-La Fase 1 è completata quando:
+Il Temporal Audit è completato quando:
 
 1. la baseline converge su DVS-GC con protocollo riproducibile;
 2. il comportamento originale e perturbato è misurato;

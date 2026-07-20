@@ -40,7 +40,7 @@ Spunti organizzativi:
 - valutazione sui prefissi della sequenza;
 - separazione tra embedding locale, memoria temporale e channel mixing.
 
-Nessun modulo LMU viene incluso nella Fase 1.
+Nessun modulo LMU viene incluso negli audit iniziali.
 
 ## SpikingJelly
 

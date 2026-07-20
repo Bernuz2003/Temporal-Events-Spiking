@@ -6,7 +6,7 @@ La baseline iniziale è una Mini-QKFormer pulita e modulare, usata esclusivament
 
 ## Stato del progetto
 
-La Fase 1 ha implementato il **Temporal Audit** comportamentale:
+Il **Temporal Audit** comportamentale:
 
 1. addestrare una baseline su DVS-Gesture-Chain con split train/validation/test separati;
 2. verificare se il modello utilizza realmente l'ordine temporale;
@@ -14,12 +14,12 @@ La Fase 1 ha implementato il **Temporal Audit** comportamentale:
 4. confrontare il comportamento su sequenze originali e perturbate temporalmente;
 5. produrre artifact compatti, riproducibili e facilmente confrontabili.
 
-La Fase 2 aggiunge un **Mechanistic Temporal Representation Audit** multi-seed. Mantiene congelata
+Il **Mechanistic Temporal Representation Audit** multi-seed mantiene congelata
 l’architettura e misura separatamente riconoscimento del contenuto, ordine, consistenza temporale,
 utilità degli ultimi timestep, disponibilità lineare dell’informazione e uso causale mediante
 activation patching. Non viene introdotto un punteggio composito arbitrario: l’output primario è il
 Temporal Dynamics Utilization Profile descritto nel
-[`Brief di Fase 2`](docs/PHASE2_MECHANISTIC_TEMPORAL_AUDIT_IMPLEMENTATION_BRIEF.md).
+[`protocollo meccanicistico`](docs/mechanistic_temporal_audit.md).
 
 Nuovi encoder asincroni, LMU, delayed synapses, JEPA o predictive coding restano direzioni di
 ricerca da valutare dopo l’audit.
@@ -57,25 +57,25 @@ python -m etsr.cli train --config configs/smoke.yaml
 
 Il comando addestra per una sola epoca su un dataset sintetico e verifica l'intera pipeline: training, validation, checkpoint, test, profiling e artifact.
 
-## Addestramento Phase 1
+## Addestramento della baseline temporale
 
 Configurazione iniziale controllata, catene di due gesti e tre primitive senza ripetizione:
 
 ```bash
-python -m etsr.cli train --config configs/phase1_dvsgc_order2.yaml
+python -m etsr.cli train --config configs/temporal_audit_dvsgc_order2.yaml
 ```
 
 Configurazione più complessa, da usare dopo la validazione del protocollo:
 
 ```bash
-python -m etsr.cli train --config configs/phase1_dvsgc_chain4.yaml
+python -m etsr.cli train --config configs/temporal_audit_dvsgc_chain4.yaml
 ```
 
 ## Temporal audit
 
 ```bash
-python -m etsr.cli audit \
-  --config configs/phase1_dvsgc_order2.yaml \
+python -m etsr.cli temporal-audit \
+  --config configs/temporal_audit_dvsgc_order2.yaml \
   --checkpoint checkpoints/<RUN_ID>/best.pt
 ```
 
@@ -94,29 +94,29 @@ stimare confini temporali inesistenti nei frame salvati. La coppia è una second
 generata da DVS-GC, non un riordinamento frame-per-frame dello stesso tensore; questo dettaglio
 viene registrato negli artifact.
 
-## Fase 2: audit meccanicistico
+## Audit meccanicistico
 
-La Fase 2 usa una nuova partizione interna dell’official training e mantiene l’official test sotto
+L’audit meccanicistico usa una partizione interna dell’official training e mantiene l’official test sotto
 embargo. Preparare una sola volta il dataset metadata-rich:
 
 ```bash
-python -m etsr.cli phase2-prepare --config configs/phase2_dvsgc_order2.yaml
+python -m etsr.cli prepare-matched-dvsgc --config configs/mechanistic_audit_dvsgc_order2.yaml
 ```
 
 Addestrare gli stessi tre seed sul medesimo split manifest:
 
 ```bash
 for seed in 42 123 2026; do
-  python -m etsr.cli phase2-train \
-    --config configs/phase2_dvsgc_order2.yaml --seed "$seed"
+  python -m etsr.cli train \
+    --config configs/mechanistic_audit_dvsgc_order2.yaml --seed "$seed"
 done
 ```
 
 Eseguire quindi l’audit con i tre checkpoint selezionati su `checkpoint_validation`:
 
 ```bash
-python -m etsr.cli phase2-audit \
-  --config configs/phase2_dvsgc_order2.yaml \
+python -m etsr.cli mechanistic-audit \
+  --config configs/mechanistic_audit_dvsgc_order2.yaml \
   --checkpoint 42=/path/seed42/best.pt \
   --checkpoint 123=/path/seed123/best.pt \
   --checkpoint 2026=/path/seed2026/best.pt
@@ -153,12 +153,12 @@ Consultare [`docs/smilies_setup.md`](docs/smilies_setup.md). In sintesi:
 
 ```bash
 singularity build --fakeroot temporal-event-spiking.sif containers/temporal_event_spiking.def
-screen -S phase1
+screen -S temporal_audit
 singularity exec --nv \
   --bind "$PWD:/workspace" \
   --bind /home/users/$USER:/local \
   temporal-event-spiking.sif \
-  bash -lc 'cd /workspace && python -m etsr.cli train --config configs/phase1_dvsgc_order2.yaml'
+  bash -lc 'cd /workspace && python -m etsr.cli train --config configs/temporal_audit_dvsgc_order2.yaml'
 ```
 
 Per staccarsi da `screen`: `Ctrl-a`, poi `d`.
@@ -171,6 +171,6 @@ Per staccarsi da `screen`: `Ctrl-a`, poi `d`.
 - metriche salvate in formati semplici e leggibili;
 - nessuna dipendenza da TensorBoard o servizi esterni;
 - componenti sostituibili tramite factory e configurazione YAML;
-- ogni fase viene sviluppata su un branch dedicato e integrata soltanto dopo i controlli previsti.
+- ogni milestone viene sviluppata su un branch dedicato e integrata soltanto dopo i controlli previsti.
 
 La visione completa è descritta in [`docs/vision.md`](docs/vision.md); l’alberatura commentata è in [`docs/repository_tree.md`](docs/repository_tree.md) e i controlli eseguiti sono riportati in [`docs/validation.md`](docs/validation.md).

@@ -71,6 +71,8 @@ def patch_with_counterfactual_activations(
 
     capture_handle = module.register_forward_hook(capture_hook)
     try:
+        # The donor pass is kept separate so the patched pass cannot overwrite the activations
+        # we are about to transplant into the original sequence.
         model(counterfactual_frames)
     finally:
         capture_handle.remove()
@@ -79,6 +81,8 @@ def patch_with_counterfactual_activations(
 
     donor = captured["activation"]
     if donor_time_indices is not None:
+        # Segment durations may differ across a matched pair. These indices align positions inside
+        # the same semantic action before we touch the recipient activation.
         time_indices = donor_time_indices.transpose(0, 1)
         batch_indices = torch.arange(donor.shape[1], device=donor.device).view(1, -1)
         batch_indices = batch_indices.expand_as(time_indices)

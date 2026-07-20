@@ -3,11 +3,11 @@ import json
 import numpy as np
 import pytest
 
-from etsr.phase2.dataset import (
-    Phase2DVSGCDataset,
+from etsr.data.matched_dvsgc import (
+    MatchedDVSGestureChain,
     assert_grouped_split,
     grouped_split,
-    prepare_phase2_dataset,
+    prepare_matched_dvsgc,
 )
 
 
@@ -27,7 +27,7 @@ def test_grouped_split_is_deterministic_disjoint_and_complete():
     assert set(first.values()) == set(fractions)
 
 
-def test_phase2_dataset_keeps_reverse_pairs_inside_the_split(tmp_path):
+def test_matched_dataset_keeps_reverse_pairs_inside_the_split(tmp_path):
     sample_entries = []
     for class_name, target, reverse_name in (("13", 0, "31"), ("31", 1, "13")):
         relative = f"samples/{class_name}/source.npz"
@@ -51,7 +51,7 @@ def test_phase2_dataset_keeps_reverse_pairs_inside_the_split(tmp_path):
     manifest = {
         "official_test_used": False,
         "official_source_split": "train",
-        "generator_version": "phase2_matched_order2_v1",
+        "generator_version": "matched_dvsgc_order2_v1",
         "classes": ["13", "31"],
         "class_to_idx": {"13": 0, "31": 1},
         "samples": sample_entries,
@@ -64,20 +64,20 @@ def test_phase2_dataset_keeps_reverse_pairs_inside_the_split(tmp_path):
     (tmp_path / "dataset_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     (tmp_path / "split_manifest.json").write_text(json.dumps(split_manifest), encoding="utf-8")
 
-    dataset = Phase2DVSGCDataset(tmp_path, "train_core")
+    dataset = MatchedDVSGestureChain(tmp_path, "train_core")
 
     assert len(dataset) == 2
     assert dataset.reverse_indices == {0: 1, 1: 0}
     assert dataset[0][0].shape == (4, 2, 8, 8)
 
 
-def test_phase2_dataset_rejects_a_manifest_without_test_embargo(tmp_path):
+def test_matched_dataset_rejects_a_manifest_without_test_embargo(tmp_path):
     (tmp_path / "dataset_manifest.json").write_text(
         json.dumps({"official_test_used": True}), encoding="utf-8"
     )
 
     with pytest.raises(RuntimeError, match="official-test embargo"):
-        Phase2DVSGCDataset(tmp_path, "train_core")
+        MatchedDVSGestureChain(tmp_path, "train_core")
 
 
 def test_preparation_builds_frame_exact_reverse_action_pairs(tmp_path, monkeypatch):
@@ -95,8 +95,8 @@ def test_preparation_builds_frame_exact_reverse_action_pairs(tmp_path, monkeypat
             primitive * 100 + time, (primitive_frames, 2, height, width)
         ).copy()
 
-    monkeypatch.setattr("etsr.phase2.dataset._load_and_integrate_primitive", fake_integrate)
-    output_root = tmp_path / "phase2_v1"
+    monkeypatch.setattr("etsr.data.matched_dvsgc._load_and_integrate_primitive", fake_integrate)
+    output_root = tmp_path / "matched_v1"
     config = {
         "dataset": {
             "root": str(output_root),
@@ -124,7 +124,7 @@ def test_preparation_builds_frame_exact_reverse_action_pairs(tmp_path, monkeypat
         },
     }
 
-    manifest = prepare_phase2_dataset(config)
+    manifest = prepare_matched_dvsgc(config)
     by_id = {item["sample_id"]: item for item in manifest["samples"]}
     ab_meta = by_id["13/source_0.npz"]
     ba_meta = by_id["31/source_0.npz"]

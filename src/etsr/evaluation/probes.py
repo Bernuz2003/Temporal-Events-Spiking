@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from etsr.phase2.metrics import classification_metrics
+from etsr.evaluation.metrics import classification_metrics
 
 
 @dataclass

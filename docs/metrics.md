@@ -1,6 +1,6 @@
 # Metriche
 
-La Fase 1 usa metriche di alto livello, riproducibili e interpretabili. Non vengono stimati accessi BRAM, dimensioni dei buffer o bandwidth.
+L’audit comportamentale usa metriche di alto livello, riproducibili e interpretabili. Non vengono stimati accessi BRAM, dimensioni dei buffer o bandwidth.
 
 ## Prestazione
 
@@ -103,7 +103,7 @@ E = N_MAC × E_MAC + N_AC × E_AC
 
 Ogni report deve usare l'espressione **energia teorica stimata**, mai semplicemente energia consumata.
 
-## Metriche della Fase 2
+## Metriche dell’audit meccanicistico
 
 Il Temporal Dynamics Utilization Profile comprende:
 

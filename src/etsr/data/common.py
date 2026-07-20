@@ -1,10 +1,25 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+
+
+@dataclass(frozen=True)
+class DatasetBundle:
+    """The three data roles used by every training workflow.
+
+    ``holdout`` deliberately avoids names such as ``test`` or ``audit``: the protocol decides how
+    and when that partition may be evaluated.
+    """
+
+    train: Dataset
+    validation: Dataset
+    holdout: Dataset
+    classes: list[str]
 
 
 class IndexedDataset(Dataset):

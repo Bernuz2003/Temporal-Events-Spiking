@@ -25,7 +25,7 @@ Influenze concettuali:
 - tracce temporali multiscala;
 - neuroni con dinamiche più ricche.
 
-Decisione attuale: non effettuare uno sweep di moduli. Dopo la Fase 1 verrà scelto un solo candidato sulla base di requisiti scientifici e implementativi.
+Decisione attuale: non effettuare uno sweep di moduli. Dopo gli audit verrà scelto un solo candidato sulla base di requisiti scientifici e implementativi.
 
 ## 3. Training predittivo latente
 

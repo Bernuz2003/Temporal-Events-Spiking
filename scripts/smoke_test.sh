@@ -7,9 +7,9 @@ export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 pytest -q
 python - <<'PY'
 from etsr.config import load_config
-from etsr.runner import audit_experiment, train_experiment
+from etsr.runner import run_temporal_audit, train_experiment
 
 config = load_config("configs/smoke.yaml")
 summary = train_experiment(config)
-audit_experiment(config, summary["checkpoint"])
+run_temporal_audit(config, summary["checkpoint"])
 PY

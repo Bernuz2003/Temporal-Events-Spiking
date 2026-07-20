@@ -3,37 +3,37 @@
 ```text
 temporal-event-spiking-research/
 ├── configs/
-│   ├── phase1_dvsgc_order2.yaml
-│   ├── phase1_dvsgc_chain4.yaml
-│   ├── phase2_dvsgc_order2.yaml
+│   ├── temporal_audit_dvsgc_order2.yaml
+│   ├── temporal_audit_dvsgc_chain4.yaml
+│   ├── mechanistic_audit_dvsgc_order2.yaml
 │   └── smoke.yaml
 ├── containers/
 │   └── temporal_event_spiking.def
 ├── docs/
 │   ├── datasets.md
-│   ├── PHASE2_MECHANISTIC_TEMPORAL_AUDIT_IMPLEMENTATION_BRIEF.md
 │   ├── experiment_protocol.md
+│   ├── mechanistic_temporal_audit.md
 │   ├── metrics.md
-│   ├── phase1_scope.md
 │   ├── research_directions.md
 │   ├── repository_tree.md
 │   ├── roadmap.md
 │   ├── smilies_setup.md
 │   ├── sources_and_design_notes.md
+│   ├── temporal_audit_scope.md
+│   ├── validation.md
 │   └── vision.md
 ├── scripts/
 │   ├── prepare_dvsgc.sh
-│   ├── run_phase1.sh
-│   ├── run_phase1_screen.sh
-│   ├── prepare_phase2.sh
-│   ├── train_phase2_seed.sh
-│   ├── run_phase2_audit.sh
-│   └── smoke_test.sh
+│   ├── prepare_matched_dvsgc.sh
+│   ├── run_mechanistic_audit.sh
+│   ├── smoke_test.sh
+│   ├── train_audit_seed.sh
+│   ├── train_temporal_baseline.sh
+│   └── train_temporal_baseline_screen.sh
 ├── src/etsr/
 │   ├── data/
 │   ├── evaluation/
 │   ├── models/
-│   ├── phase2/
 │   ├── profiling/
 │   ├── training/
 │   ├── utils/

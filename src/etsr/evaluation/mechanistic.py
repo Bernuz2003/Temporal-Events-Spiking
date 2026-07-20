@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -11,270 +9,45 @@ import numpy as np
 import torch
 
 from etsr.config import save_config
-from etsr.data.factory import build_loader
-from etsr.evaluation.reports import save_confusion_matrix
-from etsr.models.factory import build_model
-from etsr.phase2.causal import (
+from etsr.data.factory import build_dataset_bundle, build_loader
+from etsr.data.matched_dvsgc import MatchedDVSGestureChain
+from etsr.data.perturbations import redistribute_segment_durations
+from etsr.evaluation.causal import (
     pairwise_margin,
     patch_with_counterfactual_activations,
     segment_aligned_time_indices,
 )
-from etsr.phase2.dataset import (
-    Phase2DVSGCDataset,
-    build_phase2_bundle,
-    prepare_phase2_dataset,
-)
-from etsr.phase2.input_audit import collect_input_audit
-from etsr.phase2.metrics import (
+from etsr.evaluation.input_statistics import collect_input_audit
+from etsr.evaluation.metrics import (
     aggregate_seed_scalars,
     aggregate_tidy_seed_rows,
     classification_metrics,
     factorized_content_order_metrics,
     grouped_bootstrap_interval,
     inverse_temporal_consistency,
-    normalized_trapezoid_auc,
+    normalized_prefix_auc,
+    prefix_auc,
     prefix_trajectory_metrics,
     reverse_class_map,
-    trapezoid_auc,
 )
-from etsr.phase2.probes import (
+from etsr.evaluation.probes import (
     fit_linear_probe,
     previous_primitive_examples,
     sample_probe_targets,
     timestep_primitive_targets,
 )
-from etsr.phase2.tracing import TraceCollection, collect_traces, save_trace_npz
-from etsr.phase2.transformations import redistribute_segment_durations
-from etsr.reproducibility import seed_everything
-from etsr.training.checkpointing import save_checkpoint
-from etsr.training.engine import (
-    evaluate,
-    make_criterion,
-    make_optimizer,
-    make_scheduler,
-    restore_best_model,
-    train_one_epoch,
-)
-from etsr.utils.io import append_csv, ensure_dir, write_csv, write_json
+from etsr.evaluation.tracing import TraceCollection, collect_traces, save_trace_npz
+from etsr.models.factory import build_model
+from etsr.reproducibility import git_commit, git_is_dirty, seed_everything, sha256_file
+from etsr.utils.io import ensure_dir, write_csv, write_json
 from etsr.utils.logging import configure_logging
-
-
-def _git_commit() -> str | None:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
-        ).strip()
-    except (OSError, subprocess.CalledProcessError):
-        return None
 
 
 def _timestamp() -> str:
     return dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _git_dirty() -> bool | None:
-    try:
-        status = subprocess.check_output(
-            ["git", "status", "--porcelain"], text=True, stderr=subprocess.DEVNULL
-        )
-        return bool(status.strip())
-    except (OSError, subprocess.CalledProcessError):
-        return None
-
-
-def _validate_phase2_config(config: dict[str, Any]) -> None:
-    if config.get("phase2", {}).get("protocol_version") != "phase2_tdup_v1":
-        raise ValueError("Phase 2 requires phase2.protocol_version=phase2_tdup_v1.")
-    seeds = [int(value) for value in config["experiment"].get("model_seeds", [])]
-    if len(seeds) < 3 or len(seeds) != len(set(seeds)):
-        raise ValueError("Phase 2 requires at least three distinct model seeds.")
-    if config["dataset"].get("name") != "dvsgc_phase2":
-        raise ValueError("Phase 2 requires dataset.name=dvsgc_phase2.")
-    if config["dataset"].get("official_split") != "train":
-        raise ValueError("Phase 2 may only use the official training partition.")
-    primitive_ids = [str(value) for value in config["dataset"].get("primitive_ids", [])]
-    if len(primitive_ids) != 3 or len(set(primitive_ids)) != 3:
-        raise ValueError("phase2_tdup_v1 requires exactly three distinct primitives.")
-    if bool(config["dataset"].get("allow_consecutive_repetition", False)):
-        raise ValueError("phase2_tdup_v1 requires consecutive repetitions to be disabled.")
-    if not bool(config.get("split", {}).get("forbid_official_test", False)):
-        raise ValueError("Phase 2 requires an explicit official-test embargo.")
-
-    time_steps = int(config["dataset"]["frames_number"])
-    prefix_config = config["phase2"]["prefix"]
-    auc_start = int(prefix_config["auc_start_timestep"])
-    tail_start = int(prefix_config["tail_start"])
-    if not 1 <= auc_start < time_steps:
-        raise ValueError("phase2.prefix.auc_start_timestep must be in [1, T).")
-    if not auc_start <= tail_start < time_steps:
-        raise ValueError("phase2.prefix.tail_start must be in [auc_start_timestep, T).")
-    prefix_timesteps = [int(value) for value in config["phase2"]["probes"]["prefix_timesteps"]]
-    if any(value < 1 or value > time_steps for value in prefix_timesteps):
-        raise ValueError("Probe prefix timesteps must be in [1, T].")
-    ratios = config["phase2"]["transformations"].get("duration_ratios", [])
-    if not ratios or any(
-        len(ratio) != 2 or any(float(value) <= 0 for value in ratio) for ratio in ratios
-    ):
-        raise ValueError("Phase 2 requires positive order-2 duration ratios.")
-    if not config["phase2"]["probes"].get("regularization_grid"):
-        raise ValueError("The probe regularization grid must not be empty.")
-    allowed_regions = {"first_action", "second_action"}
-    if set(config["phase2"]["causal"]["regions"]) - allowed_regions:
-        raise ValueError("Unsupported Phase 2 causal region.")
-
-
-def phase2_prepare(config: dict[str, Any]) -> dict[str, Any]:
-    _validate_phase2_config(config)
-    manifest = prepare_phase2_dataset(config)
-    return {
-        "dataset_root": str(Path(config["dataset"]["root"]).resolve()),
-        "dataset_manifest": str(
-            (Path(config["dataset"]["root"]) / "dataset_manifest.json").resolve()
-        ),
-        "samples": len(manifest["samples"]),
-        "source_groups": len(manifest["source_filenames"]),
-        "official_test_used": False,
-    }
-
-
-def phase2_train(config: dict[str, Any], seed: int) -> dict[str, Any]:
-    _validate_phase2_config(config)
-    configured_seeds = [int(value) for value in config["experiment"]["model_seeds"]]
-    if seed not in configured_seeds:
-        raise ValueError(f"Seed {seed} is not declared in experiment.model_seeds.")
-    seed_everything(seed, bool(config["experiment"].get("deterministic", True)))
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    run_id = f"{config['experiment']['name']}__{_timestamp()}__seed{seed}"
-    artifact_dir = ensure_dir(Path(config["experiment"]["artifact_root"]) / run_id)
-    checkpoint_dir = ensure_dir(Path(config["experiment"]["checkpoint_root"]) / run_id)
-    logger = configure_logging(artifact_dir / "run.log")
-    logger.info("Phase 2 run: %s", run_id)
-    logger.info("Official test embargo: active")
-
-    bundle = build_phase2_bundle(config["dataset"])
-    num_classes = len(bundle.classes)
-    model = build_model(config["model"], num_classes).to(device)
-    parameter_count = sum(
-        parameter.numel() for parameter in model.parameters() if parameter.requires_grad
-    )
-    train_loader = build_loader(bundle.train_core, config["dataset"], shuffle=True)
-    validation_loader = build_loader(bundle.checkpoint_validation, config["dataset"], shuffle=False)
-    optimizer = make_optimizer(model, config["training"])
-    scheduler = make_scheduler(optimizer, int(config["training"]["epochs"]))
-    criterion = make_criterion(config["training"])
-    amp_enabled = bool(config["training"].get("amp", False) and device.type == "cuda")
-    try:
-        scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
-    except (AttributeError, TypeError):
-        scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
-
-    dataset_root = Path(config["dataset"]["root"])
-    split_manifest_path = dataset_root / "split_manifest.json"
-    dataset_manifest_path = dataset_root / "dataset_manifest.json"
-    resolved_config = dict(config)
-    resolved_config["experiment"] = dict(config["experiment"])
-    resolved_config["experiment"]["seed"] = seed
-    resolved_config["model"] = dict(config["model"])
-    resolved_config["model"]["num_classes"] = num_classes
-    resolved_config["runtime"] = {
-        "run_id": run_id,
-        "device": str(device),
-        "git_commit": _git_commit(),
-        "git_dirty": _git_dirty(),
-        "trainable_parameters": parameter_count,
-        "classes": bundle.classes,
-        "official_test_used": False,
-        "dataset_manifest_sha256": _sha256(dataset_manifest_path),
-        "split_manifest_sha256": _sha256(split_manifest_path),
-    }
-    save_config(resolved_config, artifact_dir / "config_resolved.yaml")
-
-    select_metric = str(config["training"].get("select_metric", "macro_f1"))
-    best_score = float("-inf")
-    best_epoch = -1
-    for epoch in range(1, int(config["training"]["epochs"]) + 1):
-        train_metrics = train_one_epoch(
-            model,
-            train_loader,
-            optimizer,
-            criterion,
-            device,
-            scaler,
-            amp_enabled,
-            config["training"].get("gradient_clip_norm"),
-        )
-        validation_result, _ = evaluate(model, validation_loader, criterion, device, num_classes)
-        scheduler.step()
-        row = {
-            "epoch": epoch,
-            "learning_rate": optimizer.param_groups[0]["lr"],
-            "train_loss": train_metrics["loss"],
-            "train_accuracy": train_metrics["accuracy"],
-            "validation_loss": validation_result.loss,
-            "validation_accuracy": validation_result.accuracy,
-            "validation_macro_f1": validation_result.macro_f1,
-            "epoch_seconds": train_metrics["seconds"],
-        }
-        append_csv(row, artifact_dir / "history.csv")
-        score = getattr(validation_result, select_metric)
-        save_checkpoint(
-            checkpoint_dir / "last.pt",
-            model,
-            optimizer,
-            epoch,
-            score,
-            resolved_config,
-            num_classes,
-        )
-        if score > best_score:
-            best_score = score
-            best_epoch = epoch
-            save_checkpoint(
-                checkpoint_dir / "best.pt",
-                model,
-                optimizer,
-                epoch,
-                score,
-                resolved_config,
-                num_classes,
-            )
-        logger.info(
-            "Epoch %03d | train %.4f | checkpoint-val %.4f",
-            epoch,
-            train_metrics["accuracy"],
-            validation_result.macro_f1,
-        )
-
-    restore_best_model(checkpoint_dir / "best.pt", model, device, logger)
-    validation_result, _ = evaluate(model, validation_loader, criterion, device, num_classes)
-    write_json(validation_result.to_dict(), artifact_dir / "checkpoint_validation_metrics.json")
-    save_confusion_matrix(
-        validation_result.confusion_matrix.numpy(),
-        bundle.classes,
-        artifact_dir / "checkpoint_validation_confusion_matrix.png",
-    )
-    summary = {
-        "run_id": run_id,
-        "seed": seed,
-        "best_epoch": best_epoch,
-        "best_checkpoint_validation_score": best_score,
-        "selection_metric": select_metric,
-        "checkpoint_validation": validation_result.to_dict(),
-        "checkpoint": str((checkpoint_dir / "best.pt").resolve()),
-        "artifact_dir": str(artifact_dir.resolve()),
-        "official_test_used": False,
-        "git_commit": _git_commit(),
-        "git_dirty": _git_dirty(),
-    }
-    write_json(summary, artifact_dir / "summary.json")
-    return summary
-
-
-def _load_phase2_model(
+def _load_audit_model(
     config: dict[str, Any],
     checkpoint_path: Path,
     num_classes: int,
@@ -290,7 +63,7 @@ def _load_phase2_model(
     runtime = checkpoint_config.get("runtime", {})
     if runtime.get("official_test_used") is not False:
         raise RuntimeError(
-            f"Checkpoint does not certify the Phase 2 test embargo: {checkpoint_path}"
+            f"Checkpoint does not certify the official-test embargo: {checkpoint_path}"
         )
     if int(checkpoint_config.get("experiment", {}).get("seed", -1)) != expected_seed:
         raise RuntimeError(
@@ -331,13 +104,15 @@ def _trace_metrics(
     auc_rows = [row for row in prefix_rows if row["timestep"] >= auc_start_timestep]
     auc_fractions = np.asarray([row["fraction"] for row in auc_rows])
     auc_accuracies = np.asarray([row["accuracy"] for row in auc_rows])
-    prefix_auc = normalized_trapezoid_auc(auc_fractions, auc_accuracies)
-    prefix_auc_raw = trapezoid_auc(auc_fractions, auc_accuracies)
+    prefix_auc_raw = prefix_auc(auc_fractions.tolist(), auc_accuracies.tolist())
+    prefix_auc_normalized = normalized_prefix_auc(
+        auc_fractions.tolist(), auc_accuracies.tolist()
+    )
     summary = {
         "classification": classification,
         "content_order": factorized,
         "prefix_accuracy_auc_raw": prefix_auc_raw,
-        "prefix_accuracy_auc_normalized": prefix_auc,
+        "prefix_accuracy_auc_normalized": prefix_auc_normalized,
         "prefix_auc_interval": [float(auc_fractions.min()), float(auc_fractions.max())],
     }
     return summary, prefix_rows, transition_rows, arrays
@@ -411,7 +186,7 @@ def _run_probes(
     validation_trace: TraceCollection,
     audit_trace: TraceCollection,
 ) -> tuple[list[dict[str, Any]], dict[str, float]]:
-    probe_config = config["phase2"]["probes"]
+    probe_config = config["mechanistic_audit"]["probes"]
     primitive_ids = [str(value) for value in config["dataset"]["primitive_ids"]]
     regularization = [float(value) for value in probe_config["regularization_grid"]]
     common_kwargs = {
@@ -523,7 +298,7 @@ def _run_shortcut_baselines(
     audit_rows, audit_temporal, audit_invariant, audit_targets = collect_input_audit(
         audit_loader, audit_loader.dataset
     )
-    probe_config = config["phase2"]["probes"]
+    probe_config = config["mechanistic_audit"]["probes"]
     kwargs = {
         "regularization_grid": [float(value) for value in probe_config["regularization_grid"]],
         "epochs": int(probe_config.get("epochs", 80)),
@@ -575,10 +350,10 @@ def _run_causal_audit(
     classes: list[str],
     device: torch.device,
 ) -> list[dict[str, Any]]:
-    causal_config = config["phase2"]["causal"]
+    causal_config = config["mechanistic_audit"]["causal"]
     if not bool(causal_config.get("enabled", True)):
         return []
-    raw_dataset: Phase2DVSGCDataset = dataset.dataset
+    raw_dataset: MatchedDVSGestureChain = dataset.dataset
     per_class = int(causal_config.get("samples_per_class", 8))
     selected = []
     counts = {index: 0 for index in range(len(classes))}
@@ -700,36 +475,37 @@ def _run_causal_audit(
     return rows
 
 
-def _verify_checkpoint_manifest(config: dict[str, Any], checkpoints: dict[int, Path]) -> None:
+def _verify_seed_checkpoints(config: dict[str, Any], checkpoints: dict[int, Path]) -> None:
     expected = {int(value) for value in config["experiment"]["model_seeds"]}
     if set(checkpoints) != expected:
         raise ValueError(
-            f"Phase 2 audit requires checkpoints for exactly {sorted(expected)}; "
+            f"The audit requires checkpoints for exactly {sorted(expected)}; "
             f"received {sorted(checkpoints)}."
         )
     missing = [str(path) for path in checkpoints.values() if not path.is_file()]
     if missing:
-        raise FileNotFoundError(f"Missing Phase 2 checkpoints: {missing}")
+        raise FileNotFoundError(f"Missing audit checkpoints: {missing}")
 
 
-def phase2_audit(config: dict[str, Any], checkpoints: dict[int, str | Path]) -> dict[str, Any]:
-    _validate_phase2_config(config)
+def run_mechanistic_audit(
+    config: dict[str, Any], checkpoints: dict[int, str | Path]
+) -> dict[str, Any]:
     checkpoint_paths = {int(seed): Path(path) for seed, path in checkpoints.items()}
-    _verify_checkpoint_manifest(config, checkpoint_paths)
+    _verify_seed_checkpoints(config, checkpoint_paths)
     seed_everything(
         int(config["experiment"]["seed"]),
         bool(config["experiment"].get("deterministic", True)),
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    phase2_id = f"{config['experiment']['name']}__audit__{_timestamp()}"
-    artifact_dir = ensure_dir(Path(config["experiment"]["artifact_root"]) / phase2_id)
-    logger = configure_logging(artifact_dir / "phase2_audit.log")
-    bundle = build_phase2_bundle(config["dataset"])
+    audit_id = f"{config['experiment']['name']}__audit__{_timestamp()}"
+    artifact_dir = ensure_dir(Path(config["experiment"]["artifact_root"]) / audit_id)
+    logger = configure_logging(artifact_dir / "mechanistic_audit.log")
+    bundle = build_dataset_bundle(config["dataset"], int(config["experiment"]["seed"]))
     classes = bundle.classes
     num_classes = len(classes)
     dataset_root = Path(config["dataset"]["root"])
-    dataset_manifest_sha256 = _sha256(dataset_root / "dataset_manifest.json")
-    split_manifest_sha256 = _sha256(dataset_root / "split_manifest.json")
+    dataset_manifest_sha256 = sha256_file(dataset_root / "dataset_manifest.json")
+    split_manifest_sha256 = sha256_file(dataset_root / "split_manifest.json")
     shutil.copy2(dataset_root / "dataset_manifest.json", artifact_dir / "dataset_manifest.json")
     shutil.copy2(dataset_root / "split_manifest.json", artifact_dir / "split_manifest.json")
     save_config(config, artifact_dir / "protocol_manifest.yaml")
@@ -738,19 +514,20 @@ def phase2_audit(config: dict[str, Any], checkpoints: dict[int, str | Path]) -> 
             "checkpoints": {
                 str(seed): {
                     "path": str(path.resolve()),
-                    "sha256": _sha256(path),
+                    "sha256": sha256_file(path),
                 }
                 for seed, path in checkpoint_paths.items()
             },
             "official_test_used": False,
-            "protocol_version": config["phase2"]["protocol_version"],
+            "protocol_version": config["mechanistic_audit"]["protocol_version"],
         },
         artifact_dir / "checkpoints_manifest.json",
     )
 
-    layers = [str(value) for value in config["phase2"]["tracing"]["layers"]]
-    auc_start_timestep = int(config["phase2"]["prefix"]["auc_start_timestep"])
-    tail_start = int(config["phase2"]["prefix"]["tail_start"])
+    audit_config = config["mechanistic_audit"]
+    layers = [str(value) for value in audit_config["tracing"]["layers"]]
+    auc_start_timestep = int(audit_config["prefix"]["auc_start_timestep"])
+    tail_start = int(audit_config["prefix"]["tail_start"])
     seed_summaries = []
     tidy_rows: dict[str, list[dict[str, Any]]] = {
         "content_pair": [],
@@ -765,7 +542,7 @@ def phase2_audit(config: dict[str, Any], checkpoints: dict[int, str | Path]) -> 
     for seed, checkpoint_path in sorted(checkpoint_paths.items()):
         logger.info("Auditing seed %d: %s", seed, checkpoint_path)
         seed_dir = ensure_dir(artifact_dir / f"seed_{seed}")
-        model = _load_phase2_model(
+        model = _load_audit_model(
             config,
             checkpoint_path,
             num_classes,
@@ -774,17 +551,17 @@ def phase2_audit(config: dict[str, Any], checkpoints: dict[int, str | Path]) -> 
             dataset_manifest_sha256=dataset_manifest_sha256,
             split_manifest_sha256=split_manifest_sha256,
         )
-        train_loader = build_loader(bundle.train_core, config["dataset"], shuffle=False)
-        validation_loader = build_loader(
-            bundle.checkpoint_validation, config["dataset"], shuffle=False
-        )
-        audit_loader = build_loader(bundle.development_audit, config["dataset"], shuffle=False)
+        train_loader = build_loader(bundle.train, config["dataset"], shuffle=False)
+        validation_loader = build_loader(bundle.validation, config["dataset"], shuffle=False)
+        audit_loader = build_loader(bundle.holdout, config["dataset"], shuffle=False)
         audit_trace = collect_traces(model, audit_loader, device, layers)
         trace_summary, prefix_rows, transition_rows, trajectory_arrays = _trace_metrics(
             audit_trace, classes, auc_start_timestep, tail_start
         )
         predictions = audit_trace.predictions
-        raw_audit: Phase2DVSGCDataset = bundle.development_audit.dataset
+        raw_audit: MatchedDVSGestureChain = bundle.holdout.dataset
+        # reverse_indices is defined by the dataset manifest, so this compares exact AB/BA pairs
+        # from the same source rather than relying on class-level aggregate accuracy.
         reverse_predictions = np.asarray(
             [predictions[raw_audit.reverse_indices[index]] for index in range(len(raw_audit))]
         )
@@ -799,7 +576,9 @@ def phase2_audit(config: dict[str, Any], checkpoints: dict[int, str | Path]) -> 
         late_utility_values = correct[:, final_index].astype(np.float64) - correct[
             :, tail_before
         ].astype(np.float64)
-        bootstrap_config = config["phase2"]["bootstrap"]
+        bootstrap_config = audit_config["bootstrap"]
+        # Samples derived from the same recording are correlated; resampling source files keeps
+        # that dependence intact instead of pretending every generated chain is independent.
         nlu_bootstrap = grouped_bootstrap_interval(
             source_groups,
             lambda indices, values=late_utility_values: float(values[indices].mean()),
@@ -810,8 +589,8 @@ def phase2_audit(config: dict[str, Any], checkpoints: dict[int, str | Path]) -> 
 
         duration_rows = _duration_audit(
             model,
-            bundle.development_audit,
-            config["phase2"]["transformations"].get("duration_ratios", []),
+            bundle.holdout,
+            audit_config["transformations"].get("duration_ratios", []),
             device,
             classes,
             predictions,
@@ -824,7 +603,7 @@ def phase2_audit(config: dict[str, Any], checkpoints: dict[int, str | Path]) -> 
         shortcut_rows, input_rows = _run_shortcut_baselines(
             config, seed, train_loader, validation_loader, audit_loader
         )
-        causal_rows = _run_causal_audit(config, model, bundle.development_audit, classes, device)
+        causal_rows = _run_causal_audit(config, model, bundle.holdout, classes, device)
 
         content_pair_rows = trace_summary["content_order"]["per_content_pair"]
         inverse_pair_rows = inverse_metrics["per_content_pair"]
@@ -976,12 +755,12 @@ def phase2_audit(config: dict[str, Any], checkpoints: dict[int, str | Path]) -> 
     ]
     aggregate = aggregate_seed_scalars(seed_summaries, scalar_fields)
     profile = {
-        "phase2_id": phase2_id,
+        "audit_id": audit_id,
         "artifact_dir": str(artifact_dir.resolve()),
-        "git_commit": _git_commit(),
-        "git_dirty": _git_dirty(),
+        "git_commit": git_commit(),
+        "git_dirty": git_is_dirty(),
         "official_test_used": False,
-        "protocol_version": config["phase2"]["protocol_version"],
+        "protocol_version": audit_config["protocol_version"],
         "construct": "Temporal Dynamics Utilization Profile",
         "primary_components": {
             "content_order_factorization": [
@@ -1012,12 +791,12 @@ def phase2_audit(config: dict[str, Any], checkpoints: dict[int, str | Path]) -> 
         ),
     }
     write_json(profile, artifact_dir / "temporal_utilization_profile.json")
-    write_json(profile, artifact_dir / "phase2_summary.json")
-    logger.info("Phase 2 artifacts: %s", artifact_dir)
+    write_json(profile, artifact_dir / "mechanistic_audit_summary.json")
+    logger.info("Mechanistic audit artifacts: %s", artifact_dir)
     return profile
 
 
-def parse_checkpoint_arguments(values: list[str]) -> dict[int, Path]:
+def parse_seed_checkpoints(values: list[str]) -> dict[int, Path]:
     result = {}
     for value in values:
         if "=" not in value:

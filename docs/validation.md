@@ -21,14 +21,14 @@ nel report di audit.
 Questi tre punti restano gate espliciti da completare nell’ambiente server prima delle run
 scientifiche definitive.
 
-## Controlli dell’implementazione Fase 2
+## Controlli dell’audit meccanicistico
 
-Sul branch `feature/phase2-temporal-utilization-audit` sono stati completati:
+Sul branch `refactor/mechanistic-temporal-audit` sono stati completati:
 
 - `ruff check src tests`: superato;
 - `python -m compileall -q src tests`: superato;
-- `bash -n` sugli script Phase 2: superato;
-- dry-run dei target Make Phase 2: superato.
+- `bash -n scripts/*.sh`: superato;
+- `git diff --check`: superato.
 
 Sono stati aggiunti test per split raggruppati, embargo del test, pairing inverso, fattorizzazione
 contenuto/ordine, ITC, AUC raw/normalizzata, late harm/rescue, rebinning count-preserving,
@@ -43,4 +43,4 @@ pytest -q
 ```
 
 Non sono stati eseguiti preparazione DVS-GC, training multi-seed o audit numerico: sono run
-scientifiche della Fase 2, non verifiche da simulare durante l’implementazione.
+scientifiche dell’audit meccanicistico, non verifiche da simulare durante l’implementazione.

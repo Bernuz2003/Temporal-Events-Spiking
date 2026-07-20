@@ -2,7 +2,7 @@
 
 ## Regole operative
 
-- lavorare sul branch dedicato alla fase corrente;
+- lavorare sul branch dedicato alla milestone corrente;
 - effettuare push periodici;
 - usare container Singularity;
 - usare `screen` per run lunghi;
@@ -49,7 +49,7 @@ pytest -q
 ## Run con screen
 
 ```bash
-screen -S phase1_order2
+screen -S temporal_audit_order2
 ```
 
 Dentro la sessione:
@@ -59,7 +59,7 @@ singularity exec --nv \
   --bind /percorso/repository:/workspace \
   --bind /home/users/$USER:/local \
   /home/users/$USER/temporal-event-spiking.sif \
-  bash -lc 'cd /workspace && python -m etsr.cli train --config configs/phase1_dvsgc_order2.yaml'
+  bash -lc 'cd /workspace && python -m etsr.cli train --config configs/temporal_audit_dvsgc_order2.yaml'
 ```
 
 Detach: `Ctrl-a`, poi `d`.
@@ -73,7 +73,7 @@ screen -ls
 Rientro:
 
 ```bash
-screen -r phase1_order2
+screen -r temporal_audit_order2
 ```
 
 ## Path di output
@@ -87,7 +87,7 @@ export ETSR_CHECKPOINT_ROOT=/local/etsr/checkpoints
 
 Al termine, copiare gli artifact utili nel repository o nel filesystem persistente e rimuovere i checkpoint locali non necessari.
 
-## Esecuzione della Fase 2
+## Esecuzione dell’audit meccanicistico
 
 La preparazione del dataset va eseguita una sola volta. I tre training devono condividere la stessa
 root e lo stesso split manifest e, su una singola GPU, vanno lanciati sequenzialmente.
@@ -97,19 +97,19 @@ Dentro una sessione `screen` e il container:
 ```bash
 cd /workspace
 python -m pip install -e . --no-deps
-python -m etsr.cli phase2-prepare --config configs/phase2_dvsgc_order2.yaml
-python -m etsr.cli phase2-train --config configs/phase2_dvsgc_order2.yaml --seed 42
+python -m etsr.cli prepare-matched-dvsgc --config configs/mechanistic_audit_dvsgc_order2.yaml
+python -m etsr.cli train --config configs/mechanistic_audit_dvsgc_order2.yaml --seed 42
 ```
 
 Ripetere il solo comando di training per `123` e `2026`, annotando i tre percorsi `best.pt`. Quindi:
 
 ```bash
-python -m etsr.cli phase2-audit \
-  --config configs/phase2_dvsgc_order2.yaml \
+python -m etsr.cli mechanistic-audit \
+  --config configs/mechanistic_audit_dvsgc_order2.yaml \
   --checkpoint 42=/path/seed42/best.pt \
   --checkpoint 123=/path/seed123/best.pt \
   --checkpoint 2026=/path/seed2026/best.pt
 ```
 
-Non cancellare o rigenerare `data/dvsgc_phase2_order2_v1` tra i seed. L’audit verifica gli hash del
+Non cancellare o rigenerare `data/matched_dvsgc_order2_v1` tra i seed. L’audit verifica gli hash del
 dataset e dello split registrati nei checkpoint.

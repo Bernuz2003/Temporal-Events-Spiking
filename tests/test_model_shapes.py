@@ -18,7 +18,7 @@ def test_mini_qkformer_output_shape_and_backward():
     assert any(parameter.grad is not None for parameter in model.parameters())
 
 
-def test_phase2_trace_matches_standard_and_explicit_prefix_forward():
+def test_temporal_trace_matches_standard_and_explicit_prefix_forward():
     model = MiniQKFormer(
         in_channels=2,
         num_classes=6,

@@ -4,7 +4,7 @@
 
 DVS-Gesture-Chain concatena primitive provenienti da DVS128 Gesture. Classi diverse possono contenere gli stessi gesti in ordine differente. Questo rende il dataset un banco diagnostico per verificare se un modello usa realmente l'ordine temporale.
 
-La Fase 1 parte da:
+Il primo audit parte da:
 
 - `sequence_length = 2`;
 - `primitive_classes = 3`;
@@ -49,10 +49,10 @@ Questa release non li implementa, ma la roadmap prevede:
 
 La scelta successiva sarà determinata dai risultati del Temporal Audit, non dall'intenzione di accumulare benchmark.
 
-## Dataset diagnostico della Fase 2
+## Dataset diagnostico con coppie controllate
 
-La Fase 2 non riusa i frame order-2 già generati. Costruisce
-`data/dvsgc_phase2_order2_v1` dagli eventi della sola partizione ufficiale di training e salva per
+L’audit meccanicistico non riusa i frame order-2 già generati. Costruisce
+`data/matched_dvsgc_order2_v1` dagli eventi della sola partizione ufficiale di training e salva per
 ogni sequenza i confini, le durate e il pairing inverso.
 
 Per ogni file e coppia di primitive, `AB` e `BA` contengono gli stessi chunk integrati con le durate
@@ -63,7 +63,7 @@ manifest. La partizione ufficiale di test non viene costruita né caricata.
 Preparazione:
 
 ```bash
-python -m etsr.cli phase2-prepare --config configs/phase2_dvsgc_order2.yaml
+python -m etsr.cli prepare-matched-dvsgc --config configs/mechanistic_audit_dvsgc_order2.yaml
 ```
 
 La directory di output è immutabile: se non è vuota il comando fallisce. Usare una nuova root

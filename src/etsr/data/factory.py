@@ -1,25 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 from torch.utils.data import DataLoader, Dataset
 
-from etsr.data.common import IndexedDataset
+from etsr.data.common import DatasetBundle, IndexedDataset
 from etsr.data.dvsgc import create_dvsgc_split
+from etsr.data.matched_dvsgc import build_matched_dvsgc_bundle
 from etsr.data.synthetic import SyntheticTemporalOrderDataset
-
-
-@dataclass
-class DatasetBundle:
-    train: Dataset
-    validation: Dataset
-    test: Dataset
-    classes: list[str]
 
 
 def build_dataset_bundle(config: dict[str, Any], seed: int) -> DatasetBundle:
     name = config["name"]
+    if name == "matched_dvsgc":
+        return build_matched_dvsgc_bundle(config)
     if name == "dvsgc":
         train_raw = create_dvsgc_split(config, "train")
         validation_raw = create_dvsgc_split(config, "validation")
@@ -48,13 +42,13 @@ def build_dataset_bundle(config: dict[str, Any], seed: int) -> DatasetBundle:
     )
     train = IndexedDataset(train_raw, **wrapper_args)
     validation = IndexedDataset(validation_raw, **wrapper_args)
-    test = IndexedDataset(test_raw, **wrapper_args)
+    holdout = IndexedDataset(test_raw, **wrapper_args)
 
     classes = list(getattr(train_raw, "classes", []))
     if not classes:
         class_count = int(config.get("num_classes", 0))
         classes = [str(index) for index in range(class_count)]
-    return DatasetBundle(train=train, validation=validation, test=test, classes=classes)
+    return DatasetBundle(train=train, validation=validation, holdout=holdout, classes=classes)
 
 
 def build_loader(dataset: Dataset, config: dict[str, Any], shuffle: bool) -> DataLoader:

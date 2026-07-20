@@ -32,7 +32,7 @@ def collect_traces(
     layers: list[str],
 ) -> TraceCollection:
     if not hasattr(model, "forward_with_trace"):
-        raise TypeError("Phase 2 tracing requires a model.forward_with_trace method.")
+        raise TypeError("Temporal tracing requires a model.forward_with_trace method.")
     model.eval()
     indices_parts = []
     target_parts = []
@@ -68,7 +68,7 @@ def collect_traces(
     dataset = loader.dataset
     raw_dataset = getattr(dataset, "dataset", dataset)
     if not hasattr(raw_dataset, "metadata_for_index"):
-        raise TypeError("Phase 2 tracing requires dataset metadata_for_index().")
+        raise TypeError("Temporal tracing requires dataset metadata_for_index().")
     metadata = [raw_dataset.metadata_for_index(int(index)) for index in indices[order]]
     return TraceCollection(
         indices=indices[order],

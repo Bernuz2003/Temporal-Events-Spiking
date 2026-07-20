@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +18,7 @@ from etsr.evaluation.metrics import (
 )
 from etsr.evaluation.reports import save_confusion_matrix, save_prefix_curve
 from etsr.models.factory import build_model
-from etsr.reproducibility import seed_everything
+from etsr.reproducibility import git_commit, git_is_dirty, seed_everything, sha256_file
 from etsr.training.checkpointing import save_checkpoint
 from etsr.training.engine import (
     evaluate,
@@ -34,32 +33,28 @@ from etsr.utils.io import append_csv, ensure_dir, write_csv, write_json
 from etsr.utils.logging import configure_logging
 
 
-def _git_commit() -> str | None:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
-        ).strip()
-    except (OSError, subprocess.CalledProcessError):
-        return None
-
-
-def _run_id(config: dict[str, Any]) -> str:
+def _run_id(config: dict[str, Any], seed: int) -> str:
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"{config['experiment']['name']}__{timestamp}__seed{config['experiment']['seed']}"
+    return f"{config['experiment']['name']}__{timestamp}__seed{seed}"
 
 
-def _prepare_run(config: dict[str, Any]) -> tuple[str, Path, Path, logging.Logger]:
-    run_id = _run_id(config)
+def _prepare_run(
+    config: dict[str, Any], seed: int
+) -> tuple[str, Path, Path, logging.Logger]:
+    run_id = _run_id(config, seed)
     artifact_dir = ensure_dir(Path(config["experiment"]["artifact_root"]) / run_id)
     checkpoint_dir = ensure_dir(Path(config["experiment"]["checkpoint_root"]) / run_id)
     logger = configure_logging(artifact_dir / "run.log")
     return run_id, artifact_dir, checkpoint_dir, logger
 
 
-def train_experiment(config: dict[str, Any]) -> dict:
-    seed = int(config["experiment"]["seed"])
+def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
+    seed = int(config["experiment"]["seed"] if seed is None else seed)
+    configured_seeds = [int(value) for value in config["experiment"].get("model_seeds", [])]
+    if configured_seeds and seed not in configured_seeds:
+        raise ValueError(f"Seed {seed} is not declared in experiment.model_seeds.")
     seed_everything(seed, bool(config["experiment"].get("deterministic", True)))
-    run_id, artifact_dir, checkpoint_dir, logger = _prepare_run(config)
+    run_id, artifact_dir, checkpoint_dir, logger = _prepare_run(config, seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Run ID: %s", run_id)
     logger.info("Device: %s", device)
@@ -78,7 +73,7 @@ def train_experiment(config: dict[str, Any]) -> dict:
 
     train_loader = build_loader(bundle.train, config["dataset"], shuffle=True)
     validation_loader = build_loader(bundle.validation, config["dataset"], shuffle=False)
-    test_loader = build_loader(bundle.test, config["dataset"], shuffle=False)
+    holdout_loader = build_loader(bundle.holdout, config["dataset"], shuffle=False)
 
     optimizer = make_optimizer(model, config["training"])
     scheduler = make_scheduler(optimizer, int(config["training"]["epochs"]))
@@ -91,16 +86,26 @@ def train_experiment(config: dict[str, Any]) -> dict:
     select_metric = str(config["training"].get("select_metric", "macro_f1"))
 
     resolved_config = dict(config)
+    resolved_config["experiment"] = dict(config["experiment"])
+    resolved_config["experiment"]["seed"] = seed
     resolved_config["model"] = dict(config["model"])
     resolved_config["model"]["num_classes"] = num_classes
-    resolved_config["runtime"] = {
+    runtime = {
         "run_id": run_id,
         "device": str(device),
-        "git_commit": _git_commit(),
+        "git_commit": git_commit(),
+        "git_dirty": git_is_dirty(),
         "trainable_parameters": parameter_count,
         "parameter_breakdown": parameter_breakdown,
         "classes": bundle.classes,
+        "official_test_used": False,
     }
+    dataset_root = Path(config["dataset"].get("root", ""))
+    for name in ("dataset_manifest.json", "split_manifest.json"):
+        path = dataset_root / name
+        if path.is_file():
+            runtime[f"{path.stem}_sha256"] = sha256_file(path)
+    resolved_config["runtime"] = runtime
     save_config(resolved_config, artifact_dir / "config_resolved.yaml")
 
     best_score = float("-inf")
@@ -153,44 +158,70 @@ def train_experiment(config: dict[str, Any]) -> dict:
             )
 
     restore_best_model(checkpoint_dir / "best.pt", model, device, logger)
-    test_result, test_predictions = evaluate(model, test_loader, criterion, device, num_classes)
-    write_json(test_result.to_dict(), artifact_dir / "test_metrics.json")
-    np.savez_compressed(artifact_dir / "test_predictions.npz", **test_predictions)
-    save_confusion_matrix(
-        test_result.confusion_matrix.numpy(), bundle.classes, artifact_dir / "confusion_matrix.png"
+    validation_result, _ = evaluate(
+        model, validation_loader, criterion, device, num_classes
     )
-
-    profile = None
-    if bool(config.get("profiling", {}).get("enabled", True)):
-        profile = profile_model(model, test_loader, device, config.get("profiling", {}))
-        write_json(profile, artifact_dir / "profile.json")
+    write_json(validation_result.to_dict(), artifact_dir / "validation_metrics.json")
+    save_confusion_matrix(
+        validation_result.confusion_matrix.numpy(),
+        bundle.classes,
+        artifact_dir / "validation_confusion_matrix.png",
+    )
 
     summary = {
         "run_id": run_id,
+        "seed": seed,
         "best_epoch": best_epoch,
         "best_validation_score": best_score,
         "selection_metric": select_metric,
-        "test": test_result.to_dict(),
+        "validation": validation_result.to_dict(),
         "trainable_parameters": parameter_count,
         "parameter_breakdown": parameter_breakdown,
-        "profile": profile,
         "checkpoint": str((checkpoint_dir / "best.pt").resolve()),
         "artifact_dir": str(artifact_dir.resolve()),
-        "git_commit": _git_commit(),
+        "git_commit": git_commit(),
+        "git_dirty": git_is_dirty(),
+        "official_test_used": False,
     }
+
+    if bool(config["training"].get("evaluate_holdout", True)):
+        holdout_result, holdout_predictions = evaluate(
+            model, holdout_loader, criterion, device, num_classes
+        )
+        write_json(holdout_result.to_dict(), artifact_dir / "test_metrics.json")
+        np.savez_compressed(artifact_dir / "test_predictions.npz", **holdout_predictions)
+        save_confusion_matrix(
+            holdout_result.confusion_matrix.numpy(),
+            bundle.classes,
+            artifact_dir / "confusion_matrix.png",
+        )
+        profile = None
+        if bool(config.get("profiling", {}).get("enabled", True)):
+            profile = profile_model(
+                model, holdout_loader, device, config.get("profiling", {})
+            )
+            write_json(profile, artifact_dir / "profile.json")
+        summary.update(
+            {
+                "test": holdout_result.to_dict(),
+                "profile": profile,
+                "official_test_used": config["dataset"].get("name") == "dvsgc",
+            }
+        )
+        logger.info(
+            "Holdout | accuracy %.4f | macro-F1 %.4f | best epoch %d",
+            holdout_result.accuracy,
+            holdout_result.macro_f1,
+            best_epoch,
+        )
+
     write_json(summary, artifact_dir / "summary.json")
-    logger.info(
-        "Test | accuracy %.4f | macro-F1 %.4f | best epoch %d",
-        test_result.accuracy,
-        test_result.macro_f1,
-        best_epoch,
-    )
     logger.info("Artifacts: %s", artifact_dir)
     logger.info("Checkpoint: %s", checkpoint_dir / "best.pt")
     return summary
 
 
-def audit_experiment(config: dict[str, Any], checkpoint_path: str | Path) -> dict:
+def run_temporal_audit(config: dict[str, Any], checkpoint_path: str | Path) -> dict:
     checkpoint_path = Path(checkpoint_path)
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     seed = int(config["experiment"]["seed"])
@@ -212,7 +243,7 @@ def audit_experiment(config: dict[str, Any], checkpoint_path: str | Path) -> dic
     resolved_perturbation_methods = set()
     for item in config.get("audit", {}).get("perturbations", [{"name": "original"}]):
         spec = PerturbationSpec.from_dict(item)
-        dataset = PerturbedDataset(bundle.test, spec)
+        dataset = PerturbedDataset(bundle.holdout, spec)
         loader = build_loader(dataset, config["dataset"], shuffle=False)
         result, predictions = evaluate(model, loader, criterion, device, num_classes)
         label = spec.name if spec.target_mode == "keep" else f"{spec.name}__{spec.target_mode}"
@@ -278,7 +309,7 @@ def audit_experiment(config: dict[str, Any], checkpoint_path: str | Path) -> dic
             row[field] = None if analysis is None else analysis[field]
 
     prefix_rows = []
-    original_loader = build_loader(bundle.test, config["dataset"], shuffle=False)
+    original_loader = build_loader(bundle.holdout, config["dataset"], shuffle=False)
     fractions = [float(value) for value in config.get("audit", {}).get("prefix_fractions", [1.0])]
     for fraction in fractions:
         result, _ = evaluate(

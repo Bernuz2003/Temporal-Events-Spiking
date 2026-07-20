@@ -5,7 +5,6 @@ import itertools
 import json
 import math
 import random
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,33 +12,25 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from etsr.data.common import IndexedDataset
+from etsr.data.common import DatasetBundle, IndexedDataset
 from etsr.utils.io import write_json
 
-PHASE2_SPLITS = ("train_core", "checkpoint_validation", "development_audit")
-
-
-@dataclass(frozen=True)
-class Phase2DatasetBundle:
-    train_core: Dataset
-    checkpoint_validation: Dataset
-    development_audit: Dataset
-    classes: list[str]
+MATCHED_SPLITS = ("train_core", "checkpoint_validation", "development_audit")
 
 
 def ordered_sequences(
     primitive_ids: list[str], sequence_length: int, allow_repetition: bool
 ) -> list[str]:
     if sequence_length != 2:
-        raise ValueError("The Phase 2 matched generator currently supports order-2 sequences only.")
+        raise ValueError("The matched generator currently supports order-2 sequences only.")
     if len(set(primitive_ids)) < 2:
         raise ValueError("At least two distinct primitive identifiers are required.")
     if any(len(identifier) != 1 for identifier in primitive_ids):
         raise ValueError(
-            "The DVS-GC Phase 2 generator currently requires single-character primitive IDs."
+            "The matched DVS-GC generator currently requires single-character primitive IDs."
         )
     if allow_repetition:
-        raise ValueError("phase2_tdup_v1 requires consecutive repetitions to be disabled.")
+        raise ValueError("The temporal-utilization protocol disables consecutive repetitions.")
     sequences = []
     for sequence in itertools.product(primitive_ids, repeat=sequence_length):
         if any(
@@ -55,16 +46,16 @@ def grouped_split(
     fractions: dict[str, float],
     seed: int,
 ) -> dict[str, str]:
-    if set(fractions) != set(PHASE2_SPLITS):
-        raise ValueError(f"Split fractions must define exactly: {', '.join(PHASE2_SPLITS)}")
+    if set(fractions) != set(MATCHED_SPLITS):
+        raise ValueError(f"Split fractions must define exactly: {', '.join(MATCHED_SPLITS)}")
     if not math.isclose(sum(fractions.values()), 1.0, abs_tol=1e-9):
-        raise ValueError("Phase 2 split fractions must sum to one.")
+        raise ValueError("Split fractions must sum to one.")
     if any(value <= 0 for value in fractions.values()):
-        raise ValueError("Every Phase 2 split fraction must be positive.")
+        raise ValueError("Every split fraction must be positive.")
 
     groups = sorted(set(source_filenames))
-    if len(groups) < len(PHASE2_SPLITS):
-        raise ValueError("At least three source groups are required for Phase 2 splits.")
+    if len(groups) < len(MATCHED_SPLITS):
+        raise ValueError("At least three source groups are required.")
     random.Random(seed).shuffle(groups)
 
     train_end = int(len(groups) * fractions["train_core"])
@@ -86,12 +77,12 @@ def grouped_split(
 
 
 def assert_grouped_split(assignments: dict[str, str]) -> None:
-    invalid = sorted(set(assignments.values()) - set(PHASE2_SPLITS))
+    invalid = sorted(set(assignments.values()) - set(MATCHED_SPLITS))
     if invalid:
-        raise ValueError(f"Forbidden Phase 2 split names: {invalid}")
-    missing = [name for name in PHASE2_SPLITS if name not in assignments.values()]
+        raise ValueError(f"Unknown split names: {invalid}")
+    missing = [name for name in MATCHED_SPLITS if name not in assignments.values()]
     if missing:
-        raise ValueError(f"Empty Phase 2 splits: {missing}")
+        raise ValueError(f"Empty splits: {missing}")
 
 
 def _stable_seed(*values: object) -> int:
@@ -128,7 +119,8 @@ def _load_and_integrate_primitive(
         from spikingjelly import datasets as sjds
     except ImportError as exc:
         raise RuntimeError(
-            "Phase 2 preparation requires SpikingJelly. Use the project container or make install."
+            "Matched DVS-GC preparation requires SpikingJelly. "
+            "Use the project container or make install."
         ) from exc
 
     with np.load(path) as archive:
@@ -139,15 +131,15 @@ def _load_and_integrate_primitive(
     return np.asarray(frames)
 
 
-def prepare_phase2_dataset(config: dict[str, Any]) -> dict[str, Any]:
+def prepare_matched_dvsgc(config: dict[str, Any]) -> dict[str, Any]:
     dataset_config = config["dataset"]
     split_config = config["split"]
     if dataset_config.get("official_split") != "train":
-        raise ValueError("Phase 2 preparation may only use the official training partition.")
+        raise ValueError("Matched-data preparation may only use the official training partition.")
     if not bool(split_config.get("forbid_official_test", True)):
-        raise ValueError("Phase 2 requires split.forbid_official_test=true.")
+        raise ValueError("The protocol requires split.forbid_official_test=true.")
     if str(split_config.get("group_by")) != "source_filename":
-        raise ValueError("Phase 2 requires grouping by source_filename.")
+        raise ValueError("The protocol requires grouping by source_filename.")
 
     output_root = Path(dataset_config["root"])
     events_root = Path(dataset_config["events_root"])
@@ -157,7 +149,7 @@ def prepare_phase2_dataset(config: dict[str, Any]) -> dict[str, Any]:
         )
     if output_root.exists() and any(output_root.iterdir()):
         raise FileExistsError(
-            f"Phase 2 output is not empty at {output_root}; use a new versioned root."
+            f"Output is not empty at {output_root}; use a new versioned root."
         )
 
     primitive_ids = [str(value) for value in dataset_config["primitive_ids"]]
@@ -174,14 +166,14 @@ def prepare_phase2_dataset(config: dict[str, Any]) -> dict[str, Any]:
     if not source_filenames:
         raise RuntimeError("No source filenames are shared by all configured primitives.")
 
-    split_fractions = {name: float(split_config[name]) for name in PHASE2_SPLITS}
+    split_fractions = {name: float(split_config[name]) for name in MATCHED_SPLITS}
     assignments = grouped_split(source_filenames, split_fractions, int(split_config["split_seed"]))
     audit_group_count = sum(
         split == "development_audit" for split in assignments.values()
     )
     if audit_group_count < 2:
         raise RuntimeError(
-            "Phase 2 requires at least two development-audit source groups for bootstrap."
+            "At least two development-audit source groups are required for bootstrap."
         )
     sequences = ordered_sequences(
         primitive_ids,
@@ -191,7 +183,7 @@ def prepare_phase2_dataset(config: dict[str, Any]) -> dict[str, Any]:
     classes = sorted(sequences)
     class_to_idx = {name: index for index, name in enumerate(classes)}
     if any(sequence[::-1] not in class_to_idx for sequence in classes):
-        raise ValueError("Every Phase 2 class must have a reversed counterpart.")
+        raise ValueError("Every class must have a reversed counterpart.")
 
     output_root.mkdir(parents=True, exist_ok=True)
     samples_root = output_root / "samples"
@@ -228,6 +220,8 @@ def prepare_phase2_dataset(config: dict[str, Any]) -> dict[str, Any]:
                     f"{block.shape}, expected {expected_shape}."
                 )
         for first_primitive, second_primitive in unordered_pairs:
+            # Both orders reuse the very same primitive chunks. Reversing AB into BA therefore
+            # swaps complete actions at their true boundary instead of cutting arbitrary frames.
             length_seed = _stable_seed(
                 generation_seed, source_filename, first_primitive, second_primitive
             )
@@ -249,7 +243,7 @@ def prepare_phase2_dataset(config: dict[str, Any]) -> dict[str, Any]:
                 ]
                 frames = np.concatenate(chunks, axis=0)
                 if frames.shape[0] != frames_number:
-                    raise RuntimeError("Generated Phase 2 sample has an invalid time dimension.")
+                    raise RuntimeError("Generated sample has an invalid time dimension.")
 
                 relative_path = Path("samples") / sequence / source_filename
                 output_path = output_root / relative_path
@@ -266,7 +260,7 @@ def prepare_phase2_dataset(config: dict[str, Any]) -> dict[str, Any]:
                     split_by=np.asarray(split_by),
                     alpha_min=np.asarray(alpha_min, dtype=np.float64),
                     alpha_max=np.asarray(alpha_max, dtype=np.float64),
-                    generator_version=np.asarray("phase2_matched_order2_v1"),
+                    generator_version=np.asarray("matched_dvsgc_order2_v1"),
                 )
                 sample_id = f"{sequence}/{source_filename}"
                 sample_entries.append(
@@ -287,7 +281,7 @@ def prepare_phase2_dataset(config: dict[str, Any]) -> dict[str, Any]:
     sample_entries.sort(key=lambda item: (item["class_name"], item["source_filename"]))
     manifest = {
         "schema_version": 1,
-        "generator_version": "phase2_matched_order2_v1",
+        "generator_version": "matched_dvsgc_order2_v1",
         "generator_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "official_source_split": "train",
         "official_test_used": False,
@@ -317,31 +311,32 @@ def prepare_phase2_dataset(config: dict[str, Any]) -> dict[str, Any]:
     return manifest
 
 
-class Phase2DVSGCDataset(Dataset):
+class MatchedDVSGestureChain(Dataset):
     def __init__(self, root: str | Path, split: str):
-        if split not in PHASE2_SPLITS:
-            raise ValueError(f"Forbidden Phase 2 split: {split}")
+        if split not in MATCHED_SPLITS:
+            raise ValueError(f"Unknown matched-data split: {split}")
         self.root = Path(root)
         manifest_path = self.root / "dataset_manifest.json"
         if not manifest_path.exists():
             raise FileNotFoundError(
-                f"Phase 2 manifest not found: {manifest_path}. Run phase2-prepare first."
+                f"Matched-data manifest not found: {manifest_path}. "
+                "Run prepare-matched-dvsgc first."
             )
         self.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if self.manifest.get("official_test_used") is not False:
-            raise RuntimeError("Phase 2 manifest does not certify the official-test embargo.")
+            raise RuntimeError("Dataset manifest does not certify the official-test embargo.")
         if self.manifest.get("official_source_split") != "train":
-            raise RuntimeError("Phase 2 manifest does not originate from official training data.")
-        if self.manifest.get("generator_version") != "phase2_matched_order2_v1":
-            raise RuntimeError("Unsupported Phase 2 dataset generator version.")
+            raise RuntimeError("Dataset manifest does not originate from official training data.")
+        if self.manifest.get("generator_version") != "matched_dvsgc_order2_v1":
+            raise RuntimeError("Unsupported matched-data generator version.")
         split_manifest_path = self.root / "split_manifest.json"
         if not split_manifest_path.exists():
-            raise FileNotFoundError(f"Phase 2 split manifest not found: {split_manifest_path}")
+            raise FileNotFoundError(f"Split manifest not found: {split_manifest_path}")
         split_manifest = json.loads(split_manifest_path.read_text(encoding="utf-8"))
         if split_manifest.get("official_test_used") is not False:
             raise RuntimeError("Split manifest does not certify the official-test embargo.")
         if split_manifest.get("group_by") != "source_filename":
-            raise RuntimeError("Phase 2 split manifest is not grouped by source filename.")
+            raise RuntimeError("Split manifest is not grouped by source filename.")
         self.split = split
         self.classes = list(self.manifest["classes"])
         self.class_to_idx = {
@@ -349,7 +344,7 @@ class Phase2DVSGCDataset(Dataset):
         }
         self.metadata = [item for item in self.manifest["samples"] if item["split"] == split]
         if not self.metadata:
-            raise RuntimeError(f"Phase 2 split is empty: {split}")
+            raise RuntimeError(f"Matched-data split is empty: {split}")
         assignments = split_manifest.get("assignments", {})
         if any(assignments.get(item["source_filename"]) != split for item in self.metadata):
             raise RuntimeError("Dataset and split manifests disagree on source assignments.")
@@ -378,20 +373,23 @@ class Phase2DVSGCDataset(Dataset):
         return self.metadata[index]
 
 
-def build_phase2_bundle(dataset_config: dict[str, Any]) -> Phase2DatasetBundle:
-    if dataset_config.get("name") != "dvsgc_phase2":
-        raise ValueError("Phase 2 runner requires dataset.name=dvsgc_phase2")
+def build_matched_dvsgc_bundle(dataset_config: dict[str, Any]) -> DatasetBundle:
+    if dataset_config.get("name") != "matched_dvsgc":
+        raise ValueError("Matched DVS-GC requires dataset.name=matched_dvsgc")
     wrapper_args = {
         "input_clip": dataset_config.get("input_clip"),
         "input_scale": str(dataset_config.get("input_scale", "none")),
     }
-    raw = {split: Phase2DVSGCDataset(dataset_config["root"], split) for split in PHASE2_SPLITS}
+    raw = {
+        split: MatchedDVSGestureChain(dataset_config["root"], split)
+        for split in MATCHED_SPLITS
+    }
     classes = raw["train_core"].classes
     if any(dataset.classes != classes for dataset in raw.values()):
-        raise RuntimeError("Phase 2 class mappings differ across splits.")
-    return Phase2DatasetBundle(
-        train_core=IndexedDataset(raw["train_core"], **wrapper_args),
-        checkpoint_validation=IndexedDataset(raw["checkpoint_validation"], **wrapper_args),
-        development_audit=IndexedDataset(raw["development_audit"], **wrapper_args),
+        raise RuntimeError("Class mappings differ across matched-data splits.")
+    return DatasetBundle(
+        train=IndexedDataset(raw["train_core"], **wrapper_args),
+        validation=IndexedDataset(raw["checkpoint_validation"], **wrapper_args),
+        holdout=IndexedDataset(raw["development_audit"], **wrapper_args),
         classes=classes,
     )

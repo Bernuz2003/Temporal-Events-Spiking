@@ -1,28 +1,28 @@
-# Fase 2 — Mechanistic Temporal Representation Audit
+# Mechanistic Temporal Representation Audit
 
 ## Brief operativo revisionato e specifica dell’implementazione
 
-**Versione del protocollo:** `phase2_tdup_v1`
+**Versione del protocollo:** `temporal_utilization_v1`
 
 **Baseline:** Mini-QKFormer-like, architettura congelata
 
 **Dataset diagnostico:** DVS-Gesture-Chain order-2
 
-**Configurazione canonica:** `configs/phase2_dvsgc_order2.yaml`
+**Configurazione canonica:** `configs/mechanistic_audit_dvsgc_order2.yaml`
 
 Questo documento sostituisce la proposta estesa precedente. La revisione mantiene le domande
 scientifiche essenziali, elimina misure ridondanti o premature e definisce il protocollo realmente
 implementato nel repository.
 
-La Fase 2 non cerca una diagnosi fine a se stessa. Deve produrre evidenze che permettano di decidere
+L’audit meccanicistico non cerca una diagnosi fine a se stessa. Deve produrre evidenze che permettano di decidere
 se, dove e in quale modo intervenire successivamente sull’architettura per migliorare l’uso della
 semantica temporale, senza ottimizzare il modello sulle anomalie di una singola coppia di classi.
 
 ---
 
-## 1. Punto di partenza: cosa ha mostrato davvero la Fase 1
+## 1. Punto di partenza: cosa ha mostrato davvero l’audit comportamentale
 
-Il run esplorativo della Fase 1 ha mostrato tre fenomeni distinti:
+Il run esplorativo dell’audit comportamentale ha mostrato tre fenomeni distinti:
 
 1. il modello riconosce il contenuto delle catene meglio del loro ordine;
 2. lo shuffle temporale degrada fortemente l’ordine ma conserva buona parte del contenuto;
@@ -47,7 +47,7 @@ campione-per-campione:
 
 dove \(\rho\) mappa una classe nella sua inversa.
 
-Nel singolo checkpoint della Fase 1, tra 12/16 e 16/16 si osservano 124→114 predizioni corrette, cioè
+Nel singolo checkpoint esplorativo, tra 12/16 e 16/16 si osservano 124→114 predizioni corrette, cioè
 una Net Late Utility di circa −6,94 punti percentuali. Il risultato è interessante, ma non può essere
 considerato strutturale prima della replica multi-seed. Il miglior checkpoint era inoltre un picco
 di validation relativamente isolato.
@@ -72,7 +72,7 @@ L’utilizzo della dinamica temporale non è un costrutto unidimensionale. Un mo
 - aggiornare correttamente la decisione in media ma fallire su specifiche transizioni.
 
 Comprimere subito queste proprietà in uno scalare richiederebbe pesi arbitrari e permetterebbe a una
-dimensione forte di nasconderne una debole. La Fase 2 implementa quindi un **Temporal Dynamics
+dimensione forte di nasconderne una debole. L’audit meccanicistico implementa quindi un **Temporal Dynamics
 Utilization Profile (TDUP)**: un profilo standardizzato, quantitativo e trasferibile, non un indice
 composito.
 
@@ -95,10 +95,10 @@ pre-registrazione della normalizzazione e dei pesi.
 
 ## 3. Protocollo sperimentale e embargo dell’official test
 
-Il test ufficiale order-2 è stato già ispezionato durante la Fase 1 e ha contribuito alla formulazione
+Il test ufficiale order-2 è stato già ispezionato durante l’audit comportamentale e ha contribuito alla formulazione
 delle ipotesi. Non è più un holdout incontaminato per lo sviluppo.
 
-La Fase 2 usa esclusivamente la partizione ufficiale di training:
+L’audit meccanicistico usa esclusivamente la partizione ufficiale di training:
 
 ```text
 official training partition
@@ -107,7 +107,7 @@ official training partition
 └── development_audit         15%
 
 official test partition
-└── non letta nella Fase 2
+└── non letta nell’audit meccanicistico
 ```
 
 Lo split è deterministico, usa `split_seed: 314159` ed è raggruppato per `source_filename`. Tutte le
@@ -129,17 +129,17 @@ l’architettura successiva sarà stata congelata.
 
 ---
 
-## 4. Dataset Phase 2: coppie inverse realmente controllate
+## 4. Dataset matched: coppie inverse realmente controllate
 
-Il dataset di Fase 1 non espone i confini esatti delle azioni nei tensori finali. Per una diagnosi
-meccanicistica questo rende ambigue le manipolazioni locali. La Fase 2 genera perciò un dataset
+Il dataset dell’audit comportamentale non espone i confini esatti delle azioni nei tensori finali. Per una diagnosi
+meccanicistica questo rende ambigue le manipolazioni locali. Il nuovo protocollo genera perciò un dataset
 separato, immutabile e versionato a partire dagli eventi della sola partizione ufficiale di training.
 
 Configurazione canonica:
 
 ```yaml
 dataset:
-  root: data/dvsgc_phase2_order2_v1
+  root: data/matched_dvsgc_order2_v1
   events_root: data/dvsgc/events_np/train
   frames_number: 16
   primitive_frames: 13
@@ -425,7 +425,7 @@ l’ordine nelle coppie esatte.
 
 ## 12. Cosa viene deliberatamente rinviato
 
-Non fanno parte di `phase2_tdup_v1`:
+Non fanno parte di `temporal_utilization_v1`:
 
 - sweep estesi di jitter, dropout, speed warp e perturbazioni composte;
 - probe non lineari;
@@ -450,26 +450,31 @@ Questi strumenti non sono rifiutati in assoluto. Sono condizionati ai risultati 
 ## 13. Mappa dell’implementazione
 
 ```text
-configs/phase2_dvsgc_order2.yaml
+configs/mechanistic_audit_dvsgc_order2.yaml
 
-src/etsr/phase2/
-├── dataset.py          generazione, manifest, split raggruppati, pairing
+src/etsr/data/
+├── matched_dvsgc.py    generazione, manifest, split raggruppati e pairing
+└── perturbations.py    perturbazioni e rebinning count-preserving
+
+src/etsr/evaluation/
 ├── tracing.py          raccolta di logit e feature tempo-risolte
-├── metrics.py          fattorizzazione, ITC, prefissi, bootstrap, aggregazione
-├── transformations.py rebinning count-preserving delle durate
-├── input_audit.py      statistiche e shortcut feature
+├── metrics.py          fattorizzazione, ITC, prefissi, bootstrap e aggregazione
+├── input_statistics.py statistiche e shortcut feature
 ├── probes.py           probe lineari e controllo shuffled-label
 ├── causal.py           pairing temporale e activation patching
-└── runner.py           prepare, training multi-seed e audit
+└── mechanistic.py      orchestrazione dell’audit multi-seed
+
+src/etsr/runner.py      training condiviso e audit comportamentale
 
 scripts/
-├── prepare_phase2.sh
-├── train_phase2_seed.sh
-└── run_phase2_audit.sh
+├── prepare_matched_dvsgc.sh
+├── train_audit_seed.sh
+└── run_mechanistic_audit.sh
 ```
 
 `src/etsr/models/mini_qkformer.py` espone `forward_with_trace` senza modificare il normale forward di
-training. `src/etsr/cli.py` espone i comandi `phase2-prepare`, `phase2-train` e `phase2-audit`.
+training. `src/etsr/cli.py` espone i comandi `prepare-matched-dvsgc`, `train` e
+`mechanistic-audit`.
 
 ---
 
@@ -478,7 +483,7 @@ training. `src/etsr/cli.py` espone i comandi `phase2-prepare`, `phase2-train` e 
 La preparazione crea:
 
 ```text
-data/dvsgc_phase2_order2_v1/
+data/matched_dvsgc_order2_v1/
 ├── dataset_manifest.json
 ├── split_manifest.json
 └── samples/<classe>/<source_filename>.npz
@@ -491,13 +496,13 @@ test ufficiale.
 L’audit multi-seed crea:
 
 ```text
-artifacts/<PHASE2_AUDIT_ID>/
+artifacts/<MECHANISTIC_AUDIT_ID>/
 ├── protocol_manifest.yaml
 ├── dataset_manifest.json
 ├── split_manifest.json
 ├── checkpoints_manifest.json
 ├── temporal_utilization_profile.json
-├── phase2_summary.json
+├── mechanistic_audit_summary.json
 ├── aggregate_content_pair.csv
 ├── aggregate_inverse_pair.csv
 ├── aggregate_prefix.csv
@@ -528,16 +533,16 @@ protocollo e certificazione dell’embargo.
 Preparazione una tantum:
 
 ```bash
-python -m etsr.cli phase2-prepare \
-  --config configs/phase2_dvsgc_order2.yaml
+python -m etsr.cli prepare-matched-dvsgc \
+  --config configs/mechanistic_audit_dvsgc_order2.yaml
 ```
 
 Training separato dei tre seed:
 
 ```bash
 for seed in 42 123 2026; do
-  python -m etsr.cli phase2-train \
-    --config configs/phase2_dvsgc_order2.yaml \
+  python -m etsr.cli train \
+    --config configs/mechanistic_audit_dvsgc_order2.yaml \
     --seed "$seed"
 done
 ```
@@ -545,8 +550,8 @@ done
 Audit dopo aver identificato i tre `best.pt`:
 
 ```bash
-python -m etsr.cli phase2-audit \
-  --config configs/phase2_dvsgc_order2.yaml \
+python -m etsr.cli mechanistic-audit \
+  --config configs/mechanistic_audit_dvsgc_order2.yaml \
   --checkpoint 42=/path/seed42/best.pt \
   --checkpoint 123=/path/seed123/best.pt \
   --checkpoint 2026=/path/seed2026/best.pt
@@ -555,9 +560,9 @@ python -m etsr.cli phase2-audit \
 Equivalenti Make target:
 
 ```bash
-make phase2-prepare
-make phase2-train SEED=42
-make phase2-audit CHECKPOINTS='42=/path/a.pt 123=/path/b.pt 2026=/path/c.pt'
+make prepare-matched-dvsgc
+make train-audit-seed SEED=42
+make mechanistic-audit CHECKPOINTS='42=/path/a.pt 123=/path/b.pt 2026=/path/c.pt'
 ```
 
 I tre training vanno eseguiti in modo sequenziale sulla stessa GPU, salvo disponibilità esplicita di
@@ -577,7 +582,7 @@ Il core è considerato tecnicamente valido quando:
 - l’allineamento causale non attraversa i confini;
 - l’audit rifiuta checkpoint o manifest incompatibili;
 - vengono forniti esattamente i checkpoint dei seed configurati;
-- nessun percorso di Fase 2 costruisce o valuta l’official test.
+- nessun percorso dell’audit meccanicistico costruisce o valuta l’official test.
 
 Il core è considerato scientificamente informativo quando permette di distinguere almeno questi
 quattro casi:

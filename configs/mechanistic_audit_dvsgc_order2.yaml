@@ -1,5 +1,5 @@
 experiment:
-  name: phase2_dvsgc_order2_temporal_utilization
+  name: mechanistic_audit_dvsgc_order2
   seed: 42
   model_seeds: [42, 123, 2026]
   artifact_root: artifacts
@@ -7,8 +7,8 @@ experiment:
   deterministic: true
 
 dataset:
-  name: dvsgc_phase2
-  root: data/dvsgc_phase2_order2_v1
+  name: matched_dvsgc
+  root: data/matched_dvsgc_order2_v1
   events_root: data/dvsgc/events_np/train
   official_split: train
   frames_number: 16
@@ -54,9 +54,10 @@ training:
   gradient_clip_norm: 1.0
   amp: true
   select_metric: macro_f1
+  evaluate_holdout: false
 
-phase2:
-  protocol_version: phase2_tdup_v1
+mechanistic_audit:
+  protocol_version: temporal_utilization_v1
   prefix:
     auc_start_timestep: 4
     tail_start: 12
