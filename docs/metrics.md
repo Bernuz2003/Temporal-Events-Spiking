@@ -102,3 +102,20 @@ E = N_MAC × E_MAC + N_AC × E_AC
 - BatchNorm viene considerata fondibile in inference e quindi esclusa.
 
 Ogni report deve usare l'espressione **energia teorica stimata**, mai semplicemente energia consumata.
+
+## Metriche della Fase 2
+
+Il Temporal Dynamics Utilization Profile comprende:
+
+- `content_accuracy` e `conditional_order_accuracy`;
+- `inverse_temporal_consistency` sulle coppie esatte AB/BA;
+- consistenza sotto ridistribuzione count-preserving delle durate;
+- curve a ogni timestep e Prefix AUC raw/normalizzata sull’intervallo 4/16–16/16;
+- Late Harm, Late Rescue e Net Late Utility, con bootstrap per file sorgente su 12/16→16/16;
+- accuratezza/Macro-F1 dei probe di contenuto, ordine, primitiva corrente e precedente;
+- effetto causale sul margine classe corretta–classe inversa;
+- prestazione di baseline lineari su statistiche temporali e order-invariant dell’input.
+
+I probe misurano decodificabilità lineare; non vanno interpretati come prova di uso causale. Una
+conclusione causale richiede un effetto coerente dell’activation patching semanticamente allineato.
+Le metriche sono aggregate per seed, ma non fuse in un punteggio composito.

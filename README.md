@@ -4,9 +4,9 @@ Repository di ricerca per studiare **quanto e come le dinamiche temporali dei da
 
 La baseline iniziale è una Mini-QKFormer pulita e modulare, usata esclusivamente come **strumento di confronto**. Il repository non assume che l'architettura finale debba rimanere QKFormer.
 
-## Obiettivo della release `phase-1`
+## Stato del progetto
 
-Questa prima release implementa soltanto il necessario per il **Temporal Audit**:
+La Fase 1 ha implementato il **Temporal Audit** comportamentale:
 
 1. addestrare una baseline su DVS-Gesture-Chain con split train/validation/test separati;
 2. verificare se il modello utilizza realmente l'ordine temporale;
@@ -14,7 +14,15 @@ Questa prima release implementa soltanto il necessario per il **Temporal Audit**
 4. confrontare il comportamento su sequenze originali e perturbate temporalmente;
 5. produrre artifact compatti, riproducibili e facilmente confrontabili.
 
-Non sono implementati in questa release nuovi encoder asincroni, LMU, delayed synapses, JEPA o predictive coding. Questi elementi rimangono **direzioni di ricerca**, da introdurre soltanto quando gli esperimenti precedenti ne giustificheranno il costo.
+La Fase 2 aggiunge un **Mechanistic Temporal Representation Audit** multi-seed. Mantiene congelata
+l’architettura e misura separatamente riconoscimento del contenuto, ordine, consistenza temporale,
+utilità degli ultimi timestep, disponibilità lineare dell’informazione e uso causale mediante
+activation patching. Non viene introdotto un punteggio composito arbitrario: l’output primario è il
+Temporal Dynamics Utilization Profile descritto nel
+[`Brief di Fase 2`](docs/PHASE2_MECHANISTIC_TEMPORAL_AUDIT_IMPLEMENTATION_BRIEF.md).
+
+Nuovi encoder asincroni, LMU, delayed synapses, JEPA o predictive coding restano direzioni di
+ricerca da valutare dopo l’audit.
 
 ## Struttura essenziale
 
@@ -86,6 +94,37 @@ stimare confini temporali inesistenti nei frame salvati. La coppia è una second
 generata da DVS-GC, non un riordinamento frame-per-frame dello stesso tensore; questo dettaglio
 viene registrato negli artifact.
 
+## Fase 2: audit meccanicistico
+
+La Fase 2 usa una nuova partizione interna dell’official training e mantiene l’official test sotto
+embargo. Preparare una sola volta il dataset metadata-rich:
+
+```bash
+python -m etsr.cli phase2-prepare --config configs/phase2_dvsgc_order2.yaml
+```
+
+Addestrare gli stessi tre seed sul medesimo split manifest:
+
+```bash
+for seed in 42 123 2026; do
+  python -m etsr.cli phase2-train \
+    --config configs/phase2_dvsgc_order2.yaml --seed "$seed"
+done
+```
+
+Eseguire quindi l’audit con i tre checkpoint selezionati su `checkpoint_validation`:
+
+```bash
+python -m etsr.cli phase2-audit \
+  --config configs/phase2_dvsgc_order2.yaml \
+  --checkpoint 42=/path/seed42/best.pt \
+  --checkpoint 123=/path/seed123/best.pt \
+  --checkpoint 2026=/path/seed2026/best.pt
+```
+
+La preparazione fallisce se la root di output non è vuota; ogni cambiamento dei parametri richiede
+una nuova root versionata.
+
 ## Artifact e checkpoint
 
 Per ogni run:
@@ -132,6 +171,6 @@ Per staccarsi da `screen`: `Ctrl-a`, poi `d`.
 - metriche salvate in formati semplici e leggibili;
 - nessuna dipendenza da TensorBoard o servizi esterni;
 - componenti sostituibili tramite factory e configurazione YAML;
-- branch operativo previsto: `developer`.
+- ogni fase viene sviluppata su un branch dedicato e integrata soltanto dopo i controlli previsti.
 
 La visione completa è descritta in [`docs/vision.md`](docs/vision.md); l’alberatura commentata è in [`docs/repository_tree.md`](docs/repository_tree.md) e i controlli eseguiti sono riportati in [`docs/validation.md`](docs/validation.md).

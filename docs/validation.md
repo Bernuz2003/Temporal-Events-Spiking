@@ -1,4 +1,4 @@
-# Validazione della release
+# Validazione del repository
 
 La release è stata verificata prima della consegna con:
 
@@ -18,4 +18,29 @@ nel report di audit.
 - build ed esecuzione effettiva del container Singularity, perché Singularity e i server SMILIES non sono accessibili dal runtime corrente;
 - prestazioni numeriche rispetto al repository QKFormer ufficiale: la baseline è una riscrittura compatta con SSA corretta, non una replica bit-exact.
 
-Questi tre punti sono gate espliciti da completare sul branch `developer` prima di avviare le run scientifiche definitive.
+Questi tre punti restano gate espliciti da completare nell’ambiente server prima delle run
+scientifiche definitive.
+
+## Controlli dell’implementazione Fase 2
+
+Sul branch `feature/phase2-temporal-utilization-audit` sono stati completati:
+
+- `ruff check src tests`: superato;
+- `python -m compileall -q src tests`: superato;
+- `bash -n` sugli script Phase 2: superato;
+- dry-run dei target Make Phase 2: superato.
+
+Sono stati aggiunti test per split raggruppati, embargo del test, pairing inverso, fattorizzazione
+contenuto/ordine, ITC, AUC raw/normalizzata, late harm/rescue, rebinning count-preserving,
+allineamento causale e equivalenza tra tracing/prefissi e forward standard.
+
+Nel runtime usato per questa modifica non sono installati `pytest`, NumPy o Torch. Per rispettare il
+vincolo di non installare ambienti o dipendenze, la nuova suite non è stata eseguita qui. Deve essere
+eseguita nel container del progetto con:
+
+```bash
+pytest -q
+```
+
+Non sono stati eseguiti preparazione DVS-GC, training multi-seed o audit numerico: sono run
+scientifiche della Fase 2, non verifiche da simulare durante l’implementazione.

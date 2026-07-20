@@ -48,3 +48,23 @@ Questa release non li implementa, ma la roadmap prevede:
 - eventualmente un dataset di natura diversa per verificare la generalità dello stato temporale appreso.
 
 La scelta successiva sarà determinata dai risultati del Temporal Audit, non dall'intenzione di accumulare benchmark.
+
+## Dataset diagnostico della Fase 2
+
+La Fase 2 non riusa i frame order-2 già generati. Costruisce
+`data/dvsgc_phase2_order2_v1` dagli eventi della sola partizione ufficiale di training e salva per
+ogni sequenza i confini, le durate e il pairing inverso.
+
+Per ogni file e coppia di primitive, `AB` e `BA` contengono gli stessi chunk integrati con le durate
+associate alla stessa primitiva. Questo rende valide sia la ridistribuzione delle durate sia le
+intervenzioni causali locali. Gli split 70/15/15 sono raggruppati per file sorgente e fissati nel
+manifest. La partizione ufficiale di test non viene costruita né caricata.
+
+Preparazione:
+
+```bash
+python -m etsr.cli phase2-prepare --config configs/phase2_dvsgc_order2.yaml
+```
+
+La directory di output è immutabile: se non è vuota il comando fallisce. Usare una nuova root
+versionata per qualsiasi variazione della generazione.

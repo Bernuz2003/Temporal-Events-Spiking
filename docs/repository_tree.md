@@ -5,11 +5,13 @@ temporal-event-spiking-research/
 ├── configs/
 │   ├── phase1_dvsgc_order2.yaml
 │   ├── phase1_dvsgc_chain4.yaml
+│   ├── phase2_dvsgc_order2.yaml
 │   └── smoke.yaml
 ├── containers/
 │   └── temporal_event_spiking.def
 ├── docs/
 │   ├── datasets.md
+│   ├── PHASE2_MECHANISTIC_TEMPORAL_AUDIT_IMPLEMENTATION_BRIEF.md
 │   ├── experiment_protocol.md
 │   ├── metrics.md
 │   ├── phase1_scope.md
@@ -23,11 +25,15 @@ temporal-event-spiking-research/
 │   ├── prepare_dvsgc.sh
 │   ├── run_phase1.sh
 │   ├── run_phase1_screen.sh
+│   ├── prepare_phase2.sh
+│   ├── train_phase2_seed.sh
+│   ├── run_phase2_audit.sh
 │   └── smoke_test.sh
 ├── src/etsr/
 │   ├── data/
 │   ├── evaluation/
 │   ├── models/
+│   ├── phase2/
 │   ├── profiling/
 │   ├── training/
 │   ├── utils/

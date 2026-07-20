@@ -49,3 +49,17 @@ Il metodo risolto (`paired_reversed_action_sample`) viene salvato negli artifact
 come una permutazione frame-esatta: le due catene sono campioni DVS-GC validi generati separatamente.
 
 Nessuna perturbazione isolata dimostra comprensione causale. I risultati devono essere interpretati congiuntamente.
+
+## Protocollo specifico della Fase 2
+
+La Fase 2 deroga intenzionalmente alla procedura esplorativa a singolo seed: le anomalie della Fase 1
+devono essere replicate sui tre seed `42`, `123` e `2026` prima di orientare l’architettura.
+
+Usa esclusivamente `train_core`, `checkpoint_validation` e `development_audit`, ottenuti dalla
+partizione ufficiale di training e raggruppati per `source_filename`. L’official test è sotto embargo.
+Il medesimo split manifest è obbligatorio per tutti i checkpoint e viene verificato tramite hash.
+
+Il risultato primario è un profilo, non uno scalare: fattorizzazione contenuto/ordine, consistenza
+inversa e alle durate, utilità dell’evidenza, probe con controllo shuffled-label, shortcut di input e
+activation patching. `development_audit` non deve essere usato per selezionare checkpoint,
+regolarizzazione dei probe o configurazioni alternative.

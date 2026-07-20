@@ -4,13 +4,17 @@
 
 Stabilire se la baseline utilizza davvero l'ordine temporale e costruire un banco di misura affidabile.
 
-## Fase 2 — Representation Audit
+## Fase 2 — Mechanistic Temporal Representation Audit
 
-Confrontare il frame count standard con una sola sonda time-aware a costo controllato. Obiettivo: capire se il binning elimina informazione utile.
+Localizzare dove contenuto e ordine diventano disponibili, se vengono conservati e se sono usati
+causalmente. Replicare su tre seed, mantenere l’official test sotto embargo e produrre un Temporal
+Dynamics Utilization Profile senza modificare l’architettura.
 
-## Fase 3 — Temporal State
+## Fase 3 — Intervento architetturale guidato dall’audit
 
-Selezionare un solo stato temporale candidato, più ricco del LIF ma compatto. Confronto quasi iso-parametrico con la baseline.
+Selezionare una sola modifica coerente con il failure mode osservato: encoder/stato se l’ordine non
+emerge, preservazione/gating se si perde, readout se resta disponibile ma non viene usato. Il
+confronto dovrà essere quasi iso-parametrico.
 
 ## Fase 4 — Latent Predictive Training
 
