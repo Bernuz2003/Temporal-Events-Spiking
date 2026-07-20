@@ -93,14 +93,18 @@ def test_reverse_map_supports_explicit_multicharacter_tokens():
     assert reverse_class_map(classes) == {0: 1, 1: 0}
 
 
-def test_inverse_consistency_is_a_paired_prediction_property():
-    predictions = np.asarray([0, 1, 2, 5])
-    reverse_predictions = np.asarray([2, 4, 0, 3])
-    targets = np.asarray([0, 1, 2, 5])
+def test_inverse_consistency_reports_unique_pair_correctness():
+    predictions = np.asarray([0, 1, 2])
+    reverse_predictions = np.asarray([2, 4, 0])
+    targets = np.asarray([0, 1, 3])
 
     result = inverse_temporal_consistency(predictions, reverse_predictions, targets, CLASSES)
 
     assert result["inverse_temporal_consistency"] == 1.0
+    assert result["pairs"] == 3
+    assert result["canonical_accuracy"] == 2 / 3
+    assert result["reverse_target_accuracy"] == 2 / 3
+    assert result["joint_pair_accuracy"] == 2 / 3
 
 
 def test_prefix_metrics_measure_late_harm_and_rescue():

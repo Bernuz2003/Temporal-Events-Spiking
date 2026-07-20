@@ -4,6 +4,7 @@ from torch import nn
 
 from etsr.evaluation.causal import (
     patch_with_counterfactual_activations,
+    prediction_intervention_rates,
     segment_aligned_time_indices,
 )
 from etsr.evaluation.input_statistics import input_statistics
@@ -44,6 +45,18 @@ def test_counterfactual_patch_respects_mask_and_aligned_indices():
 
     expected = (donor[0, 1] + donor[0, 0]) / 4
     assert torch.allclose(logits[0], expected)
+
+
+def test_prediction_intervention_separates_inverse_presence_from_change():
+    baseline = torch.tensor([1, 2, 0, 3])
+    patched = torch.tensor([1, 0, 2, 4])
+    inverse_targets = torch.tensor([1, 0, 5, 4])
+
+    result = prediction_intervention_rates(baseline, patched, inverse_targets)
+
+    assert result["prediction_changed_rate"] == 0.75
+    assert result["inverse_prediction_rate"] == 0.75
+    assert result["prediction_changed_to_inverse_rate"] == 0.5
 
 
 def test_order_invariant_shortcut_features_do_not_encode_frame_order():

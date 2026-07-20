@@ -171,31 +171,6 @@ def fit_linear_probe(
     )
 
 
-def sample_probe_targets(
-    metadata: list[dict[str, Any]], primitive_ids: list[str]
-) -> dict[str, np.ndarray]:
-    primitive_to_idx = {name: index for index, name in enumerate(primitive_ids)}
-    content_values = sorted({tuple(sorted(item["primitive_sequence"])) for item in metadata})
-    content_to_idx = {value: index for index, value in enumerate(content_values)}
-    return {
-        "content": np.asarray(
-            [content_to_idx[tuple(sorted(item["primitive_sequence"]))] for item in metadata],
-            dtype=np.int64,
-        ),
-        "order": np.asarray(
-            [
-                int(tuple(item["primitive_sequence"]) != tuple(sorted(item["primitive_sequence"])))
-                for item in metadata
-            ],
-            dtype=np.int64,
-        ),
-        "first_primitive": np.asarray(
-            [primitive_to_idx[item["primitive_sequence"][0]] for item in metadata],
-            dtype=np.int64,
-        ),
-    }
-
-
 def timestep_primitive_targets(
     metadata: list[dict[str, Any]], primitive_ids: list[str], time_steps: int
 ) -> np.ndarray:

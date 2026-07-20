@@ -300,38 +300,58 @@ def reverse_class_map(classes: list[str]) -> dict[int, int]:
 
 
 def inverse_temporal_consistency(
-    predictions: np.ndarray,
+    canonical_predictions: np.ndarray,
     reverse_predictions: np.ndarray,
-    targets: np.ndarray,
+    canonical_targets: np.ndarray,
     classes: list[str],
 ) -> dict[str, Any]:
-    predictions = np.asarray(predictions, dtype=np.int64).reshape(-1)
+    canonical_predictions = np.asarray(canonical_predictions, dtype=np.int64).reshape(-1)
     reverse_predictions = np.asarray(reverse_predictions, dtype=np.int64).reshape(-1)
-    targets = np.asarray(targets, dtype=np.int64).reshape(-1)
-    if not (predictions.shape == reverse_predictions.shape == targets.shape):
+    canonical_targets = np.asarray(canonical_targets, dtype=np.int64).reshape(-1)
+    if not (
+        canonical_predictions.shape
+        == reverse_predictions.shape
+        == canonical_targets.shape
+    ):
         raise ValueError("Inverse consistency arrays must be aligned.")
+    if canonical_targets.size == 0:
+        raise ValueError("Inverse consistency requires at least one matched pair.")
     mapping = reverse_class_map(classes)
-    expected = np.asarray([mapping[int(value)] for value in predictions], dtype=np.int64)
-    consistent = reverse_predictions == expected
+    expected_predictions = np.asarray(
+        [mapping[int(value)] for value in canonical_predictions], dtype=np.int64
+    )
+    reverse_targets = np.asarray(
+        [mapping[int(value)] for value in canonical_targets], dtype=np.int64
+    )
+    consistent = reverse_predictions == expected_predictions
+    canonical_correct = canonical_predictions == canonical_targets
+    reverse_correct = reverse_predictions == reverse_targets
+    jointly_correct = canonical_correct & reverse_correct
 
     pair_rows = []
     signatures = _content_signatures(classes)
     for signature in sorted(set(signatures)):
         indices = [index for index, value in enumerate(signatures) if value == signature]
-        mask = np.isin(targets, indices)
+        mask = np.isin(canonical_targets, indices)
         if mask.any():
             pair_rows.append(
                 {
                     "content": "|".join(signature),
                     "classes": [classes[index] for index in indices],
-                    "samples": int(mask.sum()),
+                    "pairs": int(mask.sum()),
                     "inverse_temporal_consistency": float(consistent[mask].mean()),
+                    "canonical_accuracy": float(canonical_correct[mask].mean()),
+                    "reverse_target_accuracy": float(reverse_correct[mask].mean()),
+                    "joint_pair_accuracy": float(jointly_correct[mask].mean()),
                 }
             )
     return {
-        "samples": int(consistent.size),
-        "consistent_count": int(consistent.sum()),
+        "pairs": int(consistent.size),
+        "consistent_pair_count": int(consistent.sum()),
         "inverse_temporal_consistency": float(consistent.mean()),
+        "canonical_accuracy": float(canonical_correct.mean()),
+        "reverse_target_accuracy": float(reverse_correct.mean()),
+        "joint_pair_accuracy": float(jointly_correct.mean()),
         "per_content_pair": pair_rows,
     }
 

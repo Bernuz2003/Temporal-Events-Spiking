@@ -251,8 +251,10 @@ Per ogni coppia esatta \(x_{AB},x_{BA}\):
 ITC = P(\hat y(x_{BA})=\rho(\hat y(x_{AB}))).
 \]
 
-L’ITC è calcolata globalmente e per coppia di contenuto. È una proprietà delle predizioni accoppiate,
-non l’uguaglianza tra due accuracy aggregate.
+Ogni coppia `source_filename + contenuto non ordinato` contribuisce una sola volta. Oltre all’ITC
+sono riportate l’accuratezza dell’orientazione canonica, quella della sequenza inversa rispetto al
+target inverso e la probabilità che entrambi i membri siano corretti. In questo modo l’equivarianza
+delle predizioni resta distinta dalla correttezza congiunta.
 
 ### 7.2 Duration Redistribution Consistency
 
@@ -337,12 +339,15 @@ canonici sono:
 patch_embed1 → stage1 → patch_embed2 → stage2
 ```
 
-Sul backbone congelato vengono addestrati probe lineari per:
+Sul backbone congelato vengono addestrate tre sole famiglie di probe lineari:
 
-- contenuto ai timestep 4, 8, 12, 16;
-- ordine ai timestep 4, 8, 12, 16;
-- primitiva corrente a ogni timestep;
+- classe completa ai timestep 4, 8, 12, 16;
+- primitiva corrente sui timestep aggregati;
 - primitiva precedente dopo la transizione, anche in funzione del lag.
+
+Le predizioni del probe full-class vengono fattorizzate in Content Accuracy e Conditional Order
+Accuracy, globalmente e per coppia di contenuto. Non vengono addestrati probe separati di contenuto,
+ordine o coppia: il breakdown riusa le stesse predizioni multiclass.
 
 Il protocollo dei probe rispetta gli split:
 
@@ -388,6 +393,7 @@ Sono salvati, globalmente e per classe:
 
 - media e deviazione standard di \(\Delta m\);
 - tasso di cambiamento della predizione;
+- tasso di predizione della classe inversa dopo il patch;
 - tasso di cambiamento verso la classe inversa;
 - layer e regione patchata.
 
@@ -587,9 +593,9 @@ Il core è considerato tecnicamente valido quando:
 Il core è considerato scientificamente informativo quando permette di distinguere almeno questi
 quattro casi:
 
-1. **ordine non disponibile:** probe d’ordine bassi in tutti i layer;
-2. **ordine disponibile ma perso:** probe alti nei layer iniziali e bassi nei profondi;
-3. **ordine disponibile ma non usato:** probe alti, patching con effetto debole;
+1. **ordine non disponibile:** Conditional Order Accuracy del probe full-class bassa in tutti i layer;
+2. **ordine disponibile ma perso:** alta nei layer iniziali e bassa nei profondi;
+3. **ordine disponibile ma non usato:** fattorizzazione del probe alta, patching con effetto debole;
 4. **ordine usato ma aggiornato male:** ITC significativa, late harm robusta e patching finale con
    effetto distruttivo.
 

@@ -108,14 +108,18 @@ Ogni report deve usare l'espressione **energia teorica stimata**, mai sempliceme
 Il Temporal Dynamics Utilization Profile comprende:
 
 - `content_accuracy` e `conditional_order_accuracy`;
-- `inverse_temporal_consistency` sulle coppie esatte AB/BA;
+- `inverse_temporal_consistency` sulle coppie AB/BA uniche, accuratezza del membro inverso e
+  correttezza congiunta della coppia;
 - consistenza sotto ridistribuzione count-preserving delle durate;
 - curve a ogni timestep e Prefix AUC raw/normalizzata sull’intervallo 4/16–16/16;
 - Late Harm, Late Rescue e Net Late Utility, con bootstrap per file sorgente su 12/16→16/16;
-- accuratezza/Macro-F1 dei probe di contenuto, ordine, primitiva corrente e precedente;
+- accuratezza/Macro-F1 del probe full-class, fattorizzata in contenuto e ordine, più i probe di
+  primitiva corrente e precedente;
 - effetto causale sul margine classe corretta–classe inversa;
 - prestazione di baseline lineari su statistiche temporali e order-invariant dell’input.
 
 I probe misurano decodificabilità lineare; non vanno interpretati come prova di uso causale. Una
 conclusione causale richiede un effetto coerente dell’activation patching semanticamente allineato.
+Il tasso di predizioni inverse dopo il patch è riportato separatamente dal tasso di campioni la cui
+predizione cambia effettivamente verso la classe inversa.
 Le metriche sono aggregate per seed, ma non fuse in un punteggio composito.

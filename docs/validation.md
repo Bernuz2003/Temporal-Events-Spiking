@@ -32,7 +32,9 @@ Sul branch `refactor/mechanistic-temporal-audit` sono stati completati:
 
 Sono stati aggiunti test per split raggruppati, embargo del test, pairing inverso, fattorizzazione
 contenuto/ordine, ITC, AUC raw/normalizzata, late harm/rescue, rebinning count-preserving,
-allineamento causale e equivalenza tra tracing/prefissi e forward standard.
+allineamento causale e equivalenza tra tracing/prefissi e forward standard. L’ITC viene inoltre
+verificata sulle coppie uniche con correttezza congiunta, mentre le metriche causali distinguono la
+presenza di una predizione inversa dal cambiamento effettivo verso di essa.
 
 Nel runtime usato per questa modifica non sono installati `pytest`, NumPy o Torch. Per rispettare il
 vincolo di non installare ambienti o dipendenze, la nuova suite non è stata eseguita qui. Deve essere

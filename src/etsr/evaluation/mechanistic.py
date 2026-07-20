@@ -15,6 +15,7 @@ from etsr.data.perturbations import redistribute_segment_durations
 from etsr.evaluation.causal import (
     pairwise_margin,
     patch_with_counterfactual_activations,
+    prediction_intervention_rates,
     segment_aligned_time_indices,
 )
 from etsr.evaluation.input_statistics import collect_input_audit
@@ -33,7 +34,6 @@ from etsr.evaluation.metrics import (
 from etsr.evaluation.probes import (
     fit_linear_probe,
     previous_primitive_examples,
-    sample_probe_targets,
     timestep_primitive_targets,
 )
 from etsr.evaluation.tracing import TraceCollection, collect_traces, save_trace_npz
@@ -171,10 +171,14 @@ def _probe_row(name: str, layer: str, timestep: int | None, result) -> dict[str,
         "layer": layer,
         "timestep": timestep,
         "lag": None,
+        "content_pair": None,
+        "samples": result.audit_metrics["samples"],
         "regularization": result.regularization,
         "validation_macro_f1": result.validation_macro_f1,
         "audit_accuracy": result.audit_metrics["accuracy"],
         "audit_macro_f1": result.audit_metrics["macro_f1"],
+        "content_accuracy": None,
+        "conditional_order_accuracy": None,
         "shuffled_label_accuracy": result.shuffled_label_accuracy,
     }
 
@@ -185,6 +189,7 @@ def _run_probes(
     train_trace: TraceCollection,
     validation_trace: TraceCollection,
     audit_trace: TraceCollection,
+    classes: list[str],
 ) -> tuple[list[dict[str, Any]], dict[str, float]]:
     probe_config = config["mechanistic_audit"]["probes"]
     primitive_ids = [str(value) for value in config["dataset"]["primitive_ids"]]
@@ -196,11 +201,6 @@ def _run_probes(
         "seed": seed,
         "shuffled_label_control": bool(probe_config.get("shuffled_label_control", True)),
     }
-    sample_targets = {
-        "train": sample_probe_targets(train_trace.metadata, primitive_ids),
-        "validation": sample_probe_targets(validation_trace.metadata, primitive_ids),
-        "audit": sample_probe_targets(audit_trace.metadata, primitive_ids),
-    }
     rows = []
     summary: dict[str, float] = {}
     for layer in probe_config["layers"]:
@@ -208,17 +208,43 @@ def _run_probes(
             index = int(timestep) - 1
             if index >= audit_trace.features[layer].shape[1]:
                 continue
-            for target_name in ("content", "order"):
-                result = fit_linear_probe(
-                    train_trace.features[layer][:, index],
-                    sample_targets["train"][target_name],
-                    validation_trace.features[layer][:, index],
-                    sample_targets["validation"][target_name],
-                    audit_trace.features[layer][:, index],
-                    sample_targets["audit"][target_name],
-                    **common_kwargs,
+            result = fit_linear_probe(
+                train_trace.features[layer][:, index],
+                train_trace.targets,
+                validation_trace.features[layer][:, index],
+                validation_trace.targets,
+                audit_trace.features[layer][:, index],
+                audit_trace.targets,
+                **common_kwargs,
+            )
+            row = _probe_row("full_class", layer, int(timestep), result)
+            factorized = factorized_content_order_metrics(
+                audit_trace.targets, result.predictions, classes
+            )
+            row["content_accuracy"] = factorized["content_accuracy"]
+            row["conditional_order_accuracy"] = factorized[
+                "conditional_order_accuracy"
+            ]
+            rows.append(row)
+
+            # Per-content rows reuse the same classifier; they add interpretation, not more fits.
+            for pair in factorized["per_content_pair"]:
+                pair_row = dict(row)
+                pair_row.update(
+                    {
+                        "content_pair": pair["content"],
+                        "samples": pair["samples"],
+                        "validation_macro_f1": None,
+                        "audit_accuracy": None,
+                        "audit_macro_f1": None,
+                        "content_accuracy": pair["content_accuracy"],
+                        "conditional_order_accuracy": pair[
+                            "conditional_order_accuracy"
+                        ],
+                        "shuffled_label_accuracy": None,
+                    }
                 )
-                rows.append(_probe_row(target_name, layer, int(timestep), result))
+                rows.append(pair_row)
 
         train_current = timestep_primitive_targets(
             train_trace.metadata, primitive_ids, train_trace.features[layer].shape[1]
@@ -275,8 +301,15 @@ def _run_probes(
                     "layer": layer,
                     "timestep": None,
                     "lag": int(lag),
+                    "content_pair": None,
+                    "samples": int(mask.sum()),
+                    "regularization": None,
+                    "validation_macro_f1": None,
                     "audit_accuracy": metrics["accuracy"],
                     "audit_macro_f1": metrics["macro_f1"],
+                    "content_accuracy": None,
+                    "conditional_order_accuracy": None,
+                    "shuffled_label_accuracy": None,
                 }
             )
     return rows, summary
@@ -379,6 +412,7 @@ def _run_causal_audit(
         device=device,
     )
     baseline_logits = model(frames)
+    baseline_predictions = baseline_logits.argmax(dim=1)
     baseline_margin = pairwise_margin(baseline_logits, targets, inverse_targets)
     recipient_lengths = torch.as_tensor(
         [raw_dataset.metadata[index]["segment_lengths"] for index in selected],
@@ -411,6 +445,7 @@ def _run_causal_audit(
                 mask,
                 donor_time_indices=donor_time_indices,
             )
+            patched_predictions = patched_logits.argmax(dim=1)
             patched_margin = pairwise_margin(patched_logits, targets, inverse_targets)
             effect = patched_margin - baseline_margin
             common = {
@@ -426,14 +461,8 @@ def _run_causal_audit(
                     "samples": len(selected),
                     "mean_pairwise_margin_effect": float(effect.mean().item()),
                     "std_pairwise_margin_effect": float(effect.std(unbiased=True).item()),
-                    "prediction_changed_rate": float(
-                        (patched_logits.argmax(dim=1) != baseline_logits.argmax(dim=1))
-                        .float()
-                        .mean()
-                        .item()
-                    ),
-                    "prediction_changed_to_inverse_rate": float(
-                        (patched_logits.argmax(dim=1) == inverse_targets).float().mean().item()
+                    **prediction_intervention_rates(
+                        baseline_predictions, patched_predictions, inverse_targets
                     ),
                 }
             )
@@ -452,23 +481,10 @@ def _run_causal_audit(
                             if class_effect.numel() > 1
                             else 0.0
                         ),
-                        "prediction_changed_rate": float(
-                            (
-                                patched_logits.argmax(dim=1)[class_mask]
-                                != baseline_logits.argmax(dim=1)[class_mask]
-                            )
-                            .float()
-                            .mean()
-                            .item()
-                        ),
-                        "prediction_changed_to_inverse_rate": float(
-                            (
-                                patched_logits.argmax(dim=1)[class_mask]
-                                == inverse_targets[class_mask]
-                            )
-                            .float()
-                            .mean()
-                            .item()
+                        **prediction_intervention_rates(
+                            baseline_predictions[class_mask],
+                            patched_predictions[class_mask],
+                            inverse_targets[class_mask],
                         ),
                     }
                 )
@@ -560,13 +576,19 @@ def run_mechanistic_audit(
         )
         predictions = audit_trace.predictions
         raw_audit: MatchedDVSGestureChain = bundle.holdout.dataset
-        # reverse_indices is defined by the dataset manifest, so this compares exact AB/BA pairs
-        # from the same source rather than relying on class-level aggregate accuracy.
-        reverse_predictions = np.asarray(
-            [predictions[raw_audit.reverse_indices[index]] for index in range(len(raw_audit))]
-        )
+        expected_indices = np.arange(len(raw_audit), dtype=audit_trace.indices.dtype)
+        if not np.array_equal(audit_trace.indices, expected_indices):
+            raise RuntimeError("Audit traces are not aligned with matched dataset indices.")
+        matched_pairs = raw_audit.matched_reverse_pairs()
+        canonical_indices = np.asarray([pair[0] for pair in matched_pairs], dtype=np.int64)
+        reverse_indices = np.asarray([pair[1] for pair in matched_pairs], dtype=np.int64)
+        # Each source/content pair contributes once. The dataset ordering picks one orientation as
+        # canonical, while reverse_indices still comes from the exact manifest pairing.
         inverse_metrics = inverse_temporal_consistency(
-            predictions, reverse_predictions, audit_trace.targets, classes
+            predictions[canonical_indices],
+            predictions[reverse_indices],
+            audit_trace.targets[canonical_indices],
+            classes,
         )
 
         source_groups = np.asarray([item["source_filename"] for item in audit_trace.metadata])
@@ -598,7 +620,7 @@ def run_mechanistic_audit(
         train_trace = collect_traces(model, train_loader, device, layers)
         validation_trace = collect_traces(model, validation_loader, device, layers)
         probe_rows, probe_summary = _run_probes(
-            config, seed, train_trace, validation_trace, audit_trace
+            config, seed, train_trace, validation_trace, audit_trace, classes
         )
         shortcut_rows, input_rows = _run_shortcut_baselines(
             config, seed, train_loader, validation_loader, audit_loader
@@ -651,6 +673,9 @@ def run_mechanistic_audit(
                 "conditional_order_accuracy"
             ],
             "inverse_temporal_consistency": inverse_metrics["inverse_temporal_consistency"],
+            "canonical_pair_accuracy": inverse_metrics["canonical_accuracy"],
+            "reverse_target_accuracy": inverse_metrics["reverse_target_accuracy"],
+            "joint_pair_accuracy": inverse_metrics["joint_pair_accuracy"],
             "prefix_accuracy_auc_raw": trace_summary["prefix_accuracy_auc_raw"],
             "prefix_accuracy_auc_normalized": trace_summary["prefix_accuracy_auc_normalized"],
             "net_late_utility": tail_row["net_late_utility"],
@@ -673,7 +698,12 @@ def run_mechanistic_audit(
         },
         "inverse_pair": {
             "keys": ["content"],
-            "values": ["inverse_temporal_consistency"],
+            "values": [
+                "inverse_temporal_consistency",
+                "canonical_accuracy",
+                "reverse_target_accuracy",
+                "joint_pair_accuracy",
+            ],
         },
         "prefix": {
             "keys": ["timestep", "fraction"],
@@ -706,11 +736,13 @@ def run_mechanistic_audit(
             ],
         },
         "probe": {
-            "keys": ["probe", "layer", "timestep", "lag"],
+            "keys": ["probe", "layer", "timestep", "lag", "content_pair"],
             "values": [
                 "validation_macro_f1",
                 "audit_accuracy",
                 "audit_macro_f1",
+                "content_accuracy",
+                "conditional_order_accuracy",
                 "shuffled_label_accuracy",
             ],
         },
@@ -729,6 +761,7 @@ def run_mechanistic_audit(
             "values": [
                 "mean_pairwise_margin_effect",
                 "prediction_changed_rate",
+                "inverse_prediction_rate",
                 "prediction_changed_to_inverse_rate",
             ],
         },
@@ -748,6 +781,9 @@ def run_mechanistic_audit(
         "content_accuracy",
         "conditional_order_accuracy",
         "inverse_temporal_consistency",
+        "canonical_pair_accuracy",
+        "reverse_target_accuracy",
+        "joint_pair_accuracy",
         "prefix_accuracy_auc_raw",
         "prefix_accuracy_auc_normalized",
         "net_late_utility",
@@ -769,6 +805,7 @@ def run_mechanistic_audit(
             ],
             "semantic_temporal_consistency": [
                 "inverse_temporal_consistency",
+                "joint_pair_accuracy",
                 "duration_prediction_consistency",
             ],
             "evidence_update_utility": [

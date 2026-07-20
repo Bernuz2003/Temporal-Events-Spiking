@@ -68,6 +68,7 @@ def test_matched_dataset_keeps_reverse_pairs_inside_the_split(tmp_path):
 
     assert len(dataset) == 2
     assert dataset.reverse_indices == {0: 1, 1: 0}
+    assert dataset.matched_reverse_pairs() == [(0, 1)]
     assert dataset[0][0].shape == (4, 2, 8, 8)
 
 

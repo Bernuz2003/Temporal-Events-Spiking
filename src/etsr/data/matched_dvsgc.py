@@ -372,6 +372,14 @@ class MatchedDVSGestureChain(Dataset):
     def metadata_for_index(self, index: int) -> dict[str, Any]:
         return self.metadata[index]
 
+    def matched_reverse_pairs(self) -> list[tuple[int, int]]:
+        """Return each exact reverse-action pair once, in canonical dataset order."""
+        return [
+            (index, reverse_index)
+            for index, reverse_index in self.reverse_indices.items()
+            if index < reverse_index
+        ]
+
 
 def build_matched_dvsgc_bundle(dataset_config: dict[str, Any]) -> DatasetBundle:
     if dataset_config.get("name") != "matched_dvsgc":

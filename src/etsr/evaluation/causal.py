@@ -3,6 +3,30 @@ from __future__ import annotations
 import torch
 
 
+def prediction_intervention_rates(
+    baseline_predictions: torch.Tensor,
+    patched_predictions: torch.Tensor,
+    inverse_targets: torch.Tensor,
+) -> dict[str, float]:
+    """Summarize whether an intervention changes predictions and where they land."""
+    if not (
+        baseline_predictions.shape == patched_predictions.shape == inverse_targets.shape
+    ):
+        raise ValueError("Prediction and inverse-target tensors must be aligned.")
+    if baseline_predictions.numel() == 0:
+        raise ValueError("Prediction intervention rates require at least one sample.")
+
+    changed = patched_predictions != baseline_predictions
+    predicts_inverse = patched_predictions == inverse_targets
+    return {
+        "prediction_changed_rate": float(changed.float().mean().item()),
+        "inverse_prediction_rate": float(predicts_inverse.float().mean().item()),
+        "prediction_changed_to_inverse_rate": float(
+            (changed & predicts_inverse).float().mean().item()
+        ),
+    }
+
+
 def segment_aligned_time_indices(
     recipient_lengths: torch.Tensor, donor_lengths: torch.Tensor
 ) -> torch.Tensor:
