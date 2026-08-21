@@ -10,6 +10,7 @@ from etsr.evaluation.mechanistic import (
     run_mechanistic_audit,
 )
 from etsr.runner import run_temporal_audit, train_experiment
+from etsr.smoke import run_smoke_test
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,19 +21,24 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--config", required=True)
     train.add_argument("--seed", type=int)
 
+    smoke = subparsers.add_parser(
+        "smoke", help="Run the bounded synthetic end-to-end integration check"
+    )
+    smoke.add_argument("--config", default="configs/smoke.yaml")
+
     audit = subparsers.add_parser(
-        "temporal-audit", help="Run perturbation and prefix diagnostics"
+        "temporal-audit", help="Run the frozen frame/DVS-GC perturbation regression"
     )
     audit.add_argument("--config", required=True)
     audit.add_argument("--checkpoint", required=True)
 
     prepare = subparsers.add_parser(
-        "prepare-matched-dvsgc", help="Prepare grouped, boundary-aware DVS-GC samples"
+        "prepare-matched-dvsgc", help="Prepare frozen grouped DVS-GC regression data"
     )
     prepare.add_argument("--config", required=True)
 
     mechanistic = subparsers.add_parser(
-        "mechanistic-audit", help="Run the multi-seed mechanistic temporal audit"
+        "mechanistic-audit", help="Run the frozen multi-seed DVS-GC mechanistic audit"
     )
     mechanistic.add_argument("--config", required=True)
     mechanistic.add_argument(
@@ -46,6 +52,8 @@ def main() -> None:
     config = load_config(args.config)
     if args.command == "train":
         print(train_experiment(config, seed=args.seed))
+    elif args.command == "smoke":
+        print(run_smoke_test(config))
     elif args.command == "temporal-audit":
         print(run_temporal_audit(config, args.checkpoint))
     elif args.command == "prepare-matched-dvsgc":

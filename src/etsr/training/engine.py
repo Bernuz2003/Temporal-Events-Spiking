@@ -1,3 +1,9 @@
+"""Dense-frame training/evaluation engine retained through P0.
+
+The `(frames, targets, indices)` batch contract is an observed limitation, not the canonical API for
+the future raw-event DVS-Lip pipeline.
+"""
+
 from __future__ import annotations
 
 import logging

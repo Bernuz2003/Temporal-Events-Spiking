@@ -1,3 +1,8 @@
+"""Frozen matched DVS-GC dataset used by the closed mechanistic-audit phase.
+
+Changes are limited to verified regression fixes. This is not a template for raw DVS-Lip loading.
+"""
+
 from __future__ import annotations
 
 import hashlib

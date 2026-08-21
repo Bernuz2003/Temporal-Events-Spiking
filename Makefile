@@ -1,5 +1,7 @@
 PYTHON ?= python
+RUFF ?= ruff
 CONFIG ?= configs/temporal_audit_dvsgc_order2.yaml
+SMOKE_CONFIG ?= configs/smoke.yaml
 AUDIT_CONFIG ?= configs/mechanistic_audit_dvsgc_order2.yaml
 CHECKPOINT ?=
 SEED ?=
@@ -18,10 +20,10 @@ install-dev:
 	$(PYTHON) -m pip install --no-deps dvsgc==0.1.2
 
 test:
-	pytest -q
+	$(PYTHON) -m pytest -q
 
 smoke:
-	bash scripts/smoke_test.sh
+	PYTHON="$(PYTHON)" bash scripts/smoke_test.sh "$(SMOKE_CONFIG)"
 
 train:
 	$(PYTHON) -m etsr.cli train --config $(CONFIG)
@@ -42,7 +44,7 @@ mechanistic-audit:
 	bash scripts/run_mechanistic_audit.sh $(AUDIT_CONFIG) $(CHECKPOINTS)
 
 lint:
-	ruff check src tests
+	$(RUFF) check src tests
 
 clean:
 	rm -rf .pytest_cache .ruff_cache build dist src/*.egg-info

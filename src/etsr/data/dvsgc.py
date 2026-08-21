@@ -1,3 +1,8 @@
+"""Frozen DVS-Gesture-Chain adapter retained for regression and provenance.
+
+New DVS-Lip data contracts must not depend on this frame-first adapter.
+"""
+
 from __future__ import annotations
 
 from typing import Any

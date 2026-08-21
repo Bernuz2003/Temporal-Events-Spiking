@@ -1,3 +1,9 @@
+"""Current dense-frame dataset factory.
+
+It remains for smoke and DVS-GC regression. Raw DVS-Lip must use an explicit event-sample contract
+rather than another branch that returns frame tuples from this factory.
+"""
+
 from __future__ import annotations
 
 from typing import Any

@@ -1,3 +1,9 @@
+"""Frozen orchestrator for the closed DVS-GC mechanistic temporal audit.
+
+Neutral utilities may be extracted when justified, but new DVS-Lip workflows must not extend this
+orchestrator.
+"""
+
 from __future__ import annotations
 
 import datetime as dt

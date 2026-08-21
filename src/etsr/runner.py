@@ -18,7 +18,13 @@ from etsr.evaluation.metrics import (
 )
 from etsr.evaluation.reports import save_confusion_matrix, save_prefix_curve
 from etsr.models.factory import build_model
-from etsr.reproducibility import git_commit, git_is_dirty, seed_everything, sha256_file
+from etsr.reproducibility import (
+    collect_environment,
+    git_commit,
+    git_is_dirty,
+    seed_everything,
+    sha256_file,
+)
 from etsr.training.checkpointing import save_checkpoint
 from etsr.training.engine import (
     evaluate,
@@ -100,6 +106,10 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
         "classes": bundle.classes,
         "official_test_used": False,
     }
+    environment_path = artifact_dir / "environment.json"
+    write_json(collect_environment(device), environment_path)
+    runtime["environment_file"] = environment_path.name
+    runtime["environment_sha256"] = sha256_file(environment_path)
     dataset_root = Path(config["dataset"].get("root", ""))
     for name in ("dataset_manifest.json", "split_manifest.json"):
         path = dataset_root / name
@@ -182,6 +192,8 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
         "git_commit": git_commit(),
         "git_dirty": git_is_dirty(),
         "official_test_used": False,
+        "environment": str(environment_path.resolve()),
+        "environment_sha256": runtime["environment_sha256"],
     }
 
     if bool(config["training"].get("evaluate_holdout", True)):
