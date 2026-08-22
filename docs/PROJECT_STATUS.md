@@ -27,17 +27,20 @@
 - Candidate recipe `dvslip_e0_r0` is implemented in `configs/dvslip_e0_recipe_r0.yaml` under the
   two-run maximum budget of D015. It adds only warm-up/cosine control, correct gradient accumulation
   and train-only horizontal flip. No DVS-Lip training has been run and the recipe is not frozen.
-- The recipe implementation gate passes 56 unit tests and the bounded synthetic end-to-end smoke.
+- The original recipe gate passes 56 tests in the project environment and the bounded smoke. The
+  expanded shortcut/provenance suite passes 60 tests in a compatible local Torch environment;
+  confirmation in the project environment remains pending.
 - D016 records the verified physical-duration shortcut risk. The fixed global-statistic control,
   per-sample post-run diagnostics, dataset-index provenance and CUDA peak-memory logging are
   implemented; their expanded test suite and real shortcut artifact are not yet verified.
-- The current preflight artifact is schema 2 and must be regenerated as schema 3 after the current
-  implementation is committed. No important run may start from a dirty worktree.
+- The implementation is committed and the regenerated schema-3 preflight is ready, has no protocol
+  blockers and reproduces the complete content hash over all 14,896 train samples. No important run
+  may start from a dirty worktree.
 
 ## Open gate
 
-- Verify the expanded tests, commit the implementation, regenerate schema-3 preflight, then run the
-  shortcut and one-epoch cost gates.
+- Confirm the expanded suite in the project environment, then run the shortcut and one-epoch cost
+  gates from a clean commit.
 
 ## Next implementation task
 
