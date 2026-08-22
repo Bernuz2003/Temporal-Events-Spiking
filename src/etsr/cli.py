@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from etsr.config import load_config
+from etsr.data.dvslip_preflight import run_dvslip_preflight
 from etsr.data.matched_dvsgc import prepare_matched_dvsgc
 from etsr.evaluation.mechanistic import (
     parse_seed_checkpoints,
@@ -25,6 +26,27 @@ def build_parser() -> argparse.ArgumentParser:
         "smoke", help="Run the bounded synthetic end-to-end integration check"
     )
     smoke.add_argument("--config", default="configs/smoke.yaml")
+
+    preflight = subparsers.add_parser(
+        "preflight-dvslip",
+        help="Validate the prospective official-train DVS-Lip archive without opening test",
+    )
+    preflight.add_argument("--train-root", required=True)
+    preflight.add_argument("--speaker-manifest")
+    preflight.add_argument("--split-manifest")
+    preflight.add_argument(
+        "--class-groups",
+        default="configs/dvslip_class_groups.json",
+        help="Versioned paper-semantic Acc1/Acc2 class manifest",
+    )
+    preflight.add_argument("--terms")
+    preflight.add_argument("--output", default="artifacts/dvslip_preflight.json")
+    preflight.add_argument("--samples-per-class", type=int, default=1)
+    preflight.add_argument(
+        "--hash-samples",
+        action="store_true",
+        help="Hash every official-train sample; potentially slow on the full archive",
+    )
 
     audit = subparsers.add_parser(
         "temporal-audit", help="Run the frozen frame/DVS-GC perturbation regression"
@@ -49,14 +71,38 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    config = load_config(args.config)
     if args.command == "train":
+        config = load_config(args.config)
         print(train_experiment(config, seed=args.seed))
     elif args.command == "smoke":
+        config = load_config(args.config)
         print(run_smoke_test(config))
+    elif args.command == "preflight-dvslip":
+        report = run_dvslip_preflight(
+            args.train_root,
+            speaker_manifest=args.speaker_manifest,
+            split_manifest=args.split_manifest,
+            class_groups_manifest=args.class_groups,
+            terms_path=args.terms,
+            output_path=args.output,
+            hash_samples=args.hash_samples,
+            samples_per_class=args.samples_per_class,
+        )
+        print(
+            {
+                "validation_status": report["validation_status"],
+                "preflight_gate_status": report["preflight_gate_status"],
+                "protocol_gate_status": report["protocol_gate_status"],
+                "protocol_blockers": report["protocol_blockers"],
+                "official_test_used": report["official_test_used"],
+                "output": str(Path(args.output).resolve()),
+            }
+        )
     elif args.command == "temporal-audit":
+        config = load_config(args.config)
         print(run_temporal_audit(config, args.checkpoint))
     elif args.command == "prepare-matched-dvsgc":
+        config = load_config(args.config)
         manifest = prepare_matched_dvsgc(config)
         root = Path(config["dataset"]["root"])
         print(
@@ -69,6 +115,7 @@ def main() -> None:
             }
         )
     elif args.command == "mechanistic-audit":
+        config = load_config(args.config)
         result = run_mechanistic_audit(config, parse_seed_checkpoints(args.checkpoint))
         print(
             {

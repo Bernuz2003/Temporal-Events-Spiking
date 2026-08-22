@@ -2,7 +2,8 @@
 
 Questa directory separa la strategia scientifica stabile, lo stato operativo aggiornabile e la
 documentazione storica. Il progetto è nella transizione dall'audit DVS-Gesture-Chain alla costruzione
-DVS-Lip; nessun componente DVS-Lip è ancora implementato.
+DVS-Lip; il preflight train-only è implementato, mentre loader, encoder e modello DVS-Lip non lo
+sono ancora.
 
 ## Ordine di autorità
 
@@ -31,6 +32,7 @@ Una discrepanza non va risolta scegliendo silenziosamente il documento più como
 | [`REPOSITORY_STATE.md`](REPOSITORY_STATE.md) | fatti osservati su codice e ambiente | dopo verifiche strutturali |
 | [`REPOSITORY_TREE.md`](REPOSITORY_TREE.md) | mappa corrente dei file e dei confini | dopo cambi strutturali |
 | [`LEGACY_BOUNDARY.md`](LEGACY_BOUNDARY.md) | confine frozen DVS-GC e regole di dipendenza | prima di spostare/rimuovere legacy |
+| [`DVSLIP_PROTOCOL.md`](DVSLIP_PROTOCOL.md) | layout, split, metriche, licenza ed embargo DVS-Lip | durante P1-01/P1-04 |
 | [`EXPERIMENT_LEDGER.md`](EXPERIMENT_LEDGER.md) | run che influenzano decisioni | dopo ogni run rilevante |
 | [`SOURCES.md`](SOURCES.md) | fonti primarie, stato di lettura e claim consentiti | durante la review |
 | [`TRAINING_RECIPE.md`](TRAINING_RECIPE.md) | ricetta E0, budget di tuning e freeze | a ogni modifica della ricetta |

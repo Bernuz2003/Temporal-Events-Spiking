@@ -6,8 +6,14 @@ AUDIT_CONFIG ?= configs/mechanistic_audit_dvsgc_order2.yaml
 CHECKPOINT ?=
 SEED ?=
 CHECKPOINTS ?=
+DVSLIP_TRAIN_ROOT ?=
+DVSLIP_SPEAKER_MANIFEST ?=
+DVSLIP_SPLIT_MANIFEST ?=
+DVSLIP_TERMS ?=
+DVSLIP_PREFLIGHT_OUTPUT ?= artifacts/dvslip_preflight.json
+DVSLIP_HASH_SAMPLES ?= 0
 
-.PHONY: install install-dev test smoke train temporal-audit prepare-matched-dvsgc train-audit-seed mechanistic-audit lint clean
+.PHONY: install install-dev test smoke preflight-dvslip train temporal-audit prepare-matched-dvsgc train-audit-seed mechanistic-audit lint clean
 
 install:
 	$(PYTHON) -m pip install -e .
@@ -24,6 +30,10 @@ test:
 
 smoke:
 	PYTHON="$(PYTHON)" bash scripts/smoke_test.sh "$(SMOKE_CONFIG)"
+
+preflight-dvslip:
+	@test -n "$(DVSLIP_TRAIN_ROOT)" || (echo "Uso: make preflight-dvslip DVSLIP_TRAIN_ROOT=/path/to/DVS-Lip/train" && exit 1)
+	$(PYTHON) -m etsr.cli preflight-dvslip --train-root "$(DVSLIP_TRAIN_ROOT)" --output "$(DVSLIP_PREFLIGHT_OUTPUT)" $(if $(DVSLIP_SPEAKER_MANIFEST),--speaker-manifest "$(DVSLIP_SPEAKER_MANIFEST)") $(if $(DVSLIP_SPLIT_MANIFEST),--split-manifest "$(DVSLIP_SPLIT_MANIFEST)") $(if $(DVSLIP_TERMS),--terms "$(DVSLIP_TERMS)") $(if $(filter 1 true yes,$(DVSLIP_HASH_SAMPLES)),--hash-samples)
 
 train:
 	$(PYTHON) -m etsr.cli train --config $(CONFIG)

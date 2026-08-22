@@ -9,12 +9,18 @@ trasferimento.
 Il progetto è nella fase **P0 — repository transition and reproducibility**.
 
 - La fase DVS-Gesture-Chain è chiusa e congelata al tag `dvsgc-audit-complete-2026`.
-- Il lavoro attivo avviene sul branch `developer`, derivato da `806c0aa`.
+- Il lavoro attivo avviene sul branch `developer`; il primo hardening verificato è al commit
+  `0b7c552`, mentre `806c0aa` resta lo snapshot congelato della fase precedente.
 - Il codice esistente implementa ancora la pipeline frame-first DVS-GC e la baseline diagnostica
   Mini-QKFormer; tali percorsi sono ora marcati frozen.
-- Loader raw-event DVS-Lip, encoder espliciti e temporal core stateful non sono ancora implementati.
+- Il preflight DVS-Lip train-only e il manifest semantico Acc1/Acc2 sono implementati e coperti da
+  test; loader raw-event, encoder espliciti e temporal core stateful non sono ancora implementati.
+- La revisione primaria S001/S003/S006 ha confermato che i repository pubblici non forniscono la
+  mappa campione→speaker e selezionano sul test ufficiale; il loader resta quindi bloccato dal gate
+  documentato in [`docs/DVSLIP_PROTOCOL.md`](docs/DVSLIP_PROTOCOL.md).
 - Il P0 hardening ha ripristinato un smoke sintetico limitato, aggiunto regressioni di isolamento LIF
-  e introdotto `environment.json`; i controlli runtime attendono esecuzione nel container supportato.
+  e introdotto `environment.json`: 35 test e lo smoke CPU end-to-end risultano verificati. Restano
+  aperti il sanity storico, SMILIES/CUDA e il remote GitLab.
 
 La direzione non è “aggiungere DVS-Lip al vecchio dataset factory”. La futura composizione prevista è:
 
@@ -75,7 +81,18 @@ eseguirlo soltanto nel container supportato. Lo stato verificato dell'ambiente c
 make smoke
 ```
 
-Un successo produce `smoke_summary.json` insieme agli artifact di training, profiling e audit.
+Un successo produce `smoke_summary.json` insieme agli artifact di training, profiling e audit. Il
+run verificato `smoke_synthetic__20260821_193155__seed7` ha superato il gate; accuracy casuale e
+firing profilato nullo confermano che questo resta un test di plumbing, non un benchmark numerico.
+
+Il primo controllo DVS-Lip, che rifiuta un root `test/` e non avvia training, è:
+
+```bash
+make preflight-dvslip DVSLIP_TRAIN_ROOT=/absolute/path/to/DVS-Lip/train
+```
+
+Formati dei manifest e variante con hash completi sono descritti in
+[`docs/DVSLIP_PROTOCOL.md`](docs/DVSLIP_PROTOCOL.md).
 
 ## Codice storico DVS-GC
 

@@ -32,25 +32,27 @@ Completed in the documentation-transition iteration:
 - archived DVS-GC narrative documents and notebook without deleting provenance;
 - introduced active charter navigation, rules, decisions, task tracking and technical-state records.
 
-Implemented but awaiting runtime evidence:
+Implemented and verified locally in the supported project environment:
 
 - bounded synthetic `etsr smoke` / `make smoke` path;
 - explicit repeated-call and batch-isolation tests for `MultiStepLIF`;
 - allow-listed `environment.json` capture for every training run;
 - frozen DVS-GC dependency/retirement policy.
 
+The owner-run suite passed all 35 tests. The bounded CPU smoke passed at clean commit `0b7c552` and
+produced the required environment, checkpoint, profile and audit artifacts. Its chance-level result
+and zero profiled firing are expected to carry no scientific claim.
+
 Still required before P0 may close:
 
-- execute `pytest -q` in a supported environment with dependencies;
-- run the full suite and end-to-end smoke in the supported environment;
 - run one historical sanity benchmark with available data/checkpoint and record it;
 - verify the Singularity build, CUDA and environment capture on SMILIES;
 - reconcile the charter's SMILIES GitLab workflow with the currently configured GitHub-only remote;
-- verify the new `environment.json` artifact on CPU/GPU as available;
-- use the regression result to close the frozen-code boundary task.
+- verify the new `environment.json` artifact on GPU when SMILIES is available.
 
 Go/no-go: **NO-GO for DVS-Lip implementation until the remaining P0 items are complete or explicitly
-waived in `DECISIONS.md`.**
+waived in `DECISIONS.md`. Primary-source review may proceed under D009 because it changes no runtime
+contract and reduces uncertainty before implementation.**
 
 ## P1 — DVS-Lip foundation
 
@@ -64,7 +66,13 @@ Ordered outcomes:
 6. one-seed capacity scan near 0.5M, 1M and 2M.
 
 The official test remains embargoed. Parameter-cap revision requires owner approval and a decision
-record.
+record. S001, S003 and S006 are now source-verified; all three public implementations use the
+official test during model development, and none supplies the sample-to-speaker mapping needed for
+the project's 24/6 train/validation manifest. Dataset implementation therefore remains blocked by
+the acceptance gate in [`DVSLIP_PROTOCOL.md`](DVSLIP_PROTOCOL.md), while the remaining source
+review is deferred until an active implementation task requires it under D010. The train-only
+preflight, semantic class manifest and six regressions are implemented; the next step is running
+that tooling against the real archive and supplied protocol metadata.
 
 ## P2 — validity and interaction
 

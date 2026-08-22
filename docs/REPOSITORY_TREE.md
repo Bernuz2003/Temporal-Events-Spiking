@@ -1,11 +1,12 @@
 # Repository tree
 
 **Updated:** 2026-08-21
-**Scope:** transition state before DVS-Lip implementation
+**Scope:** transition state with DVS-Lip protocol preflight, before raw-loader implementation
 
 ```text
 temporal-event-spiking-research/
 ├── configs/
+│   ├── dvslip_class_groups.json    # paper-semantic 100-class/Acc1/Acc2 manifest
 │   ├── smoke.yaml                   # bounded synthetic integration config
 │   └── *dvsgc*.yaml                # frozen DVS-GC experiment configs
 ├── containers/
@@ -24,6 +25,7 @@ temporal-event-spiking-research/
 │   ├── REPOSITORY_STATE.md
 │   ├── REPOSITORY_TREE.md
 │   ├── LEGACY_BOUNDARY.md
+│   ├── DVSLIP_PROTOCOL.md
 │   ├── EXPERIMENT_LEDGER.md
 │   ├── SOURCES.md
 │   ├── TRAINING_RECIPE.md
@@ -41,7 +43,9 @@ temporal-event-spiking-research/
 │   ├── smoke_test.sh                # bounded end-to-end launcher
 │   └── remaining scripts            # frozen DVS-GC launch/preparation paths
 ├── src/etsr/
-│   ├── data/                        # frame-first dataset path
+│   ├── data/
+│   │   ├── dvslip_preflight.py      # strict official-train protocol gate; not a loader
+│   │   └── remaining modules        # frozen frame-first dataset paths
 │   ├── evaluation/                  # behavioral/mechanistic audit tooling
 │   ├── models/                      # Mini-QKFormer and local MultiStepLIF
 │   ├── profiling/                   # firing, MAC/AC and Horowitz proxy
@@ -51,8 +55,8 @@ temporal-event-spiking-research/
 │   ├── config.py
 │   ├── reproducibility.py
 │   └── runner.py
-├── tests/                           # unit/regression tests; runtime count pending pytest
-├── Makefile                         # quality, bounded smoke and legacy regression targets
+├── tests/                           # 41 unit/regression tests, runtime-verified
+├── Makefile                         # quality, preflight, bounded smoke and legacy targets
 ├── pyproject.toml
 ├── requirements.txt
 └── README.md

@@ -77,10 +77,10 @@ convenience.
 
 ## Why code is not removed yet
 
-- pytest cannot run in the present local environment;
+- the full suite and bounded smoke now pass in the owner's supported environment;
 - P0-10 still requires one historical sanity benchmark;
 - existing configs/scripts provide the command surface for that check;
-- moving many imports without runtime evidence would weaken rather than improve reproducibility.
+- removing the legacy command surface before that benchmark would prevent the required regression.
 
 ## Retirement gate
 

@@ -29,8 +29,10 @@ OPEN QUESTION missing information able to change the plan
 5. Identify split, capacity, recipe, causality, state and hardware confounds.
 6. Add or update the task and define evidence required for completion.
 
-Do not start a new temporal module before the source review, novelty matrix and DVS-Lip Pareto table
-required by T101–T103 are complete.
+Review sources just in time: read and update the entries required by the active external mechanism
+immediately before implementing it; do not bulk-review unrelated future methods. Do not approve a
+final architecture or numerical success threshold until the required novelty matrix and DVS-Lip
+Pareto anchors are complete.
 
 ## 3. Experimental validity
 

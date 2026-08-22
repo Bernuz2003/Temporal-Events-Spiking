@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "source_id": "S001",
+  "source_commit": "a0246506f4d4f3d15f187b18ae9c1010aa146cdb",
+  "paper_semantics": {
+    "Acc1": "visually_confusable_words",
+    "Acc2": "common_words"
+  },
+  "classes": [
+    "accused", "action", "allow", "allowed", "america", "american", "another", "around",
+    "attacks", "banks", "become", "being", "benefit", "benefits", "between", "billion",
+    "called", "capital", "challenge", "change", "chief", "couple", "court", "death",
+    "described", "difference", "different", "during", "economic", "education", "election",
+    "england", "evening", "everything", "exactly", "general", "germany", "giving", "ground",
+    "happen", "happened", "having", "heavy", "house", "hundreds", "immigration", "judge",
+    "labour", "leaders", "legal", "little", "london", "majority", "meeting", "military",
+    "million", "minutes", "missing", "needs", "number", "numbers", "paying", "perhaps",
+    "point", "potential", "press", "price", "question", "really", "right", "russia",
+    "russian", "saying", "security", "several", "should", "significant", "spend", "spent",
+    "started", "still", "support", "syria", "syrian", "taken", "taking", "terms", "these",
+    "thing", "think", "times", "tomorrow", "under", "warning", "water", "welcome", "words",
+    "worst", "years", "young"
+  ],
+  "visually_confusable_pairs": [
+    ["allow", "allowed"],
+    ["america", "american"],
+    ["benefit", "benefits"],
+    ["challenge", "change"],
+    ["court", "called"],
+    ["different", "difference"],
+    ["happen", "happened"],
+    ["heavy", "having"],
+    ["little", "legal"],
+    ["million", "billion"],
+    ["number", "numbers"],
+    ["price", "press"],
+    ["syria", "syrian"],
+    ["taking", "taken"],
+    ["think", "thing"],
+    ["worst", "words"],
+    ["around", "ground"],
+    ["terms", "times"],
+    ["paying", "being"],
+    ["missing", "meeting"],
+    ["election", "action"],
+    ["giving", "evening"],
+    ["russia", "russian"],
+    ["spend", "spent"],
+    ["these", "needs"]
+  ],
+  "visually_confusable_words": [
+    "action", "allow", "allowed", "america", "american", "around", "being", "benefit",
+    "benefits", "billion", "called", "challenge", "change", "court", "difference", "different",
+    "election", "evening", "giving", "ground", "happen", "happened", "having", "heavy",
+    "legal", "little", "meeting", "million", "missing", "needs", "number", "numbers", "paying",
+    "press", "price", "russia", "russian", "spend", "spent", "syria", "syrian", "taken",
+    "taking", "terms", "these", "thing", "think", "times", "words", "worst"
+  ],
+  "common_words": [
+    "accused", "another", "attacks", "banks", "become", "between", "capital", "chief",
+    "couple", "death", "described", "during", "economic", "education", "england", "everything",
+    "exactly", "general", "germany", "house", "hundreds", "immigration", "judge", "labour",
+    "leaders", "london", "majority", "military", "minutes", "perhaps", "point", "potential",
+    "question", "really", "right", "saying", "security", "several", "should", "significant",
+    "started", "still", "support", "tomorrow", "under", "warning", "water", "welcome", "years",
+    "young"
+  ]
+}
