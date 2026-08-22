@@ -38,8 +38,41 @@ def make_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Opti
     raise ValueError(f"Unsupported optimizer: {name}")
 
 
-def make_scheduler(optimizer: torch.optim.Optimizer, epochs: int):
-    return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, epochs))
+def make_scheduler(
+    optimizer: torch.optim.Optimizer,
+    config: dict[str, Any],
+):
+    """Build the epoch scheduler, preserving the legacy no-warmup default."""
+
+    if str(config.get("scheduler", "cosine")).lower() != "cosine":
+        raise ValueError(f"Unsupported scheduler: {config.get('scheduler')}")
+
+    epochs = int(config["epochs"])
+    warmup_epochs = int(config.get("warmup_epochs", 0))
+    minimum_lr = float(config.get("min_learning_rate", 0.0))
+    if warmup_epochs == 0:
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, epochs),
+            eta_min=minimum_lr,
+        )
+
+    warmup = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=float(config.get("warmup_start_factor", 0.01)),
+        end_factor=1.0,
+        total_iters=warmup_epochs,
+    )
+    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=max(1, epochs - warmup_epochs),
+        eta_min=minimum_lr,
+    )
+    return torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warmup, cosine],
+        milestones=[warmup_epochs],
+    )
 
 
 def make_criterion(config: dict[str, Any]) -> nn.Module:
@@ -55,31 +88,50 @@ def train_one_epoch(
     scaler: torch.amp.GradScaler,
     amp_enabled: bool,
     gradient_clip_norm: float | None,
+    gradient_accumulation_steps: int = 1,
 ) -> dict[str, float]:
+    if gradient_accumulation_steps <= 0:
+        raise ValueError("gradient_accumulation_steps must be positive")
+
     model.train()
     loss_sum = 0.0
     correct = 0
     samples = 0
     start = time.perf_counter()
+    total_batches = len(loader)
+    accumulated_samples = 0
+    optimizer.zero_grad(set_to_none=True)
 
     progress = tqdm(loader, desc="train", leave=False)
-    for frames, targets, _indices in progress:
+    for batch_index, (frames, targets, _indices) in enumerate(progress):
         frames = frames.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
-        optimizer.zero_grad(set_to_none=True)
 
         with torch.autocast(device_type=device.type, enabled=amp_enabled):
             logits = model(frames)
             loss = criterion(logits, targets)
-
-        scaler.scale(loss).backward()
-        if gradient_clip_norm is not None:
-            scaler.unscale_(optimizer)
-            nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
-        scaler.step(optimizer)
-        scaler.update()
+        if not bool(torch.isfinite(loss).item()):
+            raise FloatingPointError(f"Non-finite training loss at batch {batch_index}.")
 
         batch_size = int(targets.numel())
+        accumulated_samples += batch_size
+        scaler.scale(loss * batch_size).backward()
+        group_complete = (
+            (batch_index + 1) % gradient_accumulation_steps == 0
+            or batch_index + 1 == total_batches
+        )
+        if group_complete:
+            scaler.unscale_(optimizer)
+            for parameter in model.parameters():
+                if parameter.grad is not None:
+                    parameter.grad.div_(accumulated_samples)
+            if gradient_clip_norm is not None:
+                nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
+            accumulated_samples = 0
+
         loss_sum += float(loss.detach().item()) * batch_size
         correct += int((logits.argmax(1) == targets).sum().item())
         samples += batch_size
@@ -103,7 +155,9 @@ def evaluate(
 ) -> tuple[ClassificationResult, dict[str, np.ndarray]]:
     model.eval()
     accumulator = ClassificationAccumulator(num_classes)
-    for frames, targets, indices in tqdm(loader, desc="eval", leave=False):
+    for batch_index, (frames, targets, indices) in enumerate(
+        tqdm(loader, desc="eval", leave=False)
+    ):
         if prefix_fraction is not None:
             prefix = max(1, math.ceil(frames.shape[1] * prefix_fraction))
             frames = frames[:, :prefix]
@@ -111,12 +165,15 @@ def evaluate(
         targets = targets.to(device, non_blocking=True)
         logits = model(frames)
         loss = criterion(logits, targets)
+        if not bool(torch.isfinite(loss).item()):
+            raise FloatingPointError(f"Non-finite evaluation loss at batch {batch_index}.")
         accumulator.update(logits, targets, loss, indices)
 
     return accumulator.compute(), {
         "indices": np.asarray(accumulator.indices, dtype=np.int64),
         "targets": np.asarray(accumulator.targets, dtype=np.int64),
         "predictions": np.asarray(accumulator.predictions, dtype=np.int64),
+        "margins": np.asarray(accumulator.margins, dtype=np.float64),
     }
 
 

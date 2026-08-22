@@ -5,21 +5,35 @@ from typing import Any
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 
 
 @dataclass(frozen=True)
 class DatasetBundle:
-    """The three data roles used by every training workflow.
+    """The data roles used by training workflows.
 
     ``holdout`` deliberately avoids names such as ``test`` or ``audit``: the protocol decides how
-    and when that partition may be evaluated.
+    and when that partition may be evaluated. It is absent during embargoed DVS-Lip development.
     """
 
     train: Dataset
     validation: Dataset
-    holdout: Dataset
+    holdout: Dataset | None
     classes: list[str]
+
+
+def build_loader(dataset: Dataset, config: dict[str, Any], shuffle: bool) -> DataLoader:
+    """Build the ordinary map-style loader shared by legacy and encoded-event datasets."""
+
+    return DataLoader(
+        dataset,
+        batch_size=int(config.get("batch_size", 8)),
+        shuffle=shuffle,
+        num_workers=int(config.get("num_workers", 0)),
+        pin_memory=bool(config.get("pin_memory", False)),
+        drop_last=False,
+        persistent_workers=bool(config.get("num_workers", 0) > 0),
+    )
 
 
 class IndexedDataset(Dataset):

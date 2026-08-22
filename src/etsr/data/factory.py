@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from torch.utils.data import DataLoader, Dataset
-
 from etsr.data.common import DatasetBundle, IndexedDataset
 from etsr.data.dvsgc import create_dvsgc_split
 from etsr.data.matched_dvsgc import build_matched_dvsgc_bundle
@@ -55,15 +53,3 @@ def build_dataset_bundle(config: dict[str, Any], seed: int) -> DatasetBundle:
         class_count = int(config.get("num_classes", 0))
         classes = [str(index) for index in range(class_count)]
     return DatasetBundle(train=train, validation=validation, holdout=holdout, classes=classes)
-
-
-def build_loader(dataset: Dataset, config: dict[str, Any], shuffle: bool) -> DataLoader:
-    return DataLoader(
-        dataset,
-        batch_size=int(config.get("batch_size", 8)),
-        shuffle=shuffle,
-        num_workers=int(config.get("num_workers", 0)),
-        pin_memory=bool(config.get("pin_memory", False)),
-        drop_last=False,
-        persistent_workers=bool(config.get("num_workers", 0) > 0),
-    )

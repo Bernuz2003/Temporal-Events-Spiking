@@ -58,8 +58,83 @@ def _validate(config: dict[str, Any]) -> None:
         raise ConfigError("Missing model.name")
     if int(config["training"].get("epochs", 0)) <= 0:
         raise ConfigError("training.epochs must be positive")
+    if config["dataset"]["name"] == "dvslip":
+        _validate_dvslip(config)
     if "mechanistic_audit" in config:
         _validate_mechanistic_audit(config)
+
+
+def _validate_dvslip(config: dict[str, Any]) -> None:
+    dataset = config["dataset"]
+    for field in ("root", "split_manifest"):
+        if not isinstance(dataset.get(field), str) or not dataset[field].strip():
+            raise ConfigError(f"DVS-Lip requires dataset.{field}")
+
+    representation = config.get("representation")
+    if not isinstance(representation, dict):
+        raise ConfigError("DVS-Lip requires a representation section")
+    if representation.get("name") != "count_frames_e0":
+        raise ConfigError(
+            "The current DVS-Lip foundation supports representation.name=count_frames_e0"
+        )
+    for field in ("window_us", "bin_width_us", "count_cap"):
+        if type(representation.get(field)) is not int or representation[field] <= 0:
+            raise ConfigError(f"DVS-Lip representation.{field} must be a positive integer")
+    if representation["window_us"] % representation["bin_width_us"]:
+        raise ConfigError("DVS-Lip representation.window_us must divide into exact bins")
+    if representation["count_cap"] > 255:
+        raise ConfigError("DVS-Lip E0 count_cap must fit uint8")
+    if int(config["model"].get("in_channels", 0)) != 2:
+        raise ConfigError("DVS-Lip E0 requires model.in_channels=2")
+
+    augmentation = config.get("augmentation")
+    if not isinstance(augmentation, dict):
+        raise ConfigError("DVS-Lip requires an augmentation section")
+    unsupported_augmentations = set(augmentation) - {"horizontal_flip_probability"}
+    if unsupported_augmentations:
+        raise ConfigError(
+            f"Unsupported DVS-Lip augmentations: {sorted(unsupported_augmentations)}"
+        )
+    flip_probability = augmentation.get("horizontal_flip_probability")
+    if type(flip_probability) not in (int, float) or not 0.0 <= flip_probability <= 1.0:
+        raise ConfigError("augmentation.horizontal_flip_probability must be in [0, 1]")
+
+    training = config["training"]
+    if not isinstance(training.get("recipe_id"), str) or not training["recipe_id"].strip():
+        raise ConfigError("DVS-Lip requires a non-empty training.recipe_id")
+    if str(training.get("optimizer", "")).lower() != "adamw":
+        raise ConfigError("The current DVS-Lip recipe supports training.optimizer=adamw")
+    if str(training.get("scheduler", "")).lower() != "cosine":
+        raise ConfigError("The current DVS-Lip recipe supports training.scheduler=cosine")
+    learning_rate = training.get("learning_rate")
+    minimum_lr = training.get("min_learning_rate")
+    if type(learning_rate) not in (int, float) or learning_rate <= 0.0:
+        raise ConfigError("training.learning_rate must be positive")
+    if type(minimum_lr) not in (int, float) or not 0.0 <= minimum_lr < learning_rate:
+        raise ConfigError("training.min_learning_rate must be in [0, learning_rate)")
+    epochs = int(training["epochs"])
+    warmup_epochs = training.get("warmup_epochs")
+    if type(warmup_epochs) is not int or not 0 <= warmup_epochs < epochs:
+        raise ConfigError("training.warmup_epochs must be an integer in [0, epochs)")
+    warmup_start_factor = training.get("warmup_start_factor")
+    if type(warmup_start_factor) not in (int, float) or not 0.0 < warmup_start_factor <= 1.0:
+        raise ConfigError("training.warmup_start_factor must be in (0, 1]")
+    accumulation_steps = training.get("gradient_accumulation_steps", 1)
+    if type(accumulation_steps) is not int or accumulation_steps <= 0:
+        raise ConfigError("training.gradient_accumulation_steps must be a positive integer")
+    weight_decay = training.get("weight_decay")
+    if type(weight_decay) not in (int, float) or weight_decay < 0.0:
+        raise ConfigError("training.weight_decay must be non-negative")
+    label_smoothing = training.get("label_smoothing")
+    if type(label_smoothing) not in (int, float) or not 0.0 <= label_smoothing < 1.0:
+        raise ConfigError("training.label_smoothing must be in [0, 1)")
+    gradient_clip_norm = training.get("gradient_clip_norm")
+    if type(gradient_clip_norm) not in (int, float) or gradient_clip_norm <= 0.0:
+        raise ConfigError("training.gradient_clip_norm must be positive")
+    if int(dataset.get("batch_size", 0)) <= 0:
+        raise ConfigError("dataset.batch_size must be positive")
+    if bool(training.get("evaluate_holdout", True)):
+        raise ConfigError("DVS-Lip development requires training.evaluate_holdout=false")
 
 
 def _validate_mechanistic_audit(config: dict[str, Any]) -> None:

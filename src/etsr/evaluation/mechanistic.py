@@ -15,7 +15,8 @@ import numpy as np
 import torch
 
 from etsr.config import save_config
-from etsr.data.factory import build_dataset_bundle, build_loader
+from etsr.data.common import build_loader
+from etsr.data.factory import build_dataset_bundle
 from etsr.data.matched_dvsgc import MatchedDVSGestureChain
 from etsr.data.perturbations import redistribute_segment_durations
 from etsr.evaluation.causal import (

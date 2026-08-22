@@ -25,6 +25,7 @@ def test_classification_metrics():
     assert result.accuracy == 0.75
     assert 0.0 <= result.macro_f1 <= 1.0
     assert result.confusion_matrix.tolist() == [[1, 0], [1, 2]]
+    assert accumulator.margins == [4.0, 4.0, 2.0, 1.0]
 
 
 def test_prefix_auc():

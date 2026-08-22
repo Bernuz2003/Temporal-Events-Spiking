@@ -1,15 +1,17 @@
-import csv
 import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from etsr.data.dvslip_preflight import (
+from etsr.dvslip.preflight import (
     DvsLipExpectations,
     inspect_event_sample,
     load_class_groups_manifest,
     run_dvslip_preflight,
+)
+from etsr.dvslip.split import (
+    prepare_dvslip_development_split,
 )
 
 
@@ -30,57 +32,27 @@ def _small_archive(tmp_path):
     train_root = tmp_path / "DVS-Lip" / "train"
     relative_paths = []
     for class_name in ("alpha", "beta", "gamma", "delta"):
-        relative_path = f"{class_name}/0.npy"
-        _write_event_sample(train_root / relative_path)
-        relative_paths.append(relative_path)
+        for sample_index in range(5):
+            relative_path = f"{class_name}/{sample_index}.npy"
+            _write_event_sample(train_root / relative_path)
+            relative_paths.append(relative_path)
     expectations = DvsLipExpectations(
         class_count=4,
-        sample_count=4,
-        speaker_count=2,
-        train_speaker_count=1,
-        validation_speaker_count=1,
+        sample_count=20,
         height=8,
         width=8,
     )
     return train_root, relative_paths, expectations
 
 
-def _write_speaker_manifest(path, relative_paths):
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["relative_path", "speaker_id"])
-        writer.writeheader()
-        for index, relative_path in enumerate(relative_paths):
-            writer.writerow(
-                {
-                    "relative_path": relative_path,
-                    "speaker_id": f"speaker_{index % 2}",
-                }
-            )
-
-
 def test_preflight_validates_complete_train_only_protocol_inputs(tmp_path):
-    train_root, relative_paths, expectations = _small_archive(tmp_path)
-    speaker_manifest = tmp_path / "speakers.csv"
-    _write_speaker_manifest(speaker_manifest, relative_paths)
+    train_root, _relative_paths, expectations = _small_archive(tmp_path)
     split_manifest = tmp_path / "split.json"
-    split_manifest.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "official_source_split": "train",
-                "official_test_used": False,
-                "split_seed": 17,
-                "strategy": "fixture assignment",
-                "assignments": {
-                    "speaker_0": "train",
-                    "speaker_1": "validation",
-                },
-            }
-        ),
-        encoding="utf-8",
+    prepare_dvslip_development_split(
+        train_root,
+        split_manifest,
+        expectations=expectations,
     )
-    terms = tmp_path / "DATASET_TERMS.txt"
-    terms.write_text("Fixture terms; not a real license.\n", encoding="utf-8")
     class_groups = tmp_path / "class_groups.json"
     class_groups.write_text(
         json.dumps(
@@ -102,10 +74,8 @@ def test_preflight_validates_complete_train_only_protocol_inputs(tmp_path):
 
     report = run_dvslip_preflight(
         train_root,
-        speaker_manifest=speaker_manifest,
         split_manifest=split_manifest,
         class_groups_manifest=class_groups,
-        terms_path=terms,
         output_path=output,
         hash_samples=True,
         expectations=expectations,
@@ -113,21 +83,22 @@ def test_preflight_validates_complete_train_only_protocol_inputs(tmp_path):
 
     assert report["validation_status"] == "passed"
     assert report["preflight_gate_status"] == "ready"
-    assert report["protocol_gate_status"] == "blocked"
+    assert report["protocol_gate_status"] == "ready"
     assert report["blockers"] == []
-    assert report["protocol_blockers"] == [
-        "official_test_physical_quarantine_not_verified",
-    ]
+    assert report["protocol_blockers"] == []
     assert report["official_test_used"] is False
     assert report["access_scope"] == "official_train_only"
     assert report["dataset_content"]["complete"] is True
-    assert report["dataset_content"]["files_hashed"] == 4
+    assert report["dataset_content"]["files_hashed"] == 20
     assert report["sample_inspection"]["samples_inspected"] == 4
-    assert report["split_manifest"]["speaker_overlap"] == []
+    assert report["split_manifest"]["speaker_disjoint"] is False
     assert report["split_manifest"]["sample_counts"] == {
-        "train": 2,
-        "validation": 2,
+        "train": 16,
+        "validation": 4,
     }
+    assert report["claims"]["development_validation_speaker_disjoint"] is False
+    assert report["claims"]["raw_loader_contract_frozen"] is True
+    assert report["claims"]["official_test_logical_embargo_enforced"] is True
     assert output.is_file()
     assert json.loads(output.read_text(encoding="utf-8"))["official_test_used"] is False
 
@@ -141,15 +112,12 @@ def test_preflight_reports_missing_external_evidence_without_inventing_it(tmp_pa
     assert report["preflight_gate_status"] == "blocked"
     assert report["protocol_gate_status"] == "blocked"
     assert report["blockers"] == [
-        "authoritative_sample_to_speaker_manifest_missing",
-        "versioned_24_6_speaker_split_missing",
-        "dataset_terms_missing",
+        "deterministic_development_split_manifest_missing",
         "semantic_acc1_acc2_manifest_missing",
         "full_sample_content_hash_not_computed",
     ]
-    assert report["speaker_manifest"] is None
-    assert report["dataset_terms"] is None
-    assert report["claims"]["raw_loader_contract_frozen"] is False
+    assert "sample_to_speaker_mapping_unavailable" in report["known_limitations"]
+    assert report["claims"]["raw_loader_contract_frozen"] is True
 
 
 def test_preflight_rejects_the_official_test_root_before_sample_access(tmp_path):
@@ -171,15 +139,63 @@ def test_event_inspection_rejects_unverified_dense_column_semantics(tmp_path):
         inspect_event_sample(sample, DvsLipExpectations())
 
 
-def test_preflight_rejects_incomplete_speaker_coverage(tmp_path):
-    train_root, relative_paths, expectations = _small_archive(tmp_path)
-    speaker_manifest = tmp_path / "speakers.csv"
-    _write_speaker_manifest(speaker_manifest, relative_paths[:-1])
+def test_preflight_rejects_a_split_assignment_that_does_not_reproduce(tmp_path):
+    train_root, _relative_paths, expectations = _small_archive(tmp_path)
+    split_manifest = tmp_path / "split.json"
+    prepare_dvslip_development_split(
+        train_root,
+        split_manifest,
+        expectations=expectations,
+    )
+    payload = json.loads(split_manifest.read_text(encoding="utf-8"))
+    first_path = sorted(payload["assignments"])[0]
+    payload["assignments"][first_path] = (
+        "validation" if payload["assignments"][first_path] == "train" else "train"
+    )
+    split_manifest.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="does not exactly cover"):
+    with pytest.raises(ValueError, match="does not reproduce exactly"):
         run_dvslip_preflight(
             train_root,
-            speaker_manifest=speaker_manifest,
+            split_manifest=split_manifest,
+            expectations=expectations,
+        )
+
+
+def test_sample_split_generation_is_deterministic_and_never_claims_speaker_disjointness(
+    tmp_path,
+):
+    train_root, _relative_paths, expectations = _small_archive(tmp_path)
+    first_output = tmp_path / "first.json"
+    second_output = tmp_path / "second.json"
+
+    first = prepare_dvslip_development_split(train_root, first_output, expectations=expectations)
+    second = prepare_dvslip_development_split(train_root, second_output, expectations=expectations)
+
+    assert first == second
+    assert first_output.read_bytes() == second_output.read_bytes()
+    assert first["speaker_identity_available"] is False
+    assert first["speaker_disjoint"] is False
+    assert first["official_test_used"] is False
+    assert first["sample_counts"] == {"train": 16, "validation": 4}
+
+
+def test_split_manifest_rejects_an_unverified_speaker_disjoint_claim(tmp_path):
+    train_root, _relative_paths, expectations = _small_archive(tmp_path)
+    path = tmp_path / "invalid_split.json"
+    prepare_dvslip_development_split(
+        train_root,
+        path,
+        expectations=expectations,
+    )
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["speaker_disjoint"] = True
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="speaker_disjoint"):
+        run_dvslip_preflight(
+            train_root,
+            split_manifest=path,
             expectations=expectations,
         )
 

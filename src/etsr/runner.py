@@ -9,7 +9,8 @@ import numpy as np
 import torch
 
 from etsr.config import save_config
-from etsr.data.factory import build_dataset_bundle, build_loader
+from etsr.data.common import DatasetBundle, build_loader
+from etsr.data.factory import build_dataset_bundle
 from etsr.data.perturbations import PerturbationSpec, PerturbedDataset
 from etsr.evaluation.metrics import (
     normalized_prefix_auc,
@@ -54,6 +55,18 @@ def _prepare_run(
     return run_id, artifact_dir, checkpoint_dir, logger
 
 
+def _build_training_bundle(config: dict[str, Any], seed: int) -> DatasetBundle:
+    if config["dataset"]["name"] == "dvslip":
+        from etsr.dvslip.encoded import build_dvslip_bundle
+
+        return build_dvslip_bundle(
+            config["dataset"],
+            config["representation"],
+            config["augmentation"],
+        )
+    return build_dataset_bundle(config["dataset"], seed)
+
+
 def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
     seed = int(config["experiment"]["seed"] if seed is None else seed)
     configured_seeds = [int(value) for value in config["experiment"].get("model_seeds", [])]
@@ -65,7 +78,7 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
     logger.info("Run ID: %s", run_id)
     logger.info("Device: %s", device)
 
-    bundle = build_dataset_bundle(config["dataset"], seed)
+    bundle = _build_training_bundle(config, seed)
     num_classes = len(bundle.classes)
     model = build_model(config["model"], num_classes).to(device)
     parameter_count = sum(
@@ -79,10 +92,14 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
 
     train_loader = build_loader(bundle.train, config["dataset"], shuffle=True)
     validation_loader = build_loader(bundle.validation, config["dataset"], shuffle=False)
-    holdout_loader = build_loader(bundle.holdout, config["dataset"], shuffle=False)
+    holdout_loader = (
+        None
+        if bundle.holdout is None
+        else build_loader(bundle.holdout, config["dataset"], shuffle=False)
+    )
 
     optimizer = make_optimizer(model, config["training"])
-    scheduler = make_scheduler(optimizer, int(config["training"]["epochs"]))
+    scheduler = make_scheduler(optimizer, config["training"])
     criterion = make_criterion(config["training"])
     amp_enabled = bool(config["training"].get("amp", False) and device.type == "cuda")
     try:
@@ -106,6 +123,17 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
         "classes": bundle.classes,
         "official_test_used": False,
     }
+    recipe_id = config["training"].get("recipe_id")
+    if recipe_id is not None:
+        runtime["recipe_id"] = str(recipe_id)
+    for field in (
+        "dataset_index_sha256",
+        "split_manifest_sha256",
+        "representation_metadata",
+    ):
+        value = getattr(bundle.train, field, None)
+        if value is not None:
+            runtime[field] = value
     environment_path = artifact_dir / "environment.json"
     write_json(collect_environment(device), environment_path)
     runtime["environment_file"] = environment_path.name
@@ -120,7 +148,11 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
 
     best_score = float("-inf")
     best_epoch = -1
+    peak_cuda_memory_bytes = 0
     for epoch in range(1, int(config["training"]["epochs"]) + 1):
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
+        learning_rate = optimizer.param_groups[0]["lr"]
         train_metrics = train_one_epoch(
             model,
             train_loader,
@@ -130,20 +162,29 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
             scaler,
             amp_enabled,
             config["training"].get("gradient_clip_norm"),
+            int(config["training"].get("gradient_accumulation_steps", 1)),
         )
         validation_result, _ = evaluate(
             model, validation_loader, criterion, device, num_classes
         )
+        epoch_peak_cuda_memory_bytes = (
+            int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else None
+        )
+        if epoch_peak_cuda_memory_bytes is not None:
+            peak_cuda_memory_bytes = max(
+                peak_cuda_memory_bytes, epoch_peak_cuda_memory_bytes
+            )
         scheduler.step()
         row = {
             "epoch": epoch,
-            "learning_rate": optimizer.param_groups[0]["lr"],
+            "learning_rate": learning_rate,
             "train_loss": train_metrics["loss"],
             "train_accuracy": train_metrics["accuracy"],
             "validation_loss": validation_result.loss,
             "validation_accuracy": validation_result.accuracy,
             "validation_macro_f1": validation_result.macro_f1,
             "epoch_seconds": train_metrics["seconds"],
+            "peak_cuda_memory_bytes": epoch_peak_cuda_memory_bytes,
         }
         append_csv(row, artifact_dir / "history.csv")
         logger.info(
@@ -168,7 +209,7 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
             )
 
     restore_best_model(checkpoint_dir / "best.pt", model, device, logger)
-    validation_result, _ = evaluate(
+    validation_result, validation_predictions = evaluate(
         model, validation_loader, criterion, device, num_classes
     )
     write_json(validation_result.to_dict(), artifact_dir / "validation_metrics.json")
@@ -177,6 +218,29 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
         bundle.classes,
         artifact_dir / "validation_confusion_matrix.png",
     )
+
+    validation_shortcut_diagnostics = None
+    if config["dataset"]["name"] == "dvslip":
+        from etsr.dvslip.shortcut import prediction_shortcut_diagnostics
+
+        np.savez_compressed(
+            artifact_dir / "validation_predictions.npz", **validation_predictions
+        )
+        diagnostic_rows, validation_shortcut_diagnostics = (
+            prediction_shortcut_diagnostics(
+                bundle.validation,
+                validation_predictions,
+                bin_width_us=int(config["representation"]["bin_width_us"]),
+            )
+        )
+        write_csv(
+            diagnostic_rows,
+            artifact_dir / "validation_shortcut_diagnostics.csv",
+        )
+        write_json(
+            validation_shortcut_diagnostics,
+            artifact_dir / "validation_shortcut_diagnostics.json",
+        )
 
     summary = {
         "run_id": run_id,
@@ -194,9 +258,16 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
         "official_test_used": False,
         "environment": str(environment_path.resolve()),
         "environment_sha256": runtime["environment_sha256"],
+        "peak_cuda_memory_bytes": (
+            peak_cuda_memory_bytes if device.type == "cuda" else None
+        ),
     }
+    if validation_shortcut_diagnostics is not None:
+        summary["validation_shortcut_diagnostics"] = validation_shortcut_diagnostics
 
     if bool(config["training"].get("evaluate_holdout", True)):
+        if holdout_loader is None:
+            raise RuntimeError("This training configuration has no development holdout dataset.")
         holdout_result, holdout_predictions = evaluate(
             model, holdout_loader, criterion, device, num_classes
         )
@@ -226,6 +297,12 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
             holdout_result.macro_f1,
             best_epoch,
         )
+    elif config["dataset"]["name"] == "dvslip" and bool(
+        config.get("profiling", {}).get("enabled", True)
+    ):
+        profile = profile_model(model, validation_loader, device, config.get("profiling", {}))
+        write_json(profile, artifact_dir / "profile.json")
+        summary["profile"] = profile
 
     write_json(summary, artifact_dir / "summary.json")
     logger.info("Artifacts: %s", artifact_dir)

@@ -35,6 +35,7 @@ class ClassificationAccumulator:
         self.indices: list[int] = []
         self.targets: list[int] = []
         self.predictions: list[int] = []
+        self.margins: list[float] = []
 
     def update(
         self,
@@ -44,6 +45,11 @@ class ClassificationAccumulator:
         indices: torch.Tensor,
     ) -> None:
         predictions = logits.argmax(dim=1)
+        if logits.shape[1] >= 2:
+            top_two = logits.detach().topk(2, dim=1).values
+            margins = top_two[:, 0] - top_two[:, 1]
+        else:
+            margins = logits.detach()[:, 0]
         encoded = targets.detach().cpu() * self.num_classes + predictions.detach().cpu()
         counts = torch.bincount(encoded, minlength=self.num_classes**2)
         self.confusion += counts.reshape(self.num_classes, self.num_classes)
@@ -53,6 +59,7 @@ class ClassificationAccumulator:
         self.indices.extend(indices.detach().cpu().tolist())
         self.targets.extend(targets.detach().cpu().tolist())
         self.predictions.extend(predictions.detach().cpu().tolist())
+        self.margins.extend(margins.cpu().tolist())
 
     def compute(self) -> ClassificationResult:
         true_positive = self.confusion.diag().float()
