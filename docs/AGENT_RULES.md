@@ -22,12 +22,11 @@ OPEN QUESTION missing information able to change the plan
 
 ## 2. Before changing code
 
-1. Read the active charter, plan, task record and relevant decisions.
+1. Read the charter, `PROJECT_STATUS.md` and only the decisions relevant to the active task.
 2. Inspect affected code, tests, configuration, scripts and Git history.
 3. Read the primary paper and official implementation when reproducing an external mechanism.
 4. State the scientific question and what each possible result would change.
 5. Identify split, capacity, recipe, causality, state and hardware confounds.
-6. Add or update the task and define evidence required for completion.
 
 Review sources just in time: read and update the entries required by the active external mechanism
 immediately before implementing it; do not bulk-review unrelated future methods. Do not approve a
@@ -52,6 +51,10 @@ preprocessing and temporal-core ability have been checked.
 
 ## 4. Architectural constraints
 
+- Optimize for the finite thesis scope, not hypothetical product growth. Implement the simplest
+  design that fully supports the required experiments and validity checks. Do not add extension
+  points, registries, compatibility layers, manifests or generic abstractions for possible future
+  use; complexity is justified only by a current requirement or a concrete next task.
 - Final candidates are causal: no future event affects output/state at time `t`.
 - Streaming state ownership must be explicit and tested (`reset_state`, `step`, sequence and chunk
   equivalence, detach semantics).
@@ -75,7 +78,9 @@ Fail loudly on:
 - manifest/checkpoint incompatibility.
 
 Raw DVS-Lip events remain `(x, y, t, polarity)` until an explicit representation module. Physical
-time, polarity convention, speaker identity and stable sample ID must be observable metadata.
+time, polarity convention and stable sample ID must be observable metadata. Speaker identity must
+be represented only when authoritative metadata exists; otherwise its absence and the resulting
+non-speaker-disjoint development split must be explicit.
 
 ## 6. Hardware honesty
 
@@ -114,13 +119,15 @@ Missing dependencies or unavailable hardware are recorded as blockers, never rep
 
 ## 8. Documentation discipline
 
-- `PROJECT_CHARTER.md` changes only for an approved strategy change.
-- `DECISIONS.md` is append-only; supersede decisions instead of rewriting them.
-- `ACTIVE_PLAN.md` contains exactly one active phase and an explicit next decision.
-- `TASKS.md` records done, pending, blocked and deferred work with evidence.
-- `EXPERIMENT_LEDGER.md` contains only runs that inform a decision.
-- `SOURCES.md` distinguishes a listed source from a source actually read.
-- Archived DVS-GC files are immutable except for link repair or an explicit provenance note.
+- `PROJECT_STATUS.md` is the only routinely updated document; keep only current outcome, blockers
+  and next task.
+- `DECISIONS.md` receives only choices that materially change future scientific or structural work.
+- All other documents are read-only unless their revision is the explicitly approved task.
+- Do not mirror diffs, test logs, command history or implementation details already recoverable from
+  code, Git or artifacts.
+- Add a machine-readable artifact only when runtime code consumes it, it freezes an assignment that
+  must reproduce exactly, or a gate cannot be audited without it. Keep rationale and owner-provided
+  provenance in the two writable documents; prefer one self-contained artifact per responsibility.
 
 ## 9. Stop and escalate
 
@@ -139,8 +146,8 @@ A task is `DONE` only when:
 1. every declared artifact exists;
 2. acceptance checks have been executed in a suitable environment;
 3. failures and unavailable checks are explicit;
-4. active documentation matches code and Git state;
-5. deferred work has a task ID, dependency and reason;
+4. `PROJECT_STATUS.md` is updated only if outcome, blockers or next task changed;
+5. materially deferred work has a reason;
 6. the next decision is unambiguous.
 
 “Implemented” without verification is `IN PROGRESS`; “cannot run here” is `BLOCKED` or `PARTIAL`, not

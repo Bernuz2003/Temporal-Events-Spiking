@@ -130,3 +130,135 @@ Append-only. A later entry may supersede an earlier decision; historical entries
   external mechanism without first reviewing its primary paper and official code.
 - **Reversal condition:** a near-term architecture decision requires multiple sources to be reviewed
   together to avoid an invalid novelty or comparability conclusion.
+
+## D011 — Use an explicit sample-level development split when speaker metadata is unavailable
+
+- **Date:** 2026-08-22
+- **Owner:** scientific owner, implemented in repository policy by the project agent.
+- **Question:** must missing dataset terms and sample-to-speaker metadata block DVS-Lip development
+  indefinitely when the archive came from the official project download and contains only `train/`
+  and `test/`?
+- **Evidence:** the official project page links its dataset through Google Drive and publishes no
+  dataset license or speaker mapping. The owner obtained that ZIP from the official link, observed
+  only `train/` and `test/`, and independently found no terms or mapping. The real train-only
+  preflight verified 100 classes, 14,896 samples and the expected structured event layout without
+  touching `test/`. Integer filenames do not encode a verified speaker identity.
+- **Decision:** absence of speaker mapping and dataset-specific terms is no longer a protocol
+  blocker. Record the official provenance and absence explicitly; proceed only for local thesis
+  research without claiming a dataset license or redistribution right. Build development train and
+  validation from official `train/` using the versioned 80/20, per-class, deterministic hash-ranked
+  sample policy with seed `314159`. Every manifest and result must declare
+  `speaker_identity_available=false`, `speaker_disjoint=false` and that validation is not an
+  unseen-speaker estimate. The official `test/` remains embargoed and retains the published
+  speaker-disjoint evaluation role.
+- **Rationale:** 80/20 preserves the charter's intended 24/6 development proportion; class
+  stratification avoids vocabulary imbalance; hash ranking makes assignments reproducible without
+  depending on a pseudorandom-library version. The seed has no scientific interpretation.
+- **Still required:** full official-train content hashing, physical test quarantine, code-level
+  embargo and explicit caveats in every comparison. These requirements are not waived.
+- **Rejected:** infer speaker identity from filenames or ordering; use `test/` for validation;
+  describe the fallback as speaker-disjoint; treat repository code licenses or the download link as
+  a dataset license grant; version or redistribute the dataset.
+- **Reversal condition:** an authoritative sample-to-speaker mapping appears before recipe freeze.
+  In that case create and validate a speaker-disjoint development split, record a superseding
+  decision and invalidate incompatible sample-level manifests before further model selection.
+
+## D012 — Isolate DVS-Lip without relocating the frozen audit pipeline
+
+- **Date:** 2026-08-22
+- **Decision:** retain the working DVS-GC data, runner, model and temporal/mechanistic audit modules
+  in place as frozen regression code. Put all new phase-specific implementation under
+  `src/etsr/dvslip/`, and use command-local imports so DVS-Lip commands do not load legacy audit
+  orchestration.
+- **Why:** deleting loses cheap regression/provenance; moving the interconnected legacy graph only
+  creates import churn. A vertical DVS-Lip package provides the required boundary with minimal code.
+- **Rule:** DVS-Lip may use genuinely compatible shared utilities, but must not enter the old
+  frame-first dataset factory or add compatibility layers for it.
+- **Reversal condition:** move or remove frozen modules only if a concrete active dependency blocks
+  DVS-Lip implementation or their maintenance cost becomes measurable.
+
+## D013 — Replace physical test quarantine with a logical embargo
+
+- **Date:** 2026-08-22
+- **Owner:** scientific owner, on recommendation of the project agent.
+- **Decision:** the official `test/` directory may remain beside `train/`. Development APIs accept
+  only the official `train/` root and the `train`/`validation` development assignments; they neither
+  discover nor load the test sibling. Official-test evaluation will be added only after the model,
+  representation and recipe freeze. This supersedes the physical-quarantine requirement in D011
+  and the earlier reference documents, while preserving their prohibition on test-based selection.
+- **Why:** for this single-owner local thesis project, moving the directory adds operational work
+  without strengthening the scientific rule that matters. The former preflight blocker was also
+  unconditional and therefore could not verify quarantine. Explicit code paths and final-only test
+  evaluation are the smallest sufficient protection.
+- **Reversal condition:** require stronger filesystem isolation if development becomes automated or
+  multi-user, or if an active code path can reach the official test before freeze.
+
+## D014 — Fix the E0 physical-time count representation
+
+- **Date:** 2026-08-22
+- **Evidence:** all 14,896 train samples are valid. Duration is 0.829/1.079/1.358 s at
+  p05/median/p95 and reaches 1.889 s; the median event rate is 8.25k events/s. Train and validation
+  distributions are closely aligned. Published baselines instead use sample-normalized voxels or a
+  1.2 s cut, neither of which preserves the physical-time contract selected for this project.
+- **Decision:** E0 uses the full 128×128 sensor, separate OFF/ON channels, a fixed 2,000,000 us
+  window, 50,000 us bins (`T=40`) and exact unsigned 8-bit counts. Shorter samples are zero-padded in
+  physical time. Timestamps outside the window or voxel counts above 255 raise an error; neither is
+  silently clipped. The encoder is stateless and reports zero persistent state.
+- **Why:** 2.0 s covers the observed train maximum with explicit headroom. A 50 ms bin gives about
+  22 active steps at median duration and preserves a clear higher-rate E2 comparison without
+  copying a literature timestep convention. Uint8 is the simplest low-bit exact baseline.
+- **Rejected:** duration normalization, the published 1.2 s cut, signed polarity cancellation,
+  implicit float frame truth and silent saturation.
+- **Reversal condition:** revise before training if the full-train encoding check finds uint8
+  overflow, or if the resulting memory/runtime makes bounded E0 training infeasible. The official
+  test cannot be inspected to tune this choice.
+
+## D015 — Start recipe stabilization with one minimal, evidence-backed E0 candidate
+
+- **Date:** 2026-08-22
+- **Evidence:** exhaustive E0 encoding preserves every event in all 14,896 development samples; the
+  observed maximum voxel count is 17, safely below the fixed cap of 255. S001 and S003 use learning
+  rates around `3e-4`; the targeted S005 code review at commit `519fd2e` found AdamW at `1e-3`
+  with total batch 256 (four devices × 64), four warm-up epochs, cosine decay, label smoothing and
+  clipping. Those models and input semantics are not directly transferable.
+- **Decision:** begin with candidate `dvslip_e0_r0`: the 500,708-parameter Mini-QKFormer, E0,
+  AdamW at `3e-4`, weight decay `5e-4`, four-epoch linear warm-up from 1%, cosine decay to `1e-6`,
+  label smoothing 0.1, clipping at 1.0 and 64 epochs. Physical batch 4 plus eight-step gradient
+  accumulation gives effective batch 32 without requiring a large activation footprint.
+- **Augmentation:** train-only horizontal flip with probability 0.5. It changes spatial geometry but
+  neither physical timing nor event count. Validation is deterministic. Temporal masking,
+  resize/shear, erasing and event-rate perturbation are excluded until evidence shows they are
+  needed; adding them now would enlarge the search and weaken E0 comparability.
+- **Budget:** run `r0` with seed 42. At most one fallback configuration may be run, changing only the
+  learning rate to `1e-3`, and only if `r0` is finite but shows inadequate optimization. A memory
+  failure is handled by changing micro-batch and inverse accumulation together so effective batch
+  remains 32; it is not a new scientific candidate. Maximum stabilization budget: two 64-epoch
+  runs, one seed each, no official-test access.
+- **Freeze gate:** inspect loss/accuracy curves, validation Macro-F1, best epoch and runtime before
+  freezing. A crash, non-finite values or absence of clear learning cannot produce a frozen recipe.
+  Expanding the budget or changing another recipe dimension requires owner approval.
+
+## D016 — Measure the physical-duration shortcut before running E0
+
+- **Date:** 2026-08-22
+- **Evidence:** an independent full scan of all 14,896 official-train samples gives class-explained
+  variance η²=0.279 for duration, 0.104 for event count, 0.080 for ON fraction and 0.275 for the
+  number of occupied 50 ms bins. Occupied-bin count and duration have Pearson correlation 0.996;
+  E0 therefore makes a class-informative duration proxy observable through zero padding. The
+  temporal mean and flattened-time BatchNorm can interact with this proxy, but actual shortcut use
+  by the model is not established before measurement.
+- **Decision:** retain D014's physical-time E0 because physical duration is part of the target
+  streaming contract, but make a fixed global-statistic control a pre-r0 gate. Report both raw
+  duration metadata and the E0-observable occupied-bin counterpart, using only development
+  train/validation. During r0, save per-sample occupied bins, duration, event count, polarity,
+  correctness and logit margin so correlations can be inspected after training.
+- **Comparability caveat:** literature alignment is source-specific. MSTP and NSA normalize sample
+  duration, while the reviewed SpikGRU path uses a fixed physical window with truncation/padding and
+  may expose a related cue. Do not claim that every published anchor removes duration, and do not
+  interpret a numerical advantage as architecture-only evidence.
+- **Rejected now:** normalize timestamps and silently abandon the physical-time objective; change to
+  masked/last/gated readout before measuring the declared mean baseline; treat η² alone as model
+  accuracy or causal shortcut use.
+- **Reversal condition:** if the E0-observable control is non-trivial or r0 correctness/margin varies
+  materially with occupied-bin count, prioritize the already planned P2 readout/shortcut controls.
+  Otherwise retain the caveat but do not expand the shortcut study.
