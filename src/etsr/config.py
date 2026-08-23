@@ -87,10 +87,7 @@ def _validate_dvslip(config: dict[str, Any]) -> None:
     model = config["model"]
     if int(model.get("in_channels", 0)) != 2:
         raise ConfigError("DVS-Lip E0 requires model.in_channels=2")
-    surrogate_name = str(model.get("surrogate_name", "fast_sigmoid"))
-    if surrogate_name not in {"fast_sigmoid", "sigmoid"}:
-        raise ConfigError("model.surrogate_name must be fast_sigmoid or sigmoid")
-    surrogate_alpha = model.get("surrogate_alpha", 25.0)
+    surrogate_alpha = model.get("surrogate_alpha", 4.0)
     if (
         type(surrogate_alpha) not in (int, float)
         or isinstance(surrogate_alpha, bool)

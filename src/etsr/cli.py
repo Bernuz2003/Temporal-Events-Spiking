@@ -11,6 +11,14 @@ def build_parser() -> argparse.ArgumentParser:
     train = subparsers.add_parser("train", help="Train a configured model")
     train.add_argument("--config", required=True)
     train.add_argument("--seed", type=int)
+    train.add_argument("--epochs", type=int, help="Override the configured run length")
+    train.add_argument(
+        "--overfit",
+        nargs=2,
+        type=int,
+        metavar=("CLASSES", "SAMPLES_PER_CLASS"),
+        help="Train and evaluate on one small balanced train-only subset",
+    )
 
     smoke = subparsers.add_parser(
         "smoke", help="Run the bounded synthetic end-to-end integration check"
@@ -55,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
         "shortcut-dvslip",
         help="Measure global duration/count/polarity shortcut floors without official-test access",
     )
-    shortcut_dvslip.add_argument("--config", default="configs/dvslip_e0_recipe_r0.yaml")
+    shortcut_dvslip.add_argument("--config", default="configs/dvslip_e0.yaml")
     shortcut_dvslip.add_argument(
         "--output", default="artifacts/dvslip_shortcut_control.json"
     )
@@ -86,6 +94,28 @@ def main() -> None:
         from etsr.runner import train_experiment
 
         config = load_config(args.config)
+        if args.epochs is not None:
+            if args.epochs <= 0:
+                raise ValueError("--epochs must be positive")
+            config["training"]["epochs"] = args.epochs
+            config["training"]["warmup_epochs"] = min(
+                int(config["training"].get("warmup_epochs", 0)), args.epochs - 1
+            )
+        if args.overfit is not None:
+            class_count, samples_per_class = args.overfit
+            if class_count <= 0 or samples_per_class <= 0:
+                raise ValueError("--overfit values must be positive")
+            config["training"]["overfit"] = {
+                "class_count": class_count,
+                "samples_per_class": samples_per_class,
+            }
+            config["training"]["amp"] = False
+            config["training"]["select_metric"] = "accuracy"
+            config["training"]["evaluate_holdout"] = False
+            config.setdefault("profiling", {})["enabled"] = False
+            config["experiment"]["name"] += "_overfit"
+            if "recipe_id" in config["training"]:
+                config["training"]["recipe_id"] += "_overfit"
         print(train_experiment(config, seed=args.seed))
     elif args.command == "smoke":
         from etsr.config import load_config

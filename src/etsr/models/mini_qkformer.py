@@ -10,6 +10,7 @@ from etsr.models.layers import (
     SpikingSelfAttention,
     TokenQKAttention,
 )
+from etsr.models.spiking import MultiStepLIF
 
 
 class MiniQKFormer(nn.Module):
@@ -29,66 +30,42 @@ class MiniQKFormer(nn.Module):
         mlp_ratio: float = 2.0,
         lif_tau: float = 2.0,
         lif_threshold: float = 1.0,
-        surrogate_name: str = "fast_sigmoid",
-        surrogate_alpha: float = 25.0,
+        surrogate_alpha: float = 4.0,
     ) -> None:
         super().__init__()
         if embed_dim % 4 != 0:
             raise ValueError("embed_dim must be divisible by four")
+        if surrogate_alpha <= 0.0:
+            raise ValueError("surrogate_alpha must be positive")
         self.num_classes = num_classes
         half = embed_dim // 2
 
         self.patch_embed1 = InitialPatchEmbedding(
-            in_channels,
-            embed_dim,
-            lif_tau,
-            lif_threshold,
-            surrogate_name,
-            surrogate_alpha,
+            in_channels, embed_dim, lif_tau, lif_threshold
         )
         self.stage1 = SpikingBlock(
-            attention=TokenQKAttention(
-                half,
-                num_heads,
-                lif_tau,
-                lif_threshold,
-                surrogate_name,
-                surrogate_alpha,
-            ),
+            attention=TokenQKAttention(half, num_heads, lif_tau, lif_threshold),
             dim=half,
             mlp_ratio=mlp_ratio,
             tau=lif_tau,
             threshold=lif_threshold,
-            surrogate_name=surrogate_name,
-            surrogate_alpha=surrogate_alpha,
         )
         self.patch_embed2 = PatchEmbeddingStage(
-            half,
-            embed_dim,
-            lif_tau,
-            lif_threshold,
-            surrogate_name,
-            surrogate_alpha,
+            half, embed_dim, lif_tau, lif_threshold
         )
         self.stage2 = SpikingBlock(
-            attention=SpikingSelfAttention(
-                embed_dim,
-                num_heads,
-                lif_tau,
-                lif_threshold,
-                surrogate_name,
-                surrogate_alpha,
-            ),
+            attention=SpikingSelfAttention(embed_dim, num_heads, lif_tau, lif_threshold),
             dim=embed_dim,
             mlp_ratio=mlp_ratio,
             tau=lif_tau,
             threshold=lif_threshold,
-            surrogate_name=surrogate_name,
-            surrogate_alpha=surrogate_alpha,
         )
         self.head = nn.Linear(embed_dim, num_classes)
         self.head.op_kind = "mac"
 
+        for module in self.modules():
+            if isinstance(module, MultiStepLIF):
+                module.surrogate_alpha = float(surrogate_alpha)
         self.apply(self._initialize)
 
     @staticmethod

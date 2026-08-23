@@ -11,19 +11,17 @@ DVSLIP_SPLIT_MANIFEST ?= data/dvslip_development_split.json
 DVSLIP_PREFLIGHT_OUTPUT ?= artifacts/dvslip_preflight.json
 DVSLIP_PROFILE_OUTPUT ?= artifacts/dvslip_dataset_profile.json
 DVSLIP_SHORTCUT_OUTPUT ?= artifacts/dvslip_shortcut_control.json
-DVSLIP_CONFIG ?= configs/dvslip_e0_recipe_r0.yaml
-DVSLIP_CHECKPOINT ?=
-DVSLIP_DIAGNOSTIC_CONFIG ?= configs/dvslip_e0_recipe_r1.yaml
-DVSLIP_DIAGNOSTIC_OUTPUT ?= artifacts/dvslip_checkpoint_surrogate_comparison.json
+DVSLIP_CONFIG ?= configs/dvslip_e0.yaml
 DVSLIP_HASH_SAMPLES ?= 0
 SMILIES_CONFIG ?=
 SMILIES_SESSION ?=
+SMILIES_TRAIN_ARGS ?=
 
 .PHONY: install install-dev test smoke lint check-scripts clean
 .PHONY: prepare-dvslip-split preflight-dvslip profile-dvslip shortcut-dvslip
 .PHONY: train temporal-audit prepare-matched-dvsgc train-audit-seed mechanistic-audit
 .PHONY: smilies-build smilies-dvslip-prepare smilies-dvslip-gate
-.PHONY: smilies-dvslip-pilot smilies-dvslip-train smilies-dvslip-diagnose smilies-train
+.PHONY: smilies-train
 
 install:
 	$(PYTHON) -m pip install -e .
@@ -90,25 +88,12 @@ smilies-dvslip-prepare:
 smilies-dvslip-gate:
 	bash scripts/smilies/dvslip_workflow.sh gate
 
-smilies-dvslip-pilot:
-	bash scripts/smilies/dvslip_workflow.sh pilot
-
-smilies-dvslip-train:
-	bash scripts/smilies/dvslip_workflow.sh train
-
-smilies-dvslip-diagnose:
-	@test -n "$(DVSLIP_CHECKPOINT)" || (echo "Uso: make smilies-dvslip-diagnose DVSLIP_CHECKPOINT=checkpoints/<RUN_ID>/last.pt" && exit 1)
-	DVSLIP_CHECKPOINT="$(DVSLIP_CHECKPOINT)" \
-	DVSLIP_DIAGNOSTIC_CONFIG="$(DVSLIP_DIAGNOSTIC_CONFIG)" \
-	DVSLIP_DIAGNOSTIC_OUTPUT="$(DVSLIP_DIAGNOSTIC_OUTPUT)" \
-		bash scripts/smilies/dvslip_workflow.sh diagnose
-
 smilies-train:
-	@test -n "$(SMILIES_CONFIG)" || (echo "Uso: make smilies-train SMILIES_CONFIG=configs/<dataset>.yaml [SMILIES_SESSION=nome]" && exit 1)
+	@test -n "$(SMILIES_CONFIG)" || (echo "Uso: make smilies-train SMILIES_CONFIG=configs/<dataset>.yaml [SMILIES_SESSION=nome] [SMILIES_TRAIN_ARGS='...']" && exit 1)
 	@if [ -n "$(SMILIES_SESSION)" ]; then \
-		bash scripts/smilies/run_training.sh "$(SMILIES_CONFIG)" "$(SMILIES_SESSION)"; \
+		bash scripts/smilies/run_training.sh "$(SMILIES_CONFIG)" "$(SMILIES_SESSION)" -- $(SMILIES_TRAIN_ARGS); \
 	else \
-		bash scripts/smilies/run_training.sh "$(SMILIES_CONFIG)"; \
+		bash scripts/smilies/run_training.sh "$(SMILIES_CONFIG)" -- $(SMILIES_TRAIN_ARGS); \
 	fi
 
 clean:

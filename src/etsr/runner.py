@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import logging
 from pathlib import Path
@@ -9,7 +10,7 @@ import numpy as np
 import torch
 
 from etsr.config import save_config
-from etsr.data.common import DatasetBundle, build_loader
+from etsr.data.common import DatasetBundle, balanced_overfit_bundle, build_loader
 from etsr.data.factory import build_dataset_bundle
 from etsr.data.perturbations import PerturbationSpec, PerturbedDataset
 from etsr.evaluation.metrics import (
@@ -68,6 +69,11 @@ def _build_training_bundle(config: dict[str, Any], seed: int) -> DatasetBundle:
 
 
 def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
+    config = copy.deepcopy(config)
+    overfit = config["training"].get("overfit")
+    if overfit is not None and config["dataset"]["name"] == "dvslip":
+        config["augmentation"]["horizontal_flip_probability"] = 0.0
+
     seed = int(config["experiment"]["seed"] if seed is None else seed)
     configured_seeds = [int(value) for value in config["experiment"].get("model_seeds", [])]
     if configured_seeds and seed not in configured_seeds:
@@ -79,6 +85,19 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
     logger.info("Device: %s", device)
 
     bundle = _build_training_bundle(config, seed)
+    if overfit is not None:
+        if not isinstance(overfit, dict):
+            raise ValueError("training.overfit must be a mapping")
+        bundle = balanced_overfit_bundle(
+            bundle,
+            class_count=int(overfit["class_count"]),
+            samples_per_class=int(overfit["samples_per_class"]),
+        )
+        logger.info(
+            "Overfit subset: %d classes x %d samples",
+            int(overfit["class_count"]),
+            int(overfit["samples_per_class"]),
+        )
     num_classes = len(bundle.classes)
     model = build_model(config["model"], num_classes).to(device)
     parameter_count = sum(
@@ -184,6 +203,8 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
             "validation_accuracy": validation_result.accuracy,
             "validation_macro_f1": validation_result.macro_f1,
             "epoch_seconds": train_metrics["seconds"],
+            "gradient_norm_mean": train_metrics["gradient_norm_mean"],
+            "gradient_clip_fraction": train_metrics["gradient_clip_fraction"],
             "peak_cuda_memory_bytes": epoch_peak_cuda_memory_bytes,
         }
         append_csv(row, artifact_dir / "history.csv")

@@ -4,21 +4,6 @@ import torch
 from torch import nn
 
 
-class _FastSigmoidSpike(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, membrane_minus_threshold: torch.Tensor, slope: float):
-        ctx.save_for_backward(membrane_minus_threshold)
-        ctx.slope = slope
-        return (membrane_minus_threshold >= 0).to(membrane_minus_threshold.dtype)
-
-    @staticmethod
-    def backward(ctx, grad_output: torch.Tensor):
-        (x,) = ctx.saved_tensors
-        slope = ctx.slope
-        surrogate = 1.0 / (1.0 + slope * x.abs()).pow(2)
-        return grad_output * surrogate, None
-
-
 class _SigmoidSpike(torch.autograd.Function):
     """Hard spike in the forward pass with a logistic derivative in the backward pass."""
 
@@ -37,28 +22,10 @@ class _SigmoidSpike(torch.autograd.Function):
         return grad_output * surrogate, None
 
 
-SUPPORTED_SURROGATES = ("fast_sigmoid", "sigmoid")
+def spike_function(x: torch.Tensor, alpha: float = 4.0) -> torch.Tensor:
+    """Apply a hard spike with the logistic surrogate used during backward only."""
 
-
-def spike_function(
-    x: torch.Tensor,
-    slope: float = 25.0,
-    *,
-    surrogate_name: str = "fast_sigmoid",
-) -> torch.Tensor:
-    """Apply a hard spike with a selectable backward-only surrogate.
-
-    ``slope`` retains the original public argument name for compatibility. For the logistic
-    surrogate it is the conventional alpha parameter.
-    """
-
-    if surrogate_name == "fast_sigmoid":
-        return _FastSigmoidSpike.apply(x, slope)
-    if surrogate_name == "sigmoid":
-        return _SigmoidSpike.apply(x, slope)
-    raise ValueError(
-        f"Unsupported surrogate: {surrogate_name}. Expected one of {SUPPORTED_SURROGATES}."
-    )
+    return _SigmoidSpike.apply(x, alpha)
 
 
 class MultiStepLIF(nn.Module):
@@ -73,27 +40,17 @@ class MultiStepLIF(nn.Module):
         tau: float = 2.0,
         threshold: float = 1.0,
         detach_reset: bool = True,
-        surrogate_slope: float = 25.0,
-        surrogate_name: str = "fast_sigmoid",
-        surrogate_alpha: float | None = None,
+        surrogate_alpha: float = 4.0,
     ) -> None:
         super().__init__()
         if tau <= 1.0:
             raise ValueError("tau must be greater than 1 for a leaky neuron.")
-        if surrogate_name not in SUPPORTED_SURROGATES:
-            raise ValueError(
-                f"Unsupported surrogate: {surrogate_name}. Expected one of {SUPPORTED_SURROGATES}."
-            )
-        alpha = surrogate_slope if surrogate_alpha is None else surrogate_alpha
-        if alpha <= 0.0:
+        if surrogate_alpha <= 0.0:
             raise ValueError("surrogate_alpha must be positive.")
         self.tau = float(tau)
         self.threshold = float(threshold)
         self.detach_reset = detach_reset
-        self.surrogate_name = surrogate_name
-        self.surrogate_alpha = float(alpha)
-        # Retained for callers that inspect the original attribute.
-        self.surrogate_slope = self.surrogate_alpha
+        self.surrogate_alpha = float(surrogate_alpha)
         self.last_firing_rate = 0.0
 
     def forward(self, current: torch.Tensor) -> torch.Tensor:
@@ -103,11 +60,7 @@ class MultiStepLIF(nn.Module):
         spikes = []
         for current_t in current.unbind(0):
             membrane = membrane + (current_t - membrane) / self.tau
-            spike = spike_function(
-                membrane - self.threshold,
-                self.surrogate_alpha,
-                surrogate_name=self.surrogate_name,
-            )
+            spike = spike_function(membrane - self.threshold, self.surrogate_alpha)
             reset_spike = spike.detach() if self.detach_reset else spike
             membrane = membrane - reset_spike * self.threshold
             spikes.append(spike)

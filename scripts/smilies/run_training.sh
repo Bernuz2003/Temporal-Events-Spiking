@@ -8,8 +8,7 @@ SINGULARITY="${SINGULARITY:-singularity}"
 IMAGE="${IMAGE:-$REPO/containers/temporal-event-spiking.sif}"
 
 usage() {
-  echo "Uso: $0 CONFIG [SESSIONE]" >&2
-  echo "Avvia in screen il training descritto da un file YAML interno al repository." >&2
+  echo "Uso: $0 CONFIG [SESSIONE] [-- OPZIONI_TRAIN...]" >&2
 }
 
 resolve_config() {
@@ -31,23 +30,26 @@ resolve_config() {
 
 run_foreground() {
   local config="$1"
+  shift
   cd "$REPO"
   exec "$SINGULARITY" exec --cleanenv --nv \
     --bind "$REPO:/workspace" \
     --pwd /workspace "$IMAGE" \
     env CUBLAS_WORKSPACE_CONFIG=:4096:8 \
-    python -m etsr.cli train --config "$config"
+    python -m etsr.cli train --config "$config" "$@"
 }
 
 if [[ "${1:-}" == "--foreground" ]]; then
-  [[ "$#" -eq 2 ]] || {
+  [[ "$#" -ge 2 ]] || {
     usage
     exit 2
   }
-  run_foreground "$2"
+  config="$2"
+  shift 2
+  run_foreground "$config" "$@"
 fi
 
-[[ "$#" -ge 1 && "$#" -le 2 ]] || {
+[[ "$#" -ge 1 ]] || {
   usage
   exit 2
 }
@@ -65,7 +67,17 @@ command -v screen >/dev/null 2>&1 || {
 }
 
 CONFIG="$(resolve_config "$1")"
-SESSION="${2:-$(basename -- "${CONFIG%.yaml}")}"
+shift
+SESSION="$(basename -- "${CONFIG%.yaml}")"
+if [[ "$#" -gt 0 && "$1" != "--" ]]; then
+  SESSION="$1"
+  shift
+fi
+if [[ "$#" -gt 0 && "$1" == "--" ]]; then
+  shift
+fi
+TRAIN_ARGS=("$@")
+
 [[ "$SESSION" =~ ^[A-Za-z0-9_.-]+$ ]] || {
   echo "Nome sessione non valido: $SESSION" >&2
   exit 2
@@ -94,7 +106,7 @@ LOG_DIR="$REPO/artifacts/screen"
 LOG_FILE="$LOG_DIR/$SESSION.log"
 mkdir -p "$LOG_DIR"
 screen -L -Logfile "$LOG_FILE" -dmS "$SESSION" \
-  bash "$SCRIPT_PATH" --foreground "$CONFIG"
+  bash "$SCRIPT_PATH" --foreground "$CONFIG" "${TRAIN_ARGS[@]}"
 
 echo "Training avviato nella sessione: $SESSION"
 echo "Log screen: $LOG_FILE"

@@ -57,33 +57,31 @@ Only the official `train/` directory is needed. Once it is present under `data/D
 ```bash
 make smilies-dvslip-prepare
 make smilies-dvslip-gate
-make smilies-dvslip-pilot
 ```
 
 `gate` verifies a clean worktree, host and container CUDA, pytest, Ruff, shell syntax, bytecode
-compilation, the full hash preflight and the D016 shortcut control. `pilot` creates an ignored
-one-epoch configuration without changing the versioned r0 recipe and starts it in the detached,
-logged screen session `dvslip_e0_r0_cost_pilot`.
+compilation, the full hash preflight and the D016 shortcut control.
 
-Inspect the latest pilot `history.csv` and `summary.json` under `artifacts/`. If runtime and peak CUDA
-memory are acceptable, start the 64-epoch candidate:
+The generic launcher accepts bounded training overrides. The current optimization gate uses 16
+classes and four official-train samples per class, disables augmentation, AMP and profiling, and
+reuses the same subset for training and evaluation:
 
 ```bash
-make smilies-dvslip-train
+make smilies-train \
+  SMILIES_CONFIG=configs/dvslip_e0.yaml \
+  SMILIES_SESSION=dvslip_e0_overfit \
+  SMILIES_TRAIN_ARGS='--overfit 16 4 --epochs 50'
 ```
 
-The command refuses to start without preflight, shortcut and a clean completed CUDA pilot summary
-from the current or immediately preceding operational-selection commit. It launches the versioned
-`configs/dvslip_e0_recipe_r0.yaml` in session `dvslip_e0_r0` and writes screen logs to
-`artifacts/screen/`.
+Do not start the complete run until that gate is reviewed. Once authorized, the same launcher is
+used without overfit arguments and without a dataset-specific training script.
 
 ## Screen controls
 
 ```bash
 screen -ls
-screen -r dvslip_e0_r0_cost_pilot
-screen -r dvslip_e0_r0
-tail -f artifacts/screen/dvslip_e0_r0.log
+screen -r dvslip_e0_overfit
+tail -f artifacts/screen/dvslip_e0_overfit.log
 ```
 
 Detach with `Ctrl-a`, then `d`. A session terminates automatically when its training process exits.
@@ -96,7 +94,8 @@ pipeline can be started with:
 ```bash
 make smilies-train \
   SMILIES_CONFIG=configs/<dataset-and-recipe>.yaml \
-  SMILIES_SESSION=<descriptive-name>
+  SMILIES_SESSION=<descriptive-name> \
+  SMILIES_TRAIN_ARGS='<optional train overrides>'
 ```
 
 This makes execution reusable without pretending that loaders for DailyDVS-200, DVS-Gesture or

@@ -24,18 +24,19 @@
 - E0 is implemented as the explicit D014 physical-time count encoder and adapts to the shared
   training engine without exposing an official-test holdout. The exhaustive 14,896-sample check
   preserves every event and observes maximum voxel count 17, so the uint8 gate is closed.
-- Candidate `dvslip_e0_r0` failed its optimization gate: through epoch 28 it remained near chance
-  with severe backward attenuation despite non-collapsed features, logits and firing activity. The
-  FP32 checkpoint diagnostic localizes the defect to gradient propagation through the steep custom
-  surrogate rather than to AMP, a dead SSA path or a constant temporal-mean readout. r0 remains
-  unchanged and is not a freeze candidate.
-- D019 defines `dvslip_e0_r1` as a single backward-only intervention: logistic sigmoid surrogate
-  alpha 4 in place of fast-sigmoid slope 25. Legacy configs retain their prior default and the hard
-  spike forward/state dict are unchanged. A reproducible same-checkpoint comparator is ready; r1
-  training is not yet authorized.
-- The expanded shortcut/provenance suite passes all 60 tests inside the SMILIES image. PyTorch
-  2.2.2 emits one non-blocking `SequentialLR` deprecation warning from its own milestone hand-off;
-  the tested learning-rate trajectory remains correct.
+- The failed steep surrogate is removed. Its epoch-28 evidence remains in the ignored run artifact
+  and Git history, not as a second supported recipe or diagnostic subsystem. The exact-forward
+  checkpoint comparison showed that sigmoid alpha 4 recovers mean gradients by 66.1 million times
+  in the first embedding and 6.56 million times in stage 1, while leaving logits unchanged.
+- `configs/dvslip_e0.yaml` is the sole active E0 recipe. The model supports one logistic surrogate
+  with configurable alpha, currently 4; there is no selector or compatibility default for the
+  falsified implementation.
+- A generic train-only overfit mode now reuses the normal runner on a deterministic balanced subset,
+  disables DVS-Lip augmentation, AMP and profiling, and reports mean pre-clipping gradient norm and
+  clipping frequency. No DVS-Lip-specific overfit loop or permanent runtime config was added.
+- The previous SMILIES gate passed its then-current suite. The simplified 64-test suite must pass
+  the next server gate; PyTorch 2.2.2 may still emit its non-blocking `SequentialLR` deprecation
+  warning.
 - D016 records the verified physical-duration shortcut risk. The fixed global-statistic control,
   per-sample post-run diagnostics, dataset-index provenance and CUDA peak-memory logging are
   implemented and verified on the real development split. The E0-observable global-statistic floor
@@ -53,13 +54,13 @@
 
 ## Open gate
 
-- Run the r0-versus-r1 same-checkpoint gradient comparison on the server. It must report exact
-  forward equivalence and materially recover early-layer gradients before an overfit check is run.
+- Run the fixed 16-class × 4-sample, 50-epoch overfit check on official train only. It passes at
+  final-epoch same-subset accuracy at least 95% and loss below 1.5; clipping behavior must remain
+  finite.
 
 ## Next implementation task
 
-Inspect the surrogate-comparison artifact. If its gate passes, add and run the smallest balanced
-train-only overfit check; do not start the 64-epoch r1 training yet.
+Inspect the overfit history and summary before authorizing the complete E0 training.
 
 ## Deferred external operations
 

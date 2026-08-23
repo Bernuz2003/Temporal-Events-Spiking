@@ -327,3 +327,26 @@ Append-only. A later entry may supersede an earlier decision; historical entries
   comparison does not materially recover gradients in the first embedding/stage, or if the
   train-only overfit check still cannot learn. In that case diagnose residual topology and neuron
   dynamics one variable at a time.
+
+## D020 — Keep one active path and make diagnostics modes, not subsystems
+
+- **Date:** 2026-08-23
+- **Owner:** scientific owner and project agent.
+- **Decision:** Git history and compact result artifacts preserve failed experiments; the active
+  codebase does not preserve their configuration, implementation or one-off diagnostic launcher.
+  Remove the failed fast-sigmoid surrogate, the r0/r1 config duplication and the completed
+  checkpoint-comparison script. Keep one canonical `dvslip_e0.yaml` with the logistic surrogate and
+  configurable alpha 4. New diagnostic behavior must first be expressible as a small reusable mode
+  of an existing path; create a separate subsystem only when multiple concrete tasks require it.
+- **Overfit gate:** use the normal training runner on the deterministic first four official-train
+  samples from each of target classes 0–15. Training and evaluation share those 64 samples;
+  horizontal flip, AMP and profiling are disabled. Fifty epochs retain the recipe optimizer,
+  scheduler, regularization, batch and accumulation settings, giving 100 optimizer steps. Pass only
+  if the final history row has same-subset accuracy at least 95%, loss below 1.5 and finite clipping
+  metrics.
+- **Why:** parametrization should remove duplicated paths, not retain falsified alternatives. This
+  keeps evidence reproducible while preventing each investigation from permanently expanding the
+  maintenance surface.
+- **Reversal condition:** retain an additional implementation or dedicated diagnostic only when it
+  remains an active scientific comparator or a second verified use case cannot be served clearly
+  by the shared mode.

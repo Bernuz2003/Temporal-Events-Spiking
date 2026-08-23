@@ -89,7 +89,7 @@ def train_one_epoch(
     amp_enabled: bool,
     gradient_clip_norm: float | None,
     gradient_accumulation_steps: int = 1,
-) -> dict[str, float]:
+) -> dict[str, float | None]:
     if gradient_accumulation_steps <= 0:
         raise ValueError("gradient_accumulation_steps must be positive")
 
@@ -100,6 +100,9 @@ def train_one_epoch(
     start = time.perf_counter()
     total_batches = len(loader)
     accumulated_samples = 0
+    gradient_norm_sum = 0.0
+    clipped_steps = 0
+    optimizer_steps = 0
     optimizer.zero_grad(set_to_none=True)
 
     progress = tqdm(loader, desc="train", leave=False)
@@ -126,11 +129,16 @@ def train_one_epoch(
                 if parameter.grad is not None:
                     parameter.grad.div_(accumulated_samples)
             if gradient_clip_norm is not None:
-                nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
+                gradient_norm = float(
+                    nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm).item()
+                )
+                gradient_norm_sum += gradient_norm
+                clipped_steps += int(gradient_norm > gradient_clip_norm)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
             accumulated_samples = 0
+            optimizer_steps += 1
 
         loss_sum += float(loss.detach().item()) * batch_size
         correct += int((logits.argmax(1) == targets).sum().item())
@@ -141,6 +149,16 @@ def train_one_epoch(
         "loss": loss_sum / max(1, samples),
         "accuracy": correct / max(1, samples),
         "seconds": time.perf_counter() - start,
+        "gradient_norm_mean": (
+            gradient_norm_sum / max(1, optimizer_steps)
+            if gradient_clip_norm is not None
+            else None
+        ),
+        "gradient_clip_fraction": (
+            clipped_steps / max(1, optimizer_steps)
+            if gradient_clip_norm is not None
+            else None
+        ),
     }
 
 
