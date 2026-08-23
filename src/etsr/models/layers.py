@@ -43,32 +43,8 @@ class ConvBNLIF2d(nn.Module):
         return self.lif(x)
 
 
-class ConvBN2d(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        stride: int = 1,
-        padding: int = 0,
-    ) -> None:
-        super().__init__()
-        self.conv = nn.Conv2d(
-            in_channels,
-            out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            bias=False,
-        )
-        self.bn = nn.BatchNorm2d(out_channels)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return _time_distributed(self.bn, _time_distributed(self.conv, x))
-
-
 class InitialPatchEmbedding(nn.Module):
-    """Compact SPEDS-like front-end: 128 -> 16 spatial resolution."""
+    """Compact SPEDS-like front-end whose spiking branches are added directly."""
 
     def __init__(self, in_channels: int, embed_dim: int, tau: float, threshold: float):
         super().__init__()
@@ -82,8 +58,7 @@ class InitialPatchEmbedding(nn.Module):
         )
         self.main3 = ConvBNLIF2d(half, half, 3, stride=2, padding=1, tau=tau, threshold=threshold)
         self.main4 = ConvBNLIF2d(half, half, 3, stride=2, padding=1, tau=tau, threshold=threshold)
-        self.shortcut = ConvBN2d(quarter, half, 1, stride=8)
-        self.output_lif = MultiStepLIF(tau=tau, threshold=threshold)
+        self.shortcut = ConvBNLIF2d(quarter, half, 1, stride=8, tau=tau, threshold=threshold)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.main1(x)
@@ -92,21 +67,32 @@ class InitialPatchEmbedding(nn.Module):
         x = self.main3(x)
         x = self.main4(x)
         shortcut = self.shortcut(shortcut_source)
-        return self.output_lif(x + shortcut)
+        return x + shortcut
 
 
 class PatchEmbeddingStage(nn.Module):
+    """Downsample two spiking branches and add them without another threshold."""
+
     def __init__(self, in_channels: int, out_channels: int, tau: float, threshold: float):
         super().__init__()
         self.proj = ConvBNLIF2d(
             in_channels, out_channels, 3, stride=1, padding=1, tau=tau, threshold=threshold
         )
-        self.down = ConvBN2d(out_channels, out_channels, 3, stride=2, padding=1)
-        self.shortcut = ConvBN2d(in_channels, out_channels, 1, stride=2)
-        self.output_lif = MultiStepLIF(tau=tau, threshold=threshold)
+        self.down = ConvBNLIF2d(
+            out_channels,
+            out_channels,
+            3,
+            stride=2,
+            padding=1,
+            tau=tau,
+            threshold=threshold,
+        )
+        self.shortcut = ConvBNLIF2d(
+            in_channels, out_channels, 1, stride=2, tau=tau, threshold=threshold
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.output_lif(self.down(self.proj(x)) + self.shortcut(x))
+        return self.down(self.proj(x)) + self.shortcut(x)
 
 
 class TokenQKAttention(nn.Module):
@@ -224,15 +210,15 @@ class SpikingMLP(nn.Module):
 
 
 class SpikingBlock(nn.Module):
+    """QKFormer block with identity-preserving residual additions outside the LIF nodes."""
+
     def __init__(
         self, attention: nn.Module, dim: int, mlp_ratio: float, tau: float, threshold: float
     ):
         super().__init__()
         self.attention = attention
-        self.attention_residual_lif = MultiStepLIF(tau=tau, threshold=threshold)
         self.mlp = SpikingMLP(dim, mlp_ratio, tau, threshold)
-        self.mlp_residual_lif = MultiStepLIF(tau=tau, threshold=threshold)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.attention_residual_lif(x + self.attention(x))
-        return self.mlp_residual_lif(x + self.mlp(x))
+        x = x + self.attention(x)
+        return x + self.mlp(x)

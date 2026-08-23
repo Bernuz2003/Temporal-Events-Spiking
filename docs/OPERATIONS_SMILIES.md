@@ -1,7 +1,7 @@
 # SMILIES operations
 
 **Status:** Singularity image and CUDA execution verified on `daredevil` (RTX A4000,
-PyTorch 2.2.2+cu121); rerun the complete gate after the Ruff compatibility fix.
+PyTorch 2.2.2+cu121); rerun the complete gate after synchronizing the residual correction.
 
 ## Filesystem model
 
@@ -62,15 +62,16 @@ make smilies-dvslip-gate
 `gate` verifies a clean worktree, host and container CUDA, pytest, Ruff, shell syntax, bytecode
 compilation, the full hash preflight and the D016 shortcut control.
 
-The generic launcher accepts bounded training overrides. The current optimization gate uses 16
-classes and four official-train samples per class, disables augmentation, AMP and profiling, and
-reuses the same subset for training and evaluation:
+The generic launcher accepts bounded training overrides. The current residual-topology gate uses
+16 classes and four official-train samples per class, disables augmentation, AMP and profiling,
+and reuses the same subset for training and evaluation. Five hundred epochs correspond to 1,000
+optimizer steps with the canonical batch and accumulation settings:
 
 ```bash
 make smilies-train \
   SMILIES_CONFIG=configs/dvslip_e0.yaml \
-  SMILIES_SESSION=dvslip_e0_overfit \
-  SMILIES_TRAIN_ARGS='--overfit 16 4 --epochs 50'
+  SMILIES_SESSION=dvslip_e0_residual_overfit \
+  SMILIES_TRAIN_ARGS='--overfit 16 4 --epochs 500'
 ```
 
 Do not start the complete run until that gate is reviewed. Once authorized, the same launcher is
@@ -80,8 +81,8 @@ used without overfit arguments and without a dataset-specific training script.
 
 ```bash
 screen -ls
-screen -r dvslip_e0_overfit
-tail -f artifacts/screen/dvslip_e0_overfit.log
+screen -r dvslip_e0_residual_overfit
+tail -f artifacts/screen/dvslip_e0_residual_overfit.log
 ```
 
 Detach with `Ctrl-a`, then `d`. A session terminates automatically when its training process exits.
@@ -102,6 +103,6 @@ This makes execution reusable without pretending that loaders for DailyDVS-200, 
 CIFAR10-DVS already exist. Their Python dataset contracts will be integrated when each benchmark
 becomes an active, source-verified task.
 
-Historical DVS-GC helpers are isolated under `scripts/legacy/dvsgc/`; the old documentation remains
-in [`archive/dvsgc/smilies_setup.md`](archive/dvsgc/smilies_setup.md) as provenance, not as the
-current server procedure.
+Historical DVS-GC helpers are no longer part of the active runtime. Their documentation remains in
+[`archive/dvsgc/smilies_setup.md`](archive/dvsgc/smilies_setup.md) as provenance, not as the current
+server procedure; the executable implementation is recoverable from Git history.

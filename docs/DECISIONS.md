@@ -350,3 +350,23 @@ Append-only. A later entry may supersede an earlier decision; historical entries
 - **Reversal condition:** retain an additional implementation or dedicated diagnostic only when it
   remains an active scientific comparator or a second verified use case cannot be served clearly
   by the shared mode.
+
+## D021 — Align residual paths with the official QKFormer topology
+
+- **Date:** 2026-08-23
+- **Evidence:** the 100-step overfit remained at 6.25% final accuracy. Extending the same controlled
+  run to 1,000 optimizer steps recovered real learning but stopped at 59.38% best and 56.25% final
+  same-subset accuracy, with final loss 2.972. From epoch 150 onward every optimizer step was
+  clipped. The current blocks applied a LIF after each residual sum, whereas the official QKFormer
+  uses direct residual additions; its SPEDS branches also spike before, rather than after, their
+  sum: <https://github.com/zhouchenlin2096/QKFormer/blob/master/imagenet/qkformer.py>.
+- **Decision:** make Transformer residual additions direct and make each SPEDS branch end in its own
+  LIF before direct addition. Remove the now-unused non-spiking Conv-BN helper and all post-residual
+  LIF wrappers. Keep E0, model width, surrogate alpha, neuron parameters, readout, optimizer,
+  scheduler, regularization, clipping and effective batch unchanged.
+- **Gate:** rerun the same deterministic 16-class by 4-sample overfit for 500 epochs (1,000 optimizer
+  steps). Require at least 95% final same-subset accuracy, loss below 1.5 and finite gradient
+  metrics before authorizing complete E0 training.
+- **Reversal condition:** if the aligned topology still fails, do not accumulate further local
+  patches or launch full training. Reassess Mini-QKFormer as the active baseline and test neuron
+  dynamics as a separately motivated variable.
