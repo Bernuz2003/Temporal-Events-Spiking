@@ -3,25 +3,41 @@ From: pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
 
 %labels
     Author Temporal Event Spiking Research
-    Scope temporal-auditing
+    Scope dvslip-e0-and-frozen-regressions
+
+%help
+    Il repository e i dati locali devono essere montati rispettivamente su
+    /workspace e /workspace/data, che la configurazione e PYTHONPATH assumono:
+
+        singularity exec --cleanenv --nv \
+            --bind <repo>:/workspace \
+            --bind <local-root>:/local \
+            --bind <local-root>/data:/workspace/data:ro \
+            --pwd /workspace \
+            temporal-event-spiking.sif \
+            env ETSR_ARTIFACT_ROOT=/local/artifacts \
+                ETSR_CHECKPOINT_ROOT=/local/checkpoints \
+            python -m etsr.cli train --config <config>
+
+    Senza il bind del repository il package etsr non e' importabile. Screen deve
+    essere avviato sull'host prima di singularity, cosi' il processo sopravvive
+    alla disconnessione SSH. Usare --nv per la GPU e un SIF non scrivibile.
 
 %post
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         git \
-        screen \
-        htop \
         ca-certificates
     rm -rf /var/lib/apt/lists/*
 
     python -m pip install --no-cache-dir --upgrade \
         torchvision==0.17.2 \
-        "numpy<2.0" \
-        PyYAML \
-        matplotlib \
+        "numpy>=1.24,<2.0" \
+        "PyYAML>=6.0,<7" \
+        "matplotlib>=3.7,<4" \
         "tqdm>=4.66,<5" \
-        pytest \
-        ruff \
+        "pytest>=8,<9" \
+        "ruff>=0.6,<0.8" \
         spikingjelly==0.0.0.0.14
 
     # dvsgc 0.1.2 dichiara ancora SpikingJelly 0.0.0.0.8 nei metadata PyPI.
@@ -30,10 +46,15 @@ From: pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
 
 %environment
     export PYTHONUNBUFFERED=1
+    # Impedisce che ~/.local della home montata scherni i pacchetti del container.
+    export PYTHONNOUSERSITE=1
     export MPLBACKEND=Agg
     export PYTHONPATH=/workspace/src:$PYTHONPATH
     export OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
     export MKL_NUM_THREADS=${MKL_NUM_THREADS:-4}
+
+%test
+    python -c "import torch, torchvision, numpy, yaml, matplotlib, tqdm, spikingjelly, dvsgc; print(torch.__version__, torchvision.__version__, numpy.__version__)"
 
 %runscript
     exec python "$@"
