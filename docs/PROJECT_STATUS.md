@@ -27,9 +27,9 @@
 - Candidate recipe `dvslip_e0_r0` is implemented in `configs/dvslip_e0_recipe_r0.yaml` under the
   two-run maximum budget of D015. It adds only warm-up/cosine control, correct gradient accumulation
   and train-only horizontal flip. No DVS-Lip training has been run and the recipe is not frozen.
-- The original recipe gate passes 56 tests in the project environment and the bounded smoke. The
-  expanded shortcut/provenance suite passes 60 tests in a compatible local Torch environment;
-  confirmation in the project environment remains pending.
+- The expanded shortcut/provenance suite passes all 60 tests inside the SMILIES image. PyTorch
+  2.2.2 emits one non-blocking `SequentialLR` deprecation warning from its own milestone hand-off;
+  the tested learning-rate trajectory remains correct.
 - D016 records the verified physical-duration shortcut risk. The fixed global-statistic control,
   per-sample post-run diagnostics, dataset-index provenance and CUDA peak-memory logging are
   implemented; their expanded test suite and real shortcut artifact are not yet verified.
@@ -37,16 +37,18 @@
   blockers and reproduces the complete content hash over all 14,896 train samples. No important run
   may start from a dirty worktree.
 - The single-home SMILIES workflow is prepared around the repository root: active checks, generic
-  config-driven training and frozen DVS-GC helpers are separated under `scripts/`. Actual SIF build
-  and CUDA execution remain unverified until run on `daredevil`.
+  config-driven training and frozen DVS-GC helpers are separated under `scripts/`. The SIF and CUDA
+  path are verified on the server RTX A4000. The first complete gate stopped only because the
+  container's older Ruff still enabled the since-removed UP038 rule; the source now supports both
+  lint versions without changing runtime behavior.
 - Training execution is already dataset-agnostic at the YAML/launcher level. Dataset construction
   is not yet generic: D017 defers extraction of a neutral raw-event interface until DailyDVS-200
   supplies the second concrete active contract, avoiding both runner branches and speculative APIs.
 
 ## Open gate
 
-- Confirm the expanded suite in the project environment, then run the shortcut and one-epoch cost
-  gates from a clean commit.
+- Rerun the complete server gate from the clean compatibility-fix commit, then run the one-epoch
+  cost pilot.
 
 ## Next implementation task
 
@@ -55,6 +57,4 @@ micro-batch. Only then run `dvslip_e0_r0` with seed 42 and inspect its artifacts
 
 ## Deferred external operations
 
-Historical DVS-GC sanity data, SMILIES SIF/CUDA verification and the intended GitLab remote remain
-external inputs. The server workflow now has explicit commands; verification closes only from its
-real output.
+Historical DVS-GC sanity data and the intended GitLab remote remain external inputs.

@@ -1,7 +1,7 @@
 # SMILIES operations
 
-**Status:** single-home DVS-Lip procedure defined; Singularity build and CUDA execution still
-require verification on `daredevil`.
+**Status:** Singularity image and CUDA execution verified on `daredevil` (RTX A4000,
+PyTorch 2.2.2+cu121); rerun the complete gate after the Ruff compatibility fix.
 
 ## Filesystem model
 

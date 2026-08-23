@@ -63,7 +63,9 @@ class MiniQKFormer(nn.Module):
 
     @staticmethod
     def _initialize(module: nn.Module) -> None:
-        if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Linear)):
+        if isinstance(  # noqa: UP038 - removed by modern Ruff; tuple form is intentional.
+            module, (nn.Conv1d, nn.Conv2d, nn.Linear)
+        ):
             nn.init.kaiming_normal_(module.weight, mode="fan_out")
             if getattr(module, "bias", None) is not None:
                 nn.init.zeros_(module.bias)

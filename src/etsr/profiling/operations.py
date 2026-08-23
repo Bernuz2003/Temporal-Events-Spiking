@@ -21,9 +21,13 @@ class OperationProfiler:
         self.batch_size = 1
         self.handles = []
         for name, module in model.named_modules():
-            if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Linear)):
+            if isinstance(  # noqa: UP038 - removed by modern Ruff; tuple form is intentional.
+                module, (nn.Conv1d, nn.Conv2d, nn.Linear)
+            ):
                 self.handles.append(module.register_forward_hook(self._dense_hook(name)))
-            elif isinstance(module, (TokenQKAttention, SpikingSelfAttention)):
+            elif isinstance(  # noqa: UP038 - removed by modern Ruff; tuple form is intentional.
+                module, (TokenQKAttention, SpikingSelfAttention)
+            ):
                 self.handles.append(module.register_forward_hook(self._attention_hook(name)))
 
     def set_batch_size(self, batch_size: int) -> None:

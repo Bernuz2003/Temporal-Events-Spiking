@@ -56,7 +56,9 @@ def _sample_paths_digest(relative_paths: list[str]) -> str:
 def _validate_parameters(split_seed: int, validation_fraction: float) -> None:
     if type(split_seed) is not int:
         raise ValueError("DVS-Lip split_seed must be an integer.")
-    if not isinstance(validation_fraction, (int, float)) or isinstance(validation_fraction, bool):
+    if not isinstance(  # noqa: UP038 - removed by modern Ruff; tuple form is intentional.
+        validation_fraction, (int, float)
+    ) or isinstance(validation_fraction, bool):
         raise ValueError("DVS-Lip validation_fraction must be numeric.")
     if not 0.0 < float(validation_fraction) < 1.0:
         raise ValueError("DVS-Lip validation_fraction must be strictly between zero and one.")
