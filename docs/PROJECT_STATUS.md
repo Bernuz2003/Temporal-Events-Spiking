@@ -1,6 +1,6 @@
 # Project status
 
-**Updated:** 2026-08-22
+**Updated:** 2026-08-23
 **Phase:** DVS-Lip foundation
 
 ## Current state
@@ -36,6 +36,12 @@
 - The implementation is committed and the regenerated schema-3 preflight is ready, has no protocol
   blockers and reproduces the complete content hash over all 14,896 train samples. No important run
   may start from a dirty worktree.
+- The single-home SMILIES workflow is prepared around the repository root: active checks, generic
+  config-driven training and frozen DVS-GC helpers are separated under `scripts/`. Actual SIF build
+  and CUDA execution remain unverified until run on `daredevil`.
+- Training execution is already dataset-agnostic at the YAML/launcher level. Dataset construction
+  is not yet generic: D017 defers extraction of a neutral raw-event interface until DailyDVS-200
+  supplies the second concrete active contract, avoiding both runner branches and speculative APIs.
 
 ## Open gate
 
@@ -49,5 +55,6 @@ micro-batch. Only then run `dvslip_e0_r0` with seed 42 and inspect its artifacts
 
 ## Deferred external operations
 
-Historical DVS-GC sanity data, SMILIES/CUDA verification and the intended GitLab remote remain
-external inputs. They are revisited only when an experiment or deployment actually requires them.
+Historical DVS-GC sanity data, SMILIES SIF/CUDA verification and the intended GitLab remote remain
+external inputs. The server workflow now has explicit commands; verification closes only from its
+real output.

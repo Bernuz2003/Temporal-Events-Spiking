@@ -13,8 +13,14 @@ DVSLIP_PROFILE_OUTPUT ?= artifacts/dvslip_dataset_profile.json
 DVSLIP_SHORTCUT_OUTPUT ?= artifacts/dvslip_shortcut_control.json
 DVSLIP_CONFIG ?= configs/dvslip_e0_recipe_r0.yaml
 DVSLIP_HASH_SAMPLES ?= 0
+SMILIES_CONFIG ?=
+SMILIES_SESSION ?=
 
-.PHONY: install install-dev test smoke prepare-dvslip-split preflight-dvslip profile-dvslip shortcut-dvslip train temporal-audit prepare-matched-dvsgc train-audit-seed mechanistic-audit lint clean
+.PHONY: install install-dev test smoke lint check-scripts clean
+.PHONY: prepare-dvslip-split preflight-dvslip profile-dvslip shortcut-dvslip
+.PHONY: train temporal-audit prepare-matched-dvsgc train-audit-seed mechanistic-audit
+.PHONY: smilies-build smilies-dvslip-prepare smilies-dvslip-gate
+.PHONY: smilies-dvslip-pilot smilies-dvslip-train smilies-train
 
 install:
 	$(PYTHON) -m pip install -e .
@@ -30,7 +36,7 @@ test:
 	$(PYTHON) -m pytest -q
 
 smoke:
-	PYTHON="$(PYTHON)" bash scripts/smoke_test.sh "$(SMOKE_CONFIG)"
+	PYTHON="$(PYTHON)" bash scripts/checks/smoke_test.sh "$(SMOKE_CONFIG)"
 
 prepare-dvslip-split:
 	@test -n "$(DVSLIP_TRAIN_ROOT)" || (echo "Uso: make prepare-dvslip-split DVSLIP_TRAIN_ROOT=/path/to/DVS-Lip/train" && exit 1)
@@ -64,10 +70,36 @@ train-audit-seed:
 
 mechanistic-audit:
 	@test -n "$(CHECKPOINTS)" || (echo "Uso: make mechanistic-audit CHECKPOINTS='42=... 123=... 2026=...'" && exit 1)
-	bash scripts/run_mechanistic_audit.sh $(AUDIT_CONFIG) $(CHECKPOINTS)
+	bash scripts/legacy/dvsgc/run_mechanistic_audit.sh $(AUDIT_CONFIG) $(CHECKPOINTS)
 
 lint:
 	$(RUFF) check src tests
+
+check-scripts:
+	find scripts -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
+
+smilies-build:
+	bash scripts/smilies/build_container.sh
+
+smilies-dvslip-prepare:
+	bash scripts/smilies/dvslip_workflow.sh prepare
+
+smilies-dvslip-gate:
+	bash scripts/smilies/dvslip_workflow.sh gate
+
+smilies-dvslip-pilot:
+	bash scripts/smilies/dvslip_workflow.sh pilot
+
+smilies-dvslip-train:
+	bash scripts/smilies/dvslip_workflow.sh train
+
+smilies-train:
+	@test -n "$(SMILIES_CONFIG)" || (echo "Uso: make smilies-train SMILIES_CONFIG=configs/<dataset>.yaml [SMILIES_SESSION=nome]" && exit 1)
+	@if [ -n "$(SMILIES_SESSION)" ]; then \
+		bash scripts/smilies/run_training.sh "$(SMILIES_CONFIG)" "$(SMILIES_SESSION)"; \
+	else \
+		bash scripts/smilies/run_training.sh "$(SMILIES_CONFIG)"; \
+	fi
 
 clean:
 	rm -rf .pytest_cache .ruff_cache build dist src/*.egg-info

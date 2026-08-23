@@ -111,7 +111,7 @@ Before a milestone:
 pytest -q
 ruff check src tests
 python -m compileall -q src tests
-bash -n scripts/*.sh
+make check-scripts
 git diff --check
 ```
 

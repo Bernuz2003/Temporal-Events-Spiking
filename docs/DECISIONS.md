@@ -262,3 +262,19 @@ Append-only. A later entry may supersede an earlier decision; historical entries
 - **Reversal condition:** if the E0-observable control is non-trivial or r0 correctness/margin varies
   materially with occupied-bin count, prioritize the already planned P2 readout/shortcut controls.
   Otherwise retain the caveat but do not expand the shortcut study.
+
+## D017 — Generalize execution now, dataset contracts only from the second active benchmark
+
+- **Date:** 2026-08-23
+- **Decision:** keep training invocation config-driven and dataset-neutral, including one generic
+  SMILIES launcher. Retain the current DVS-Lip vertical package through r0. When DailyDVS-200 becomes
+  active, use its verified raw format together with DVS-Lip to extract the smallest neutral
+  event-sample and dataset-construction interface; dataset-specific discovery, splits and protocol
+  checks remain in separate adapters.
+- **Why:** adding DVS-Gesture, CIFAR10-DVS or DailyDVS-200 should require a loader/config, not another
+  training launcher or accumulating branches in `runner.py`. Designing the Python abstraction from
+  DVS-Lip alone would nevertheless guess which metadata and split semantics are actually shared.
+- **Rejected:** a registry/plugin framework for hypothetical datasets now; putting every future
+  loader under `etsr.dvslip`; adding one special-case branch per dataset to the runner.
+- **Reversal condition:** extract the neutral interface earlier only if a concrete pre-DailyDVS task
+  needs a second raw-event dataset and provides its verified contract.

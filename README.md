@@ -46,12 +46,12 @@ L'indice completo e l'ordine di autorità sono in [`docs/README.md`](docs/README
 ## Struttura essenziale
 
 ```text
-configs/              smoke sintetico e configurazioni DVS-GC congelate
+configs/              ricetta DVS-Lip, smoke e configurazioni DVS-GC congelate
 containers/           ambiente Singularity corrente
 docs/                 charter, stato corrente e riferimenti congelati
 docs/archive/dvsgc/   documentazione della fase chiusa
 notebooks/archive/    notebook storici congelati
-scripts/              smoke e launcher DVS-GC frozen
+scripts/              controlli, launcher SMILIES e helper DVS-GC isolati
 src/etsr/dvslip/      implementazione attiva DVS-Lip
 src/etsr/{data,...}/  pipeline precedente congelata e utility condivise
 tests/                suite indipendente dai dataset reali
@@ -69,7 +69,7 @@ make install-dev
 make test
 make lint
 python -m compileall -q src tests
-bash -n scripts/*.sh
+make check-scripts
 git diff --check
 ```
 

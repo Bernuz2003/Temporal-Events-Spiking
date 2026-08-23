@@ -2,4 +2,6 @@
 set -euo pipefail
 
 CONFIG="${1:-configs/temporal_audit_dvsgc_order2.yaml}"
-python -m etsr.cli train --config "$CONFIG"
+PYTHON="${PYTHON:-python}"
+
+exec "$PYTHON" -m etsr.cli train --config "$CONFIG"

@@ -4,7 +4,7 @@ set -euo pipefail
 CONFIG="${1:-configs/mechanistic_audit_dvsgc_order2.yaml}"
 shift || true
 if [[ "$#" -lt 3 ]]; then
-  echo "Uso: scripts/run_mechanistic_audit.sh CONFIG 42=PATH 123=PATH 2026=PATH" >&2
+  echo "Uso: scripts/legacy/dvsgc/run_mechanistic_audit.sh CONFIG 42=PATH 123=PATH 2026=PATH" >&2
   exit 2
 fi
 

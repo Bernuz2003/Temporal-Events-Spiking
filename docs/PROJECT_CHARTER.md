@@ -1265,7 +1265,7 @@ P0 is software trust, not a new research phase.
    - `pytest -q`;
    - `ruff check src tests`;
    - `python -m compileall -q src tests`;
-   - `bash -n scripts/*.sh`;
+   - `make check-scripts`;
    - `git diff --check`.
 4. Restore a generic smoke test or remove all stale smoke references.
 5. Update README/tree/validation docs.

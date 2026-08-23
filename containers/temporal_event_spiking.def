@@ -6,17 +6,13 @@ From: pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
     Scope dvslip-e0-and-frozen-regressions
 
 %help
-    Il repository e i dati locali devono essere montati rispettivamente su
-    /workspace e /workspace/data, che la configurazione e PYTHONPATH assumono:
+    Il repository deve essere montato su /workspace, che configurazioni,
+    dataset, output e PYTHONPATH assumono:
 
         singularity exec --cleanenv --nv \
             --bind <repo>:/workspace \
-            --bind <local-root>:/local \
-            --bind <local-root>/data:/workspace/data:ro \
             --pwd /workspace \
             temporal-event-spiking.sif \
-            env ETSR_ARTIFACT_ROOT=/local/artifacts \
-                ETSR_CHECKPOINT_ROOT=/local/checkpoints \
             python -m etsr.cli train --config <config>
 
     Senza il bind del repository il package etsr non e' importabile. Screen deve
@@ -27,6 +23,7 @@ From: pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         git \
+        make \
         ca-certificates
     rm -rf /var/lib/apt/lists/*
 
@@ -54,6 +51,7 @@ From: pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
     export MKL_NUM_THREADS=${MKL_NUM_THREADS:-4}
 
 %test
+    make --version >/dev/null
     python -c "import torch, torchvision, numpy, yaml, matplotlib, tqdm, spikingjelly, dvsgc; print(torch.__version__, torchvision.__version__, numpy.__version__)"
 
 %runscript

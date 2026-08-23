@@ -25,6 +25,7 @@ runs/*
 *.sandbox/
 *.log
 screenlog.*
+.singularity/
 
 # IDE / OS
 .vscode/
