@@ -3,10 +3,10 @@ import json
 import numpy as np
 import pytest
 
+from etsr.data.events import EventSample
 from etsr.dvslip.dataset import (
     DvsLipDataset,
     DvsLipExpectations,
-    EventSample,
     load_dvslip_index,
 )
 from etsr.dvslip.split import prepare_dvslip_development_split

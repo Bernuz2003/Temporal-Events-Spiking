@@ -61,6 +61,27 @@ def build_parser() -> argparse.ArgumentParser:
     shortcut_dvslip.add_argument("--config", default="configs/dvslip_e0.yaml")
     shortcut_dvslip.add_argument("--output", default="artifacts/dvslip_shortcut_control.json")
 
+    prepare_dvsgesture = subparsers.add_parser(
+        "prepare-dvsgesture",
+        help="Segment official-train DVS-Gesture AEDAT recordings into raw-event samples",
+    )
+    prepare_dvsgesture.add_argument("--source-root", required=True)
+    prepare_dvsgesture.add_argument("--output-root", required=True)
+    prepare_dvsgesture.add_argument(
+        "--report",
+        default="artifacts/dvsgesture_preparation.json",
+    )
+
+    profile_dvsgesture = subparsers.add_parser(
+        "profile-dvsgesture",
+        help="Validate and profile every prepared official-train DVS-Gesture sample",
+    )
+    profile_dvsgesture.add_argument("--train-root", required=True)
+    profile_dvsgesture.add_argument(
+        "--output",
+        default="artifacts/dvsgesture_dataset_profile.json",
+    )
+
     return parser
 
 
@@ -165,6 +186,38 @@ def main() -> None:
                 "controls": {
                     name: values["validation"] for name, values in report["controls"].items()
                 },
+                "official_test_used": report["official_test_used"],
+            }
+        )
+    elif args.command == "prepare-dvsgesture":
+        from etsr.dvsgesture.prepare import prepare_dvsgesture_train
+
+        report = prepare_dvsgesture_train(
+            args.source_root,
+            args.output_root,
+            args.report,
+        )
+        print(
+            {
+                "output": str(Path(args.output_root).resolve()),
+                "report": str(Path(args.report).resolve()),
+                "recordings": report["recording_count"],
+                "samples": report["sample_count"],
+                "subjects": len(report["subject_counts"]),
+                "official_test_used": report["official_test_used"],
+            }
+        )
+    elif args.command == "profile-dvsgesture":
+        from etsr.dvsgesture.profile import run_dvsgesture_profile
+
+        report = run_dvsgesture_profile(args.train_root, args.output)
+        print(
+            {
+                "output": str(Path(args.output).resolve()),
+                "samples": report["dataset"]["sample_count"],
+                "classes": report["dataset"]["class_count"],
+                "subjects": report["dataset"]["subject_count"],
+                "all_samples_valid": report["validation"]["all_samples_valid"],
                 "official_test_used": report["official_test_used"],
             }
         )

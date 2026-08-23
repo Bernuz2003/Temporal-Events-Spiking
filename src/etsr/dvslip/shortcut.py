@@ -9,12 +9,8 @@ import numpy as np
 import torch
 from torch import nn
 
-from etsr.dvslip.dataset import (
-    DvsLipDataset,
-    DvsLipExpectations,
-    EventSample,
-    load_dvslip_index,
-)
+from etsr.data.events import EventSample
+from etsr.dvslip.dataset import DvsLipDataset, DvsLipExpectations, load_dvslip_index
 from etsr.evaluation.metrics import classification_metrics
 from etsr.utils.io import ensure_dir, write_json
 

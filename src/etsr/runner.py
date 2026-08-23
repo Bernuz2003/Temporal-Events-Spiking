@@ -107,14 +107,10 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict[st
         "classes": bundle.classes,
         "official_test_used": False,
     }
-    for field in (
-        "dataset_index_sha256",
-        "split_manifest_sha256",
-        "representation_metadata",
-    ):
-        value = getattr(bundle.train, field, None)
-        if value is not None:
-            runtime[field] = value
+    runtime.update(getattr(bundle.train, "runtime_metadata", {}))
+    representation_metadata = getattr(bundle.train, "representation_metadata", None)
+    if representation_metadata is not None:
+        runtime["representation_metadata"] = representation_metadata
     environment_path = artifact_dir / "environment.json"
     write_json(collect_environment(device), environment_path)
     runtime["environment_sha256"] = sha256_file(environment_path)
@@ -195,7 +191,7 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict[st
     )
     write_json(validation.to_dict(), artifact_dir / "validation_metrics.json")
     shortcut_correlations = None
-    if predictions is not None:
+    if predictions is not None and config["dataset"]["name"] == "dvslip":
         from etsr.dvslip.shortcut import align_prediction_shortcuts
 
         rows, shortcut_correlations = align_prediction_shortcuts(

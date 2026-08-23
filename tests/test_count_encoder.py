@@ -6,8 +6,7 @@ import torch
 
 from etsr.config import ConfigError, load_config
 from etsr.data.common import build_loader
-from etsr.dvslip.dataset import EventSample
-from etsr.dvslip.encoded import EncodedDvsLipDataset
+from etsr.data.events import EncodedEventDataset, EventSample
 from etsr.encoders.count import CountFrameEncoder
 
 
@@ -96,7 +95,7 @@ def test_encoded_dataset_adapts_to_the_shared_training_batch_contract():
         def __getitem__(self, index):
             return replace(_sample(), target=0, sample_id=self.sample_ids[index])
 
-    dataset = EncodedDvsLipDataset(RawFixture(), _encoder())
+    dataset = EncodedEventDataset(RawFixture(), _encoder())
     loader = build_loader(dataset, {"batch_size": 2, "num_workers": 0}, shuffle=False)
     frames, targets, indices = next(iter(loader))
 
@@ -125,8 +124,8 @@ def test_encoded_dataset_applies_training_only_horizontal_flip():
         def __getitem__(self, index):
             return replace(_sample(), target=0, sample_id=self.sample_ids[index])
 
-    plain_frames, _, _ = EncodedDvsLipDataset(RawFixture(), _encoder())[0]
-    flipped_frames, _, _ = EncodedDvsLipDataset(
+    plain_frames, _, _ = EncodedEventDataset(RawFixture(), _encoder())[0]
+    flipped_frames, _, _ = EncodedEventDataset(
         RawFixture(), _encoder(), horizontal_flip_probability=1.0
     )[0]
 

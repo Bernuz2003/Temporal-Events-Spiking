@@ -8,14 +8,20 @@ DVSLIP_PROFILE_OUTPUT ?= artifacts/dvslip_dataset_profile.json
 DVSLIP_SHORTCUT_OUTPUT ?= artifacts/dvslip_shortcut_control.json
 DVSLIP_CONFIG ?= configs/dvslip_e0.yaml
 DVSLIP_HASH_SAMPLES ?= 0
+DVSGESTURE_SOURCE_ROOT ?=
+DVSGESTURE_TRAIN_ROOT ?= data/DVS-Gesture/events/train
+DVSGESTURE_PREPARATION_OUTPUT ?= artifacts/dvsgesture_preparation.json
+DVSGESTURE_PROFILE_OUTPUT ?= artifacts/dvsgesture_dataset_profile.json
+DATASET ?=
 SMILIES_CONFIG ?=
 SMILIES_SESSION ?=
 SMILIES_TRAIN_ARGS ?=
 
 .PHONY: install install-dev test lint check-scripts clean
 .PHONY: prepare-dvslip-split preflight-dvslip profile-dvslip shortcut-dvslip
+.PHONY: prepare-dvsgesture profile-dvsgesture
 .PHONY: train
-.PHONY: smilies-build smilies-dvslip-prepare smilies-dvslip-gate
+.PHONY: smilies-build smilies-prepare smilies-gate
 .PHONY: smilies-train
 
 install:
@@ -43,6 +49,14 @@ profile-dvslip:
 shortcut-dvslip:
 	$(PYTHON) -m etsr.cli shortcut-dvslip --config "$(DVSLIP_CONFIG)" --output "$(DVSLIP_SHORTCUT_OUTPUT)"
 
+prepare-dvsgesture:
+	@test -n "$(DVSGESTURE_SOURCE_ROOT)" || (echo "Uso: make prepare-dvsgesture DVSGESTURE_SOURCE_ROOT=/path/to/DvsGesture" && exit 1)
+	$(PYTHON) -m etsr.cli prepare-dvsgesture --source-root "$(DVSGESTURE_SOURCE_ROOT)" --output-root "$(DVSGESTURE_TRAIN_ROOT)" --report "$(DVSGESTURE_PREPARATION_OUTPUT)"
+
+profile-dvsgesture:
+	@test -d "$(DVSGESTURE_TRAIN_ROOT)" || (echo "Dataset preparato mancante: $(DVSGESTURE_TRAIN_ROOT)" && exit 1)
+	$(PYTHON) -m etsr.cli profile-dvsgesture --train-root "$(DVSGESTURE_TRAIN_ROOT)" --output "$(DVSGESTURE_PROFILE_OUTPUT)"
+
 train:
 	$(PYTHON) -m etsr.cli train --config $(CONFIG)
 
@@ -55,11 +69,13 @@ check-scripts:
 smilies-build:
 	bash scripts/smilies/build_container.sh
 
-smilies-dvslip-prepare:
-	bash scripts/smilies/dvslip_workflow.sh prepare
+smilies-prepare:
+	@test -n "$(DATASET)" || (echo "Uso: make smilies-prepare DATASET={dvslip|dvsgesture}" && exit 1)
+	DVSLIP_TRAIN_ROOT="$(DVSLIP_TRAIN_ROOT)" DVSLIP_SPLIT_MANIFEST="$(DVSLIP_SPLIT_MANIFEST)" DVSGESTURE_SOURCE_ROOT="$(DVSGESTURE_SOURCE_ROOT)" DVSGESTURE_TRAIN_ROOT="$(DVSGESTURE_TRAIN_ROOT)" bash scripts/smilies/dataset_workflow.sh "$(DATASET)" prepare
 
-smilies-dvslip-gate:
-	bash scripts/smilies/dvslip_workflow.sh gate
+smilies-gate:
+	@test -n "$(DATASET)" || (echo "Uso: make smilies-gate DATASET={dvslip|dvsgesture}" && exit 1)
+	DVSLIP_TRAIN_ROOT="$(DVSLIP_TRAIN_ROOT)" DVSLIP_SPLIT_MANIFEST="$(DVSLIP_SPLIT_MANIFEST)" DVSGESTURE_SOURCE_ROOT="$(DVSGESTURE_SOURCE_ROOT)" DVSGESTURE_TRAIN_ROOT="$(DVSGESTURE_TRAIN_ROOT)" bash scripts/smilies/dataset_workflow.sh "$(DATASET)" gate
 
 smilies-train:
 	@test -n "$(SMILIES_CONFIG)" || (echo "Uso: make smilies-train SMILIES_CONFIG=configs/<dataset>.yaml [SMILIES_SESSION=nome] [SMILIES_TRAIN_ARGS='...']" && exit 1)

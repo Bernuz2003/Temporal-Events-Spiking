@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from etsr.dvslip.dataset import EventSample
+from etsr.data.events import EventSample
 from etsr.dvslip.shortcut import (
     _fit_logistic_control,
     align_prediction_shortcuts,

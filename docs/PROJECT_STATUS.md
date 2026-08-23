@@ -1,7 +1,7 @@
 # Project status
 
 **Updated:** 2026-08-23
-**Phase:** DVS-Lip baseline stabilization
+**Phase:** DVS-Lip baseline run and multi-dataset baseline foundation
 
 ## Current state
 
@@ -16,25 +16,29 @@
   preserves every event and observes maximum voxel count 17; the official test remains embargoed.
 - `configs/dvslip_e0.yaml` is the sole active recipe. The failed steep surrogate was removed and the
   active hard-spike model uses the logistic backward surrogate with alpha 4.
-- The first 100-step overfit remained collapsed at 6.25% final accuracy. The corrected-duration
-  1,000-step run learned partially, reaching 59.38% best and 56.25% final accuracy on the same 64
-  samples, but failed the 95%/1.5 gate. Its gradients were finite and clipping was active on every
-  step from epoch 150 onward.
 - D021 now aligns all residual paths with the official QKFormer formulation: Transformer residuals
   are direct, SPEDS branches spike before direct addition, and the unused non-spiking Conv-BN helper
-  is removed. No recipe hyperparameter changed.
-- Static local checks pass. The local Python installation has no PyTorch/pytest, so the complete
-  cleaned test suite and the corrected forward/backward path must be verified in the SMILIES
-  container before training.
+  is removed. The corrected 1,000-step overfit reaches 100% final same-subset accuracy with loss
+  0.894, finite gradients and a clean provenance record, so the complete DVS-Lip E0 run is
+  authorized without another recipe change.
+- DVS-Lip remains the architecture-development benchmark. DVS-Gesture, DailyDVS-200 and CIFAR10-DVS
+  will compare only their frozen baseline with the final DVS-Lip-selected architecture.
+- DVS-Gesture is the second concrete dataset adapter. The working tree now has one shared raw-event
+  boundary and encoded adapter, an official-AEDAT train-only preparation path, subject-disjoint
+  development views and dataset-driven SMILIES prepare/gate commands. No DVS-Gesture representation
+  or recipe values are frozen before the real archive profile.
+- Ruff, bytecode compilation, shell syntax and diff checks pass locally. The local Python lacks
+  PyTorch/NumPy/pytest, so the complete suite and real DVS-Gesture preparation remain unverified in
+  the SMILIES container.
 
 ## Open gate
 
-1. Synchronize the D021 commit to the server and run `make smilies-dvslip-gate` from a clean
-   worktree.
-2. Run the fixed 16-class by 4-sample overfit for 500 epochs (1,000 optimizer steps).
-3. Authorize complete E0 training only at final same-subset accuracy at least 95%, loss below 1.5
-   and finite gradient metrics.
+1. Run the authorized complete DVS-Lip E0 training from the clean D021 commit.
+2. Verify the new test suite in the rebuilt SMILIES image.
+3. Prepare and exhaustively profile the official DVS-Gesture train archive without opening its
+   official test split.
 
 ## Next task
 
-Review the corrected residual overfit artifact; do not launch the complete E0 run beforehand.
+Review the real DVS-Gesture profile, then choose its development subjects, physical-time E0 bins and
+baseline recipe before adding a runnable training configuration.

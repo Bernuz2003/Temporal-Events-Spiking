@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 import numpy as np
 
+from etsr.data.events import EventSample
+
 REQUIRED_EVENT_FIELDS = ("t", "x", "y", "p")
 DevelopmentSplit = Literal["train", "validation"]
 
@@ -97,21 +99,6 @@ def dataset_index_sha256(train_root: str | Path, samples: list[Path]) -> str:
         digest.update(str(sample.stat().st_size).encode("ascii"))
         digest.update(b"\n")
     return digest.hexdigest()
-
-
-@dataclass(frozen=True)
-class EventSample:
-    """One DVS-Lip sample with its original event values and stable identity."""
-
-    x: np.ndarray
-    y: np.ndarray
-    t_us: np.ndarray
-    polarity: np.ndarray
-    target: int
-    sample_id: str
-    speaker_id: str | int | None
-    duration_us: int
-    metadata: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -265,6 +252,10 @@ class DvsLipDataset:
             self.class_to_idx[Path(sample_id).parts[0]] for sample_id in self.sample_ids
         )
         self.split_manifest_sha256 = dataset_index.split_manifest_sha256
+        self.runtime_metadata = {
+            "dataset_index_sha256": self.dataset_index_sha256,
+            "split_manifest_sha256": self.split_manifest_sha256,
+        }
 
     def __len__(self) -> int:
         return len(self.sample_ids)

@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from etsr.dvslip.dataset import EventSample
+from etsr.data.events import EventSample
 
 
 @dataclass(frozen=True)

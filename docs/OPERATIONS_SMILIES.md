@@ -1,7 +1,7 @@
 # SMILIES operations
 
 **Status:** Singularity image and CUDA execution verified on `daredevil` (RTX A4000,
-PyTorch 2.2.2+cu121); rerun the complete gate after synchronizing the residual correction.
+PyTorch 2.2.2+cu121). Dataset preparation and gates use one dataset-driven workflow.
 
 ## Filesystem model
 
@@ -55,34 +55,43 @@ REBUILD=1 make smilies-build
 Only the official `train/` directory is needed. Once it is present under `data/DVS-Lip/train`, run:
 
 ```bash
-make smilies-dvslip-prepare
-make smilies-dvslip-gate
+make smilies-prepare DATASET=dvslip
+make smilies-gate DATASET=dvslip
 ```
 
 `gate` verifies a clean worktree, host and container CUDA, pytest, Ruff, shell syntax, bytecode
 compilation, the full hash preflight and the D016 shortcut control.
 
-The generic launcher accepts bounded training overrides. The current residual-topology gate uses
-16 classes and four official-train samples per class, disables augmentation, AMP and profiling,
-and reuses the same subset for training and evaluation. Five hundred epochs correspond to 1,000
-optimizer steps with the canonical batch and accumulation settings:
+The corrected residual topology has passed its bounded overfit gate. The authorized complete E0
+run uses the canonical configuration without overrides:
 
 ```bash
 make smilies-train \
   SMILIES_CONFIG=configs/dvslip_e0.yaml \
-  SMILIES_SESSION=dvslip_e0_residual_overfit \
-  SMILIES_TRAIN_ARGS='--overfit 16 4 --epochs 500'
+  SMILIES_SESSION=dvslip_e0_full
 ```
 
-Do not start the complete run until that gate is reviewed. Once authorized, the same launcher is
-used without overfit arguments and without a dataset-specific training script.
+## DVS-Gesture preparation
+
+Manually extract the official `DvsGesture.tar.gz` so that
+`data/DVS-Gesture/DvsGesture/trials_to_train.txt` exists. The active workflow deliberately reads
+only the official train list:
+
+```bash
+make smilies-prepare DATASET=dvsgesture
+make smilies-gate DATASET=dvsgesture
+```
+
+The first command writes derived raw-event segments under `data/DVS-Gesture/events/train`; the gate
+exhaustively validates them and writes `artifacts/dvsgesture_dataset_profile.json`. If the extracted
+directory differs, pass `DVSGESTURE_SOURCE_ROOT=path/inside/repository`.
 
 ## Screen controls
 
 ```bash
 screen -ls
-screen -r dvslip_e0_residual_overfit
-tail -f artifacts/screen/dvslip_e0_residual_overfit.log
+screen -r dvslip_e0_full
+tail -f artifacts/screen/dvslip_e0_full.log
 ```
 
 Detach with `Ctrl-a`, then `d`. A session terminates automatically when its training process exits.
@@ -99,9 +108,8 @@ make smilies-train \
   SMILIES_TRAIN_ARGS='<optional train overrides>'
 ```
 
-This makes execution reusable without pretending that loaders for DailyDVS-200, DVS-Gesture or
-CIFAR10-DVS already exist. Their Python dataset contracts will be integrated when each benchmark
-becomes an active, source-verified task.
+The DVS-Gesture adapter now uses this path. DailyDVS-200 and CIFAR10-DVS remain unimplemented until
+each becomes an active, source-verified task.
 
 Historical DVS-GC helpers are no longer part of the active runtime. Their documentation remains in
 [`archive/dvsgc/smilies_setup.md`](archive/dvsgc/smilies_setup.md) as provenance, not as the current

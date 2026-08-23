@@ -56,9 +56,13 @@ def _validate(config: dict[str, Any]) -> None:
         raise ConfigError("Missing model.name")
     if int(config["training"].get("epochs", 0)) <= 0:
         raise ConfigError("training.epochs must be positive")
-    if config["dataset"]["name"] != "dvslip":
-        raise ConfigError(f"Unsupported dataset: {config['dataset']['name']}")
-    _validate_dvslip(config)
+    dataset_name = config["dataset"]["name"]
+    if dataset_name == "dvslip":
+        _validate_dvslip(config)
+    elif dataset_name == "dvsgesture":
+        _validate_dvsgesture(config)
+    else:
+        raise ConfigError(f"Unsupported dataset: {dataset_name}")
 
 
 def _validate_dvslip(config: dict[str, Any]) -> None:
@@ -69,25 +73,52 @@ def _validate_dvslip(config: dict[str, Any]) -> None:
     if Path(dataset["root"]).name != "train":
         raise ConfigError("DVS-Lip development dataset.root must end in 'train'")
 
+    _validate_event_baseline(config, "DVS-Lip")
+
+
+def _validate_dvsgesture(config: dict[str, Any]) -> None:
+    dataset = config["dataset"]
+    if not isinstance(dataset.get("root"), str) or not dataset["root"].strip():
+        raise ConfigError("DVS-Gesture requires dataset.root")
+    if Path(dataset["root"]).name != "train":
+        raise ConfigError("DVS-Gesture development dataset.root must end in 'train'")
+    validation_subjects = dataset.get("validation_subjects")
+    if (
+        not isinstance(validation_subjects, list)
+        or not validation_subjects
+        or any(type(subject) is not int or not 1 <= subject <= 23 for subject in validation_subjects)
+        or len(validation_subjects) != len(set(validation_subjects))
+    ):
+        raise ConfigError(
+            "DVS-Gesture dataset.validation_subjects must be unique official-train subject IDs"
+        )
+
+    _validate_event_baseline(config, "DVS-Gesture")
+    if float(config["augmentation"]["horizontal_flip_probability"]) != 0.0:
+        raise ConfigError("DVS-Gesture horizontal flip changes left/right gesture labels")
+
+
+def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None:
+    dataset = config["dataset"]
     representation = config.get("representation")
     if not isinstance(representation, dict):
-        raise ConfigError("DVS-Lip requires a representation section")
+        raise ConfigError(f"{dataset_label} requires a representation section")
     if representation.get("name") != "count_frames_e0":
         raise ConfigError(
-            "The current DVS-Lip foundation supports representation.name=count_frames_e0"
+            f"The current {dataset_label} foundation supports representation.name=count_frames_e0"
         )
     for field in ("window_us", "bin_width_us", "count_cap"):
         if type(representation.get(field)) is not int or representation[field] <= 0:
-            raise ConfigError(f"DVS-Lip representation.{field} must be a positive integer")
+            raise ConfigError(f"{dataset_label} representation.{field} must be a positive integer")
     if representation["window_us"] % representation["bin_width_us"]:
-        raise ConfigError("DVS-Lip representation.window_us must divide into exact bins")
+        raise ConfigError(f"{dataset_label} representation.window_us must divide into exact bins")
     if representation["count_cap"] > 255:
-        raise ConfigError("DVS-Lip E0 count_cap must fit uint8")
+        raise ConfigError(f"{dataset_label} E0 count_cap must fit uint8")
     model = config["model"]
     if model["name"] != "mini_qkformer":
         raise ConfigError("The active baseline requires model.name=mini_qkformer")
     if int(model.get("in_channels", 0)) != 2:
-        raise ConfigError("DVS-Lip E0 requires model.in_channels=2")
+        raise ConfigError(f"{dataset_label} E0 requires model.in_channels=2")
     surrogate_alpha = model.get("surrogate_alpha", 4.0)
     if (
         type(surrogate_alpha) not in (int, float)
@@ -98,21 +129,23 @@ def _validate_dvslip(config: dict[str, Any]) -> None:
 
     augmentation = config.get("augmentation")
     if not isinstance(augmentation, dict):
-        raise ConfigError("DVS-Lip requires an augmentation section")
+        raise ConfigError(f"{dataset_label} requires an augmentation section")
     unsupported_augmentations = set(augmentation) - {"horizontal_flip_probability"}
     if unsupported_augmentations:
-        raise ConfigError(f"Unsupported DVS-Lip augmentations: {sorted(unsupported_augmentations)}")
+        raise ConfigError(
+            f"Unsupported {dataset_label} augmentations: {sorted(unsupported_augmentations)}"
+        )
     flip_probability = augmentation.get("horizontal_flip_probability")
     if type(flip_probability) not in (int, float) or not 0.0 <= flip_probability <= 1.0:
         raise ConfigError("augmentation.horizontal_flip_probability must be in [0, 1]")
 
     training = config["training"]
     if not isinstance(training.get("recipe_id"), str) or not training["recipe_id"].strip():
-        raise ConfigError("DVS-Lip requires a non-empty training.recipe_id")
+        raise ConfigError(f"{dataset_label} requires a non-empty training.recipe_id")
     if str(training.get("optimizer", "")).lower() != "adamw":
-        raise ConfigError("The current DVS-Lip recipe supports training.optimizer=adamw")
+        raise ConfigError(f"The current {dataset_label} recipe supports training.optimizer=adamw")
     if str(training.get("scheduler", "")).lower() != "cosine":
-        raise ConfigError("The current DVS-Lip recipe supports training.scheduler=cosine")
+        raise ConfigError(f"The current {dataset_label} recipe supports training.scheduler=cosine")
     learning_rate = training.get("learning_rate")
     minimum_lr = training.get("min_learning_rate")
     if type(learning_rate) not in (int, float) or learning_rate <= 0.0:

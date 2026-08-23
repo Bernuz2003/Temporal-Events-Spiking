@@ -370,3 +370,32 @@ Append-only. A later entry may supersede an earlier decision; historical entries
 - **Reversal condition:** if the aligned topology still fails, do not accumulate further local
   patches or launch full training. Reassess Mini-QKFormer as the active baseline and test neuron
   dynamics as a separately motivated variable.
+
+## D022 — Use DVS-Lip to select the architecture and DVS-Gesture as the first transfer benchmark
+
+- **Date:** 2026-08-23
+- **Owner:** scientific owner and project agent.
+- **Evidence:** the D021 overfit passes at 100% final same-subset accuracy and 0.894 loss. The owner
+  selected DVS-Lip as the only architecture-development benchmark; other datasets compare their
+  frozen baseline only with the final DVS-Lip-selected architecture. The DVS-Gesture paper defines
+  11 gestures, 29 subjects and an official 23/6 subject split, with annotated intervals inside
+  multi-gesture AEDAT recordings. The paper reports 1,342 instances, while maintained conversion
+  libraries expose differing totals, so sample count and duration must be measured from the actual
+  official archive rather than assumed.
+- **Decision:** activate D017's smallest shared contract now: dataset readers return one neutral
+  physical-microsecond event sample; the count encoder, encoded adapter, model and runner are shared.
+  DVS-Gesture keeps source discovery, AEDAT parsing, interval segmentation and subject split in its
+  own adapter. Prepare only `trials_to_train.txt`; keep official test absent from development.
+  Derive a subject-disjoint validation view from explicit subject IDs after profiling the archive.
+  Disable horizontal flip because it changes the meaning of left/right gesture classes. Freeze no
+  DVS-Gesture window, bin width or training recipe before the exhaustive real-data profile.
+- **Why:** this tests real multi-dataset reuse without a plugin framework, preserves the released
+  temporal precision and prevents test leakage or label-changing augmentation. It also avoids
+  adopting a third-party presegmented copy whose timestamps are reduced to milliseconds.
+- **Rejected:** one loader or launcher per experiment; sharing dataset-specific preprocessing
+  values; using official test for recipe selection; automatic left/right flip without label remap;
+  hard-coding a literature sample count despite known preprocessing disagreement.
+- **Reversal condition:** if the official archive structure or exhaustive profile contradicts the
+  verified format, stop before creating a recipe and revise the adapter from the observed files.
+- **Refs:** <https://openaccess.thecvf.com/content_cvpr_2017/html/Amir_A_Low_Power_CVPR_2017_paper.html>,
+  <https://github.com/fangwei123456/spikingjelly/blob/master/spikingjelly/datasets/dvs128_gesture.py>.

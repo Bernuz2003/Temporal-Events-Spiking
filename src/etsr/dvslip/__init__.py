@@ -4,7 +4,6 @@ from etsr.dvslip.dataset import (
     DvsLipDataset,
     DvsLipExpectations,
     DvsLipIndex,
-    EventSample,
     load_dvslip_index,
 )
 
@@ -12,6 +11,5 @@ __all__ = [
     "DvsLipDataset",
     "DvsLipExpectations",
     "DvsLipIndex",
-    "EventSample",
     "load_dvslip_index",
 ]
