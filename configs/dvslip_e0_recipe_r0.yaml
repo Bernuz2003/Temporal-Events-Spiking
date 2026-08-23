@@ -9,7 +9,7 @@ dataset:
   name: dvslip
   root: data/DVS-Lip/train
   split_manifest: data/dvslip_development_split.json
-  batch_size: 4
+  batch_size: 16
   num_workers: 4
   pin_memory: true
 
@@ -43,7 +43,7 @@ training:
   weight_decay: 0.0005
   label_smoothing: 0.1
   gradient_clip_norm: 1.0
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 2
   amp: true
   select_metric: macro_f1
   evaluate_holdout: false

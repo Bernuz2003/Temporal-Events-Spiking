@@ -72,9 +72,10 @@ memory are acceptable, start the 64-epoch candidate:
 make smilies-dvslip-train
 ```
 
-The command refuses to start without preflight, shortcut and a clean completed pilot summary from
-the current Git commit. It launches the versioned `configs/dvslip_e0_recipe_r0.yaml` in session
-`dvslip_e0_r0` and writes screen logs to `artifacts/screen/`.
+The command refuses to start without preflight, shortcut and a clean completed CUDA pilot summary
+from the current or immediately preceding operational-selection commit. It launches the versioned
+`configs/dvslip_e0_recipe_r0.yaml` in session `dvslip_e0_r0` and writes screen logs to
+`artifacts/screen/`.
 
 ## Screen controls
 

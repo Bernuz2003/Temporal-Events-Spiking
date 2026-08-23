@@ -25,35 +25,36 @@
   training engine without exposing an official-test holdout. The exhaustive 14,896-sample check
   preserves every event and observes maximum voxel count 17, so the uint8 gate is closed.
 - Candidate recipe `dvslip_e0_r0` is implemented in `configs/dvslip_e0_recipe_r0.yaml` under the
-  two-run maximum budget of D015. It adds only warm-up/cosine control, correct gradient accumulation
-  and train-only horizontal flip. No DVS-Lip training has been run and the recipe is not frozen.
+  two-run maximum budget of D015. The real RTX A4000 pilot measured 482.6 seconds of training and
+  1.24 GB peak allocated CUDA memory at physical batch 4; r0 now uses physical batch 16 with
+  two-step accumulation, preserving effective batch 32. No full DVS-Lip training has been run and
+  the recipe is not frozen.
 - The expanded shortcut/provenance suite passes all 60 tests inside the SMILIES image. PyTorch
   2.2.2 emits one non-blocking `SequentialLR` deprecation warning from its own milestone hand-off;
   the tested learning-rate trajectory remains correct.
 - D016 records the verified physical-duration shortcut risk. The fixed global-statistic control,
   per-sample post-run diagnostics, dataset-index provenance and CUDA peak-memory logging are
-  implemented; their expanded test suite and real shortcut artifact are not yet verified.
+  implemented and verified on the real development split. The E0-observable global-statistic floor
+  is 2.64% validation accuracy and 1.43% Macro-F1; it is a required comparison, not model evidence.
 - The implementation is committed and the regenerated schema-3 preflight is ready, has no protocol
   blockers and reproduces the complete content hash over all 14,896 train samples. No important run
   may start from a dirty worktree.
 - The single-home SMILIES workflow is prepared around the repository root: active checks, generic
   config-driven training and frozen DVS-GC helpers are separated under `scripts/`. The SIF and CUDA
-  path are verified on the server RTX A4000. The first complete gate stopped only because the
-  container's older Ruff still enabled the since-removed UP038 rule; the source now supports both
-  lint versions without changing runtime behavior.
+  path are verified on the server RTX A4000. Training now supplies the cuBLAS workspace setting
+  required by the declared deterministic CUDA mode; no image rebuild is required.
 - Training execution is already dataset-agnostic at the YAML/launcher level. Dataset construction
   is not yet generic: D017 defers extraction of a neutral raw-event interface until DailyDVS-200
   supplies the second concrete active contract, avoiding both runner branches and speculative APIs.
 
 ## Open gate
 
-- Rerun the complete server gate from the clean compatibility-fix commit, then run the one-epoch
-  cost pilot.
+- Pull the selected-batch/determinism commit on the server, confirm a clean worktree and start r0.
 
 ## Next implementation task
 
-Measure the shortcut floor and one-epoch runtime/peak CUDA memory before selecting the r0
-micro-batch. Only then run `dvslip_e0_r0` with seed 42 and inspect its artifacts before freeze.
+Run `dvslip_e0_r0` with seed 42, monitor its first epochs and inspect the completed artifacts before
+freezing the recipe.
 
 ## Deferred external operations
 

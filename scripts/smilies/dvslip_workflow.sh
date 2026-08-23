@@ -84,22 +84,32 @@ print("Artifact gate verificato: ready, train-only")
 
 verify_current_pilot() {
   local commit
+  local parent_commit
   commit="$(git -C "$REPO" rev-parse HEAD)"
-  container cpu python - "$commit" <<'PY'
+  parent_commit="$(git -C "$REPO" rev-parse HEAD^)"
+  container cpu python - "$commit" "$parent_commit" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 commit = sys.argv[1]
+accepted_commits = {commit, sys.argv[2]}
 matches = []
 for summary_path in Path("artifacts").glob(
     "dvslip_e0_recipe_r0_cost_pilot__*/summary.json"
 ):
     summary = json.loads(summary_path.read_text())
-    if summary.get("git_commit") == commit and summary.get("git_dirty") is False:
+    if (
+        summary.get("git_commit") in accepted_commits
+        and summary.get("git_dirty") is False
+        and summary.get("official_test_used") is False
+        and int(summary.get("peak_cuda_memory_bytes", 0)) > 0
+    ):
         matches.append(summary_path)
 if not matches:
-    raise SystemExit(f"Nessun cost pilot pulito trovato per il commit {commit}.")
+    raise SystemExit(
+        "Nessun cost pilot CUDA pulito trovato per il commit corrente o il suo parent."
+    )
 print(f"Cost pilot coerente: {sorted(matches)[-1]}")
 PY
 }

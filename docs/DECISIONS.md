@@ -278,3 +278,20 @@ Append-only. A later entry may supersede an earlier decision; historical entries
   loader under `etsr.dvslip`; adding one special-case branch per dataset to the runner.
 - **Reversal condition:** extract the neutral interface earlier only if a concrete pre-DailyDVS task
   needs a second raw-event dataset and provides its verified contract.
+
+## D018 — Select the r0 physical batch from the real cost pilot
+
+- **Date:** 2026-08-23
+- **Evidence:** the clean, train-only RTX A4000 pilot at physical batch 4 and eight-step accumulation
+  measured 1.24 GB peak allocated CUDA memory and 482.6 seconds of training per epoch. The complete
+  64-epoch run at that throughput would spend about 8.6 hours in training alone, while most device
+  memory would remain unused.
+- **Decision:** run r0 with physical batch 16 and two-step accumulation, retaining the D015
+  effective batch of 32. The owner approved selecting it directly from the measured headroom rather
+  than spending another full epoch on a second cost pilot. Supply `CUBLAS_WORKSPACE_CONFIG=:4096:8`
+  to make the configured deterministic CUDA execution effective.
+- **Caveat:** inverse accumulation preserves the optimizer batch size, not exact BatchNorm
+  statistics; the physical-batch change is therefore recorded as part of the final candidate
+  recipe rather than described as bitwise equivalent.
+- **Reversal condition:** on CUDA OOM, fall back to physical batch 8 with four-step accumulation. Do
+  not change the effective batch or another scientific recipe dimension in response to memory.

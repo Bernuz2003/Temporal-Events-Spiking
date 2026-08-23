@@ -35,6 +35,7 @@ run_foreground() {
   exec "$SINGULARITY" exec --cleanenv --nv \
     --bind "$REPO:/workspace" \
     --pwd /workspace "$IMAGE" \
+    env CUBLAS_WORKSPACE_CONFIG=:4096:8 \
     python -m etsr.cli train --config "$config"
 }
 
