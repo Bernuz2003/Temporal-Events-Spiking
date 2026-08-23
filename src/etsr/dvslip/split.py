@@ -8,20 +8,13 @@ from collections import defaultdict
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from etsr.utils.io import ensure_dir, write_json
+from etsr.dvslip.dataset import DvsLipExpectations, discover_training_samples
+from etsr.utils.io import ensure_dir, sha256_file, write_json
 
 DEVELOPMENT_SPLITS = ("train", "validation")
 GENERATOR_VERSION = "dvslip_sample_stratified_hash_v1"
 SPLIT_SEED = 314159
 VALIDATION_FRACTION = 0.2
-
-
-def _sha256_file(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _require_relative_sample_path(value: str) -> str:
@@ -126,8 +119,6 @@ def prepare_dvslip_development_split(
 ) -> dict[str, Any]:
     """Discover official-train filenames and write the sole local split manifest."""
 
-    from etsr.dvslip.preflight import DvsLipExpectations, discover_training_samples
-
     expected = expectations or DvsLipExpectations()
     root, samples, _ = discover_training_samples(train_root, expected)
     relative_paths = [sample.relative_to(root).as_posix() for sample in samples]
@@ -177,7 +168,7 @@ def load_development_split_manifest(
     assignments = expected_manifest["assignments"]
     return assignments, {
         "path": str(manifest_path.resolve()),
-        "sha256": _sha256_file(manifest_path),
+        "sha256": sha256_file(manifest_path),
         "generator_version": GENERATOR_VERSION,
         "split_seed": expected_manifest["split_seed"],
         "validation_fraction": expected_manifest["validation_fraction"],

@@ -9,7 +9,6 @@ import torch
 def save_checkpoint(
     path: str | Path,
     model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
     epoch: int,
     score: float,
     config: dict[str, Any],
@@ -19,7 +18,6 @@ def save_checkpoint(
     torch.save(
         {
             "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
             "epoch": epoch,
             "score": score,
             "config": {key: value for key, value in config.items() if not key.startswith("_")},

@@ -3,7 +3,7 @@ From: pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
 
 %labels
     Author Temporal Event Spiking Research
-    Scope dvslip-e0-and-frozen-regressions
+    Scope dvslip-e0
 
 %help
     Il repository deve essere montato su /workspace, che configurazioni,
@@ -28,31 +28,22 @@ From: pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
     rm -rf /var/lib/apt/lists/*
 
     python -m pip install --no-cache-dir --upgrade \
-        torchvision==0.17.2 \
         "numpy>=1.24,<2.0" \
         "PyYAML>=6.0,<7" \
-        "matplotlib>=3.7,<4" \
-        "tqdm>=4.66,<5" \
         "pytest>=8,<9" \
-        "ruff>=0.6,<0.8" \
-        spikingjelly==0.0.0.0.14
-
-    # dvsgc 0.1.2 dichiara ancora SpikingJelly 0.0.0.0.8 nei metadata PyPI.
-    # Le API dataset usate dal package sono mantenute in 0.0.0.0.14.
-    python -m pip install --no-cache-dir --no-deps dvsgc==0.1.2
+        "ruff>=0.6,<0.8"
 
 %environment
     export PYTHONUNBUFFERED=1
     # Impedisce che ~/.local della home montata scherni i pacchetti del container.
     export PYTHONNOUSERSITE=1
-    export MPLBACKEND=Agg
     export PYTHONPATH=/workspace/src:$PYTHONPATH
     export OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
     export MKL_NUM_THREADS=${MKL_NUM_THREADS:-4}
 
 %test
     make --version >/dev/null
-    python -c "import torch, torchvision, numpy, yaml, matplotlib, tqdm, spikingjelly, dvsgc; print(torch.__version__, torchvision.__version__, numpy.__version__)"
+    python -c "import torch, numpy, yaml; print(torch.__version__, numpy.__version__)"
 
 %runscript
     exec python "$@"

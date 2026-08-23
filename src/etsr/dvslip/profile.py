@@ -5,15 +5,16 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 
-from etsr.dvslip.dataset import load_event_array
+from etsr.dvslip.dataset import (
+    DvsLipExpectations,
+    discover_training_samples,
+    load_event_array,
+)
 from etsr.utils.io import ensure_dir, write_json
-
-if TYPE_CHECKING:
-    from etsr.dvslip.preflight import DvsLipExpectations
 
 
 def _distribution(values: list[int] | list[float]) -> dict[str, int | float | None]:
@@ -104,7 +105,6 @@ def run_dvslip_profile(
 ) -> dict[str, Any]:
     """Validate every official-train sample and write one profile for scale selection."""
 
-    from etsr.dvslip.preflight import DvsLipExpectations, discover_training_samples
     from etsr.dvslip.split import load_development_split_manifest
 
     expected = expectations or DvsLipExpectations()

@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 import torch
 from torch import nn
 
-from etsr.dvslip.dataset import DvsLipDataset, EventSample
+from etsr.dvslip.dataset import (
+    DvsLipDataset,
+    DvsLipExpectations,
+    EventSample,
+    load_dvslip_index,
+)
 from etsr.evaluation.metrics import classification_metrics
 from etsr.utils.io import ensure_dir, write_json
-
-if TYPE_CHECKING:
-    from etsr.dvslip.preflight import DvsLipExpectations
 
 
 def sample_shortcut_statistics(sample: EventSample, bin_width_us: int) -> dict[str, float | int]:
@@ -102,9 +104,7 @@ def _fit_logistic_control(
     scale = train_features.std(axis=0, keepdims=True)
     scale[scale < 1e-12] = 1.0
     train_x = torch.as_tensor((train_features - mean) / scale, dtype=torch.float64)
-    validation_x = torch.as_tensor(
-        (validation_features - mean) / scale, dtype=torch.float64
-    )
+    validation_x = torch.as_tensor((validation_features - mean) / scale, dtype=torch.float64)
     train_y = torch.as_tensor(train_targets, dtype=torch.long)
 
     classifier = nn.Linear(train_x.shape[1], num_classes, dtype=torch.float64)
@@ -164,12 +164,9 @@ def run_dvslip_shortcut_control(
 ) -> dict[str, Any]:
     """Fit raw-duration and E0-observable global controls on development train/validation."""
 
-    train = DvsLipDataset(train_root, split_manifest, "train", expectations=expectations)
-    validation = DvsLipDataset(
-        train_root, split_manifest, "validation", expectations=expectations
-    )
-    if train.dataset_index_sha256 != validation.dataset_index_sha256:
-        raise RuntimeError("DVS-Lip train and validation views disagree on dataset identity.")
+    dataset_index = load_dvslip_index(train_root, split_manifest, expectations=expectations)
+    train = DvsLipDataset(dataset_index, "train")
+    validation = DvsLipDataset(dataset_index, "validation")
 
     train_columns, train_targets = _collect_features(train, bin_width_us)
     validation_columns, validation_targets = _collect_features(validation, bin_width_us)
@@ -233,56 +230,53 @@ def run_dvslip_shortcut_control(
     return report
 
 
-def prediction_shortcut_diagnostics(
-    dataset,
+def align_prediction_shortcuts(
+    dataset: Any,
     predictions: dict[str, np.ndarray],
     *,
     bin_width_us: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Align validation predictions with duration/E0 statistics and summarize correlations."""
+    """Produce the single per-sample D016 artifact after final model selection."""
 
-    raw_dataset = getattr(dataset, "raw_dataset", dataset)
-    indices = np.asarray(predictions["indices"], dtype=np.int64)
-    targets = np.asarray(predictions["targets"], dtype=np.int64)
-    predicted = np.asarray(predictions["predictions"], dtype=np.int64)
-    margins = np.asarray(predictions["margins"], dtype=np.float64)
-    if not (indices.shape == targets.shape == predicted.shape == margins.shape):
-        raise ValueError("Prediction diagnostic arrays must be aligned.")
-    if np.unique(indices).size != indices.size:
-        raise ValueError("Prediction diagnostics require unique sample indices.")
+    raw_dataset = dataset.raw_dataset
+    arrays = {
+        name: np.asarray(predictions[name]).reshape(-1)
+        for name in ("indices", "targets", "predictions", "margins")
+    }
+    if len({values.size for values in arrays.values()}) != 1:
+        raise ValueError("Prediction arrays must be aligned.")
 
     rows = []
     for index, target, prediction, margin in zip(
-        indices, targets, predicted, margins, strict=True
+        arrays["indices"],
+        arrays["targets"],
+        arrays["predictions"],
+        arrays["margins"],
+        strict=True,
     ):
         sample = raw_dataset[int(index)]
         if sample.target != int(target):
-            raise ValueError("Prediction targets do not match the raw DVS-Lip dataset.")
-        stats = sample_shortcut_statistics(sample, bin_width_us)
+            raise ValueError("Prediction targets do not match the DVS-Lip dataset.")
         rows.append(
             {
-                "sample_index": int(index),
                 "sample_id": sample.sample_id,
                 "target": int(target),
                 "prediction": int(prediction),
                 "correct": int(prediction == target),
                 "margin": float(margin),
-                **stats,
+                **sample_shortcut_statistics(sample, bin_width_us),
             }
         )
 
     correct = np.asarray([row["correct"] for row in rows], dtype=np.float64)
-    margin = np.asarray([row["margin"] for row in rows], dtype=np.float64)
-    summary = {
+    margins = np.asarray([row["margin"] for row in rows], dtype=np.float64)
+    features = ("duration_us", "active_time_bins", "event_count", "on_fraction")
+    return rows, {
         "samples": len(rows),
         "pearson_with_correctness": {
-            name: _pearson(np.asarray([row[name] for row in rows]), correct)
-            for name in ("duration_us", "active_time_bins", "event_count", "on_fraction")
+            name: _pearson(np.asarray([row[name] for row in rows]), correct) for name in features
         },
         "pearson_with_margin": {
-            name: _pearson(np.asarray([row[name] for row in rows]), margin)
-            for name in ("duration_us", "active_time_bins", "event_count", "on_fraction")
+            name: _pearson(np.asarray([row[name] for row in rows]), margins) for name in features
         },
-        "caveat": "Correlation is diagnostic and does not establish causal shortcut use.",
     }
-    return rows, summary

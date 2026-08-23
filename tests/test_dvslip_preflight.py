@@ -4,8 +4,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from etsr.dvslip.dataset import DvsLipExpectations
 from etsr.dvslip.preflight import (
-    DvsLipExpectations,
     inspect_event_sample,
     load_class_groups_manifest,
     run_dvslip_preflight,

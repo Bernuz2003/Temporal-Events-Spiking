@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import Dataset
 
 from etsr.data.common import DatasetBundle
-from etsr.dvslip.dataset import DvsLipDataset
+from etsr.dvslip.dataset import DvsLipDataset, load_dvslip_index
 from etsr.encoders.count import CountFrameEncoder
 
 
@@ -31,6 +31,7 @@ class EncodedDvsLipDataset(Dataset):
         self.classes = raw_dataset.classes
         self.class_to_idx = raw_dataset.class_to_idx
         self.sample_ids = raw_dataset.sample_ids
+        self.targets = raw_dataset.targets
         self.dataset_index_sha256 = raw_dataset.dataset_index_sha256
         self.split_manifest_sha256 = raw_dataset.split_manifest_sha256
         self.representation_metadata = {
@@ -63,8 +64,9 @@ def build_dvslip_bundle(
         raise ValueError(f"Unsupported DVS-Lip representation: {representation_config.get('name')}")
     root = dataset_config["root"]
     split_manifest = dataset_config["split_manifest"]
-    raw_train = DvsLipDataset(root, split_manifest, "train")
-    raw_validation = DvsLipDataset(root, split_manifest, "validation")
+    dataset_index = load_dvslip_index(root, split_manifest)
+    raw_train = DvsLipDataset(dataset_index, "train")
+    raw_validation = DvsLipDataset(dataset_index, "validation")
     encoder = CountFrameEncoder(
         height=raw_train.height,
         width=raw_train.width,
@@ -75,9 +77,7 @@ def build_dvslip_bundle(
     train = EncodedDvsLipDataset(
         raw_train,
         encoder,
-        horizontal_flip_probability=float(
-            augmentation_config["horizontal_flip_probability"]
-        ),
+        horizontal_flip_probability=float(augmentation_config["horizontal_flip_probability"]),
     )
     validation = EncodedDvsLipDataset(raw_validation, encoder)
     return DatasetBundle(

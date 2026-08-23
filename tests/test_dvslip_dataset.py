@@ -3,8 +3,12 @@ import json
 import numpy as np
 import pytest
 
-from etsr.dvslip.dataset import DvsLipDataset, EventSample
-from etsr.dvslip.preflight import DvsLipExpectations
+from etsr.dvslip.dataset import (
+    DvsLipDataset,
+    DvsLipExpectations,
+    EventSample,
+    load_dvslip_index,
+)
 from etsr.dvslip.split import prepare_dvslip_development_split
 
 
@@ -43,8 +47,9 @@ def test_raw_dataset_preserves_events_and_uses_stable_train_only_identity(tmp_pa
     (root.parent / "test").mkdir()
     (root.parent / "test" / "ignored.txt").write_text("not dataset input", encoding="utf-8")
 
-    training = DvsLipDataset(root, manifest, "train", expectations=expectations)
-    validation = DvsLipDataset(root, manifest, "validation", expectations=expectations)
+    dataset_index = load_dvslip_index(root, manifest, expectations=expectations)
+    training = DvsLipDataset(dataset_index, "train")
+    validation = DvsLipDataset(dataset_index, "validation")
 
     assert len(training) == 8
     assert len(validation) == 2
@@ -76,7 +81,8 @@ def test_raw_dataset_preserves_events_and_uses_stable_train_only_identity(tmp_pa
 
 def test_raw_dataset_validates_each_sample_when_accessed(tmp_path):
     root, manifest, expectations = _development_archive(tmp_path)
-    dataset = DvsLipDataset(root, manifest, "train", expectations=expectations)
+    dataset_index = load_dvslip_index(root, manifest, expectations=expectations)
+    dataset = DvsLipDataset(dataset_index, "train")
     _write_event_sample(root / dataset.sample_ids[0], timestamps=(100, 50, 900))
 
     with pytest.raises(ValueError, match="timestamps are not monotonic"):
@@ -87,4 +93,24 @@ def test_raw_dataset_accepts_only_development_splits(tmp_path):
     root, manifest, expectations = _development_archive(tmp_path)
 
     with pytest.raises(ValueError, match="'train' or 'validation'"):
-        DvsLipDataset(root, manifest, "test", expectations=expectations)
+        DvsLipDataset(load_dvslip_index(root, manifest, expectations=expectations), "test")
+
+
+def test_train_and_validation_share_one_discovery(tmp_path, monkeypatch):
+    root, manifest, expectations = _development_archive(tmp_path)
+    from etsr.dvslip import dataset as dataset_module
+
+    original = dataset_module.discover_training_samples
+    calls = 0
+
+    def counted_discovery(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(dataset_module, "discover_training_samples", counted_discovery)
+    dataset_index = load_dvslip_index(root, manifest, expectations=expectations)
+    DvsLipDataset(dataset_index, "train")
+    DvsLipDataset(dataset_index, "validation")
+
+    assert calls == 1

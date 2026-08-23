@@ -47,10 +47,3 @@ training:
   gradient_accumulation_steps: 2
   amp: true
   select_metric: macro_f1
-  evaluate_holdout: false
-
-profiling:
-  enabled: true
-  max_batches: 8
-  mac_energy_pj: 4.6
-  ac_energy_pj: 0.9

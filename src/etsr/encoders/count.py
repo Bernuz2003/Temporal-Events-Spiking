@@ -88,33 +88,16 @@ class CountFrameEncoder:
         }
 
     def __call__(self, sample: EventSample) -> EncodedRepresentation:
-        lengths = {
-            len(sample.t_us),
-            len(sample.x),
-            len(sample.y),
-            len(sample.polarity),
-        }
-        if len(lengths) != 1 or not lengths or next(iter(lengths)) == 0:
-            raise ValueError(f"Event fields are empty or misaligned for {sample.sample_id}.")
-
-        timestamps = np.asarray(sample.t_us, dtype=np.int64)
-        x_coords = np.asarray(sample.x, dtype=np.int64)
-        y_coords = np.asarray(sample.y, dtype=np.int64)
-        polarities = np.asarray(sample.polarity, dtype=np.int64)
+        # EventSample is the validated boundary; the encoder enforces only E0-specific limits.
+        timestamps = np.asarray(sample.t_us)
+        x_coords = np.asarray(sample.x)
+        y_coords = np.asarray(sample.y)
+        polarities = np.asarray(sample.polarity)
         if timestamps[0] < 0 or timestamps[-1] >= self.window_us:
             raise ValueError(
                 f"Sample {sample.sample_id} timestamps must fit [0,{self.window_us}) us; "
                 f"found [{int(timestamps[0])},{int(timestamps[-1])}]."
             )
-        if np.any(timestamps[1:] < timestamps[:-1]):
-            raise ValueError(f"Sample {sample.sample_id} timestamps are not monotonic.")
-        if np.any((x_coords < 0) | (x_coords >= self.width)) or np.any(
-            (y_coords < 0) | (y_coords >= self.height)
-        ):
-            raise ValueError(f"Sample {sample.sample_id} coordinates exceed the encoder sensor.")
-        if np.any((polarities < 0) | (polarities > 1)):
-            raise ValueError(f"Sample {sample.sample_id} polarity must use OFF=0 and ON=1.")
-
         time_bins = timestamps // self.bin_width_us
         linear_indices = (
             (time_bins * 2 + polarities) * self.height + y_coords

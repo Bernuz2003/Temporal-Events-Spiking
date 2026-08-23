@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.metadata
 import os
 import platform
@@ -8,7 +7,6 @@ import random
 import subprocess
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -20,17 +18,9 @@ def seed_everything(seed: int, deterministic: bool = True) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-
-    if deterministic:
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
-        try:
-            torch.use_deterministic_algorithms(True, warn_only=True)
-        except AttributeError:
-            pass
-    else:
-        torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = not deterministic
+    torch.backends.cudnn.deterministic = deterministic
+    torch.use_deterministic_algorithms(deterministic)
 
 
 def git_commit() -> str | None:
@@ -50,10 +40,6 @@ def git_is_dirty() -> bool | None:
         return bool(status.strip())
     except (OSError, subprocess.CalledProcessError):
         return None
-
-
-def sha256_file(path: str | Path) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def _distribution_version(name: str) -> str | None:
@@ -102,13 +88,8 @@ def collect_environment(selected_device: torch.device | str | None = None) -> di
             for name in (
                 "temporal-event-spiking-research",
                 "torch",
-                "torchvision",
                 "numpy",
                 "PyYAML",
-                "matplotlib",
-                "tqdm",
-                "spikingjelly",
-                "dvsgc",
             )
         },
         "torch_runtime": {
@@ -117,9 +98,7 @@ def collect_environment(selected_device: torch.device | str | None = None) -> di
             "cuda_available": bool(torch.cuda.is_available()),
             "cuda_compiled_version": torch.version.cuda,
             "cudnn_version": torch.backends.cudnn.version(),
-            "deterministic_algorithms_enabled": bool(
-                torch.are_deterministic_algorithms_enabled()
-            ),
+            "deterministic_algorithms_enabled": bool(torch.are_deterministic_algorithms_enabled()),
             "cuda_devices": cuda_devices,
         },
         "threading": {

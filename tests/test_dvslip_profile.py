@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 
-from etsr.dvslip.preflight import DvsLipExpectations
+from etsr.dvslip.dataset import DvsLipExpectations
 from etsr.dvslip.profile import run_dvslip_profile
 from etsr.dvslip.split import prepare_dvslip_development_split
 

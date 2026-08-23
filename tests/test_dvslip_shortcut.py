@@ -4,8 +4,8 @@ import pytest
 from etsr.dvslip.dataset import EventSample
 from etsr.dvslip.shortcut import (
     _fit_logistic_control,
+    align_prediction_shortcuts,
     eta_squared,
-    prediction_shortcut_diagnostics,
     sample_shortcut_statistics,
 )
 
@@ -58,7 +58,7 @@ def test_fixed_logistic_control_learns_a_separable_global_shortcut():
     assert result["optimization"]["iterations"] <= 40
 
 
-def test_prediction_diagnostics_align_statistics_by_stable_dataset_index():
+def test_final_prediction_artifact_uses_stable_dataset_indices():
     samples = [
         EventSample(
             x=np.array([0, 1]),
@@ -74,12 +74,11 @@ def test_prediction_diagnostics_align_statistics_by_stable_dataset_index():
         for index, duration in enumerate((49_999, 149_999))
     ]
 
-    class RawDataset:
-        def __getitem__(self, index):
-            return samples[index]
+    class Dataset:
+        raw_dataset = samples
 
-    rows, summary = prediction_shortcut_diagnostics(
-        RawDataset(),
+    rows, summary = align_prediction_shortcuts(
+        Dataset(),
         {
             "indices": np.array([1, 0]),
             "targets": np.array([1, 0]),

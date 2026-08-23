@@ -3,9 +3,9 @@
 I dataset e i derivati non sono versionati. Non aggiungere dati grezzi, frame integrati o manifest
 generati al repository.
 
-## DVS-Gesture-Chain — frozen legacy
+## DVS-Gesture-Chain — historical data
 
-La pipeline esistente usa:
+Vecchi checkout possono aver lasciato dati locali in:
 
 ```text
 data/dvsgc/download/
@@ -14,8 +14,8 @@ data/matched_dvsgc_order2_v1/
 ```
 
 Le istruzioni complete sono archiviate in
-[`docs/archive/dvsgc/datasets.md`](../docs/archive/dvsgc/datasets.md). DVS-GC resta disponibile per
-provenienza e regressione, ma non è un target di ricerca attivo.
+[`docs/archive/dvsgc/datasets.md`](../docs/archive/dvsgc/datasets.md). Il branch attivo non contiene
+più il relativo runtime; l'implementazione completa resta al tag `dvsgc-audit-complete-2026`.
 
 ## DVS-Lip — verified raw train data
 

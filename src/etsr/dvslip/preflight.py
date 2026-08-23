@@ -8,99 +8,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from etsr.dvslip.dataset import (
+    DvsLipExpectations,
     dataset_index_sha256,
+    discover_training_samples,
     load_event_array,
     summarize_event_array,
 )
 from etsr.dvslip.split import load_development_split_manifest
-from etsr.utils.io import ensure_dir, write_json
-
-
-def _sha256_file(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-@dataclass(frozen=True)
-class DvsLipExpectations:
-    """Published official-train invariants used by the real preflight command."""
-
-    class_count: int = 100
-    sample_count: int = 14_896
-    height: int = 128
-    width: int = 128
-
-
-def discover_training_samples(
-    train_root: str | Path,
-    expectations: DvsLipExpectations,
-) -> tuple[Path, list[Path], dict[str, int]]:
-    """Enumerate the official training tree without resolving or traversing a test sibling."""
-
-    root = Path(train_root)
-    if root.name != "train":
-        raise ValueError(
-            "DVS-Lip preflight accepts only a path whose final component is 'train'; "
-            "the official test partition must not be passed to this command."
-        )
-    if root.is_symlink():
-        raise ValueError("The training root must not be a symlink.")
-    if not root.is_dir():
-        raise FileNotFoundError(f"DVS-Lip training root does not exist: {root}")
-
-    visible_entries = sorted(
-        (entry for entry in root.iterdir() if not entry.name.startswith(".")),
-        key=lambda entry: entry.name,
-    )
-    class_dirs = [entry for entry in visible_entries if not entry.is_symlink() and entry.is_dir()]
-    unexpected_root_entries = [entry.name for entry in visible_entries if entry not in class_dirs]
-    if unexpected_root_entries:
-        raise ValueError(
-            f"Unexpected entries directly under the training root: {unexpected_root_entries}"
-        )
-    if len(class_dirs) != expectations.class_count:
-        raise ValueError(
-            f"Expected {expectations.class_count} class directories, found {len(class_dirs)}."
-        )
-
-    samples: list[Path] = []
-    class_counts: dict[str, int] = {}
-    for class_dir in class_dirs:
-        entries = sorted(
-            (entry for entry in class_dir.iterdir() if not entry.name.startswith(".")),
-            key=lambda entry: entry.name,
-        )
-        invalid = [
-            entry.name
-            for entry in entries
-            if entry.is_symlink()
-            or not entry.is_file()
-            or entry.suffix != ".npy"
-            or not entry.stem.isdecimal()
-        ]
-        if invalid:
-            raise ValueError(
-                f"Invalid entries in class {class_dir.name!r}; expected integer .npy files: {invalid}"
-            )
-        class_samples = [entry for entry in entries if entry.is_file()]
-        if not class_samples:
-            raise ValueError(f"DVS-Lip class {class_dir.name!r} is empty.")
-        class_counts[class_dir.name] = len(class_samples)
-        samples.extend(class_samples)
-
-    if len(samples) != expectations.sample_count:
-        raise ValueError(
-            f"Expected {expectations.sample_count} official-train samples, found {len(samples)}."
-        )
-    return root, samples, class_counts
+from etsr.utils.io import ensure_dir, sha256_file, write_json
 
 
 def inspect_event_sample(
@@ -209,7 +129,7 @@ def load_class_groups_manifest(
 
     return {
         "path": str(manifest_path.resolve()),
-        "sha256": _sha256_file(manifest_path),
+        "sha256": sha256_file(manifest_path),
         "source_id": payload.get("source_id"),
         "source_commit": payload.get("source_commit"),
         "class_count": len(classes),
@@ -226,7 +146,7 @@ def _dataset_content_digest(train_root: Path, samples: list[Path]) -> str:
         relative_path = sample.relative_to(train_root).as_posix()
         digest.update(relative_path.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(_sha256_file(sample).encode("ascii"))
+        digest.update(sha256_file(sample).encode("ascii"))
         digest.update(b"\n")
     return digest.hexdigest()
 

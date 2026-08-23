@@ -86,6 +86,7 @@ def test_encoded_dataset_adapts_to_the_shared_training_batch_contract():
         classes = ["word"]
         class_to_idx = {"word": 0}
         sample_ids = ["word/7.npy", "word/8.npy"]
+        targets = (0, 0)
         dataset_index_sha256 = "dataset-index-fixture"
         split_manifest_sha256 = "fixture-hash"
 
@@ -114,6 +115,7 @@ def test_encoded_dataset_applies_training_only_horizontal_flip():
         classes = ["word"]
         class_to_idx = {"word": 0}
         sample_ids = ["word/7.npy"]
+        targets = (0,)
         dataset_index_sha256 = "dataset-index-fixture"
         split_manifest_sha256 = "fixture-hash"
 
@@ -132,7 +134,7 @@ def test_encoded_dataset_applies_training_only_horizontal_flip():
     assert int(flipped_frames.sum()) == int(plain_frames.sum())
 
 
-def test_dvslip_config_requires_explicit_representation_and_test_embargo(tmp_path):
+def test_dvslip_config_requires_explicit_representation_and_train_root(tmp_path):
     config_path = tmp_path / "dvslip.yaml"
     config_path.write_text(
         """
@@ -164,7 +166,6 @@ training:
   weight_decay: 0.0005
   label_smoothing: 0.1
   gradient_clip_norm: 1.0
-  evaluate_holdout: false
 augmentation:
   horizontal_flip_probability: 0.0
 """.strip(),
@@ -175,9 +176,9 @@ augmentation:
 
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
-            "evaluate_holdout: false", "evaluate_holdout: true"
+            "root: data/DVS-Lip/train", "root: data/DVS-Lip/test"
         ),
         encoding="utf-8",
     )
-    with pytest.raises(ConfigError, match="evaluate_holdout=false"):
+    with pytest.raises(ConfigError, match="must end in 'train'"):
         load_config(config_path)

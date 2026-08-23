@@ -20,11 +20,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Train and evaluate on one small balanced train-only subset",
     )
 
-    smoke = subparsers.add_parser(
-        "smoke", help="Run the bounded synthetic end-to-end integration check"
-    )
-    smoke.add_argument("--config", default="configs/smoke.yaml")
-
     preflight = subparsers.add_parser(
         "preflight-dvslip",
         help="Validate the prospective official-train DVS-Lip archive without opening test",
@@ -64,26 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Measure global duration/count/polarity shortcut floors without official-test access",
     )
     shortcut_dvslip.add_argument("--config", default="configs/dvslip_e0.yaml")
-    shortcut_dvslip.add_argument(
-        "--output", default="artifacts/dvslip_shortcut_control.json"
-    )
+    shortcut_dvslip.add_argument("--output", default="artifacts/dvslip_shortcut_control.json")
 
-    audit = subparsers.add_parser(
-        "temporal-audit", help="Run the frozen frame/DVS-GC perturbation regression"
-    )
-    audit.add_argument("--config", required=True)
-    audit.add_argument("--checkpoint", required=True)
-
-    prepare = subparsers.add_parser(
-        "prepare-matched-dvsgc", help="Prepare frozen grouped DVS-GC regression data"
-    )
-    prepare.add_argument("--config", required=True)
-
-    mechanistic = subparsers.add_parser(
-        "mechanistic-audit", help="Run the frozen multi-seed DVS-GC mechanistic audit"
-    )
-    mechanistic.add_argument("--config", required=True)
-    mechanistic.add_argument("--checkpoint", action="append", required=True, metavar="SEED=PATH")
     return parser
 
 
@@ -111,18 +88,10 @@ def main() -> None:
             }
             config["training"]["amp"] = False
             config["training"]["select_metric"] = "accuracy"
-            config["training"]["evaluate_holdout"] = False
-            config.setdefault("profiling", {})["enabled"] = False
             config["experiment"]["name"] += "_overfit"
             if "recipe_id" in config["training"]:
                 config["training"]["recipe_id"] += "_overfit"
         print(train_experiment(config, seed=args.seed))
-    elif args.command == "smoke":
-        from etsr.config import load_config
-        from etsr.smoke import run_smoke_test
-
-        config = load_config(args.config)
-        print(run_smoke_test(config))
     elif args.command == "preflight-dvslip":
         from etsr.dvslip.preflight import run_dvslip_preflight
 
@@ -194,48 +163,9 @@ def main() -> None:
             {
                 "output": str(Path(args.output).resolve()),
                 "controls": {
-                    name: values["validation"]
-                    for name, values in report["controls"].items()
+                    name: values["validation"] for name, values in report["controls"].items()
                 },
                 "official_test_used": report["official_test_used"],
-            }
-        )
-    elif args.command == "temporal-audit":
-        from etsr.config import load_config
-        from etsr.runner import run_temporal_audit
-
-        config = load_config(args.config)
-        print(run_temporal_audit(config, args.checkpoint))
-    elif args.command == "prepare-matched-dvsgc":
-        from etsr.config import load_config
-        from etsr.data.matched_dvsgc import prepare_matched_dvsgc
-
-        config = load_config(args.config)
-        manifest = prepare_matched_dvsgc(config)
-        root = Path(config["dataset"]["root"])
-        print(
-            {
-                "dataset_root": str(root.resolve()),
-                "dataset_manifest": str((root / "dataset_manifest.json").resolve()),
-                "samples": len(manifest["samples"]),
-                "source_groups": len(manifest["source_filenames"]),
-                "official_test_used": False,
-            }
-        )
-    elif args.command == "mechanistic-audit":
-        from etsr.config import load_config
-        from etsr.evaluation.mechanistic import (
-            parse_seed_checkpoints,
-            run_mechanistic_audit,
-        )
-
-        config = load_config(args.config)
-        result = run_mechanistic_audit(config, parse_seed_checkpoints(args.checkpoint))
-        print(
-            {
-                "audit_id": result["audit_id"],
-                "artifact_dir": result["artifact_dir"],
-                "official_test_used": result["official_test_used"],
             }
         )
     else:

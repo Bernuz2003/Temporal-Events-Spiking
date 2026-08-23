@@ -6,26 +6,17 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import torch
 
 from etsr.config import save_config
-from etsr.data.common import DatasetBundle, balanced_overfit_bundle, build_loader
+from etsr.data.common import balanced_overfit_bundle, build_loader
 from etsr.data.factory import build_dataset_bundle
-from etsr.data.perturbations import PerturbationSpec, PerturbedDataset
-from etsr.evaluation.metrics import (
-    normalized_prefix_auc,
-    paired_prediction_analysis,
-    prefix_auc,
-)
-from etsr.evaluation.reports import save_confusion_matrix, save_prefix_curve
 from etsr.models.factory import build_model
 from etsr.reproducibility import (
     collect_environment,
     git_commit,
     git_is_dirty,
     seed_everything,
-    sha256_file,
 )
 from etsr.training.checkpointing import save_checkpoint
 from etsr.training.engine import (
@@ -33,11 +24,10 @@ from etsr.training.engine import (
     make_criterion,
     make_optimizer,
     make_scheduler,
-    profile_model,
     restore_best_model,
     train_one_epoch,
 )
-from etsr.utils.io import append_csv, ensure_dir, write_csv, write_json
+from etsr.utils.io import append_csv, ensure_dir, sha256_file, write_csv, write_json
 from etsr.utils.logging import configure_logging
 
 
@@ -46,48 +36,28 @@ def _run_id(config: dict[str, Any], seed: int) -> str:
     return f"{config['experiment']['name']}__{timestamp}__seed{seed}"
 
 
-def _prepare_run(
-    config: dict[str, Any], seed: int
-) -> tuple[str, Path, Path, logging.Logger]:
+def _prepare_run(config: dict[str, Any], seed: int) -> tuple[str, Path, Path, logging.Logger]:
     run_id = _run_id(config, seed)
     artifact_dir = ensure_dir(Path(config["experiment"]["artifact_root"]) / run_id)
     checkpoint_dir = ensure_dir(Path(config["experiment"]["checkpoint_root"]) / run_id)
-    logger = configure_logging(artifact_dir / "run.log")
-    return run_id, artifact_dir, checkpoint_dir, logger
+    return run_id, artifact_dir, checkpoint_dir, configure_logging(artifact_dir / "run.log")
 
 
-def _build_training_bundle(config: dict[str, Any], seed: int) -> DatasetBundle:
-    if config["dataset"]["name"] == "dvslip":
-        from etsr.dvslip.encoded import build_dvslip_bundle
-
-        return build_dvslip_bundle(
-            config["dataset"],
-            config["representation"],
-            config["augmentation"],
-        )
-    return build_dataset_bundle(config["dataset"], seed)
-
-
-def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
+def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict[str, Any]:
     config = copy.deepcopy(config)
     overfit = config["training"].get("overfit")
-    if overfit is not None and config["dataset"]["name"] == "dvslip":
+    if overfit is not None:
         config["augmentation"]["horizontal_flip_probability"] = 0.0
 
     seed = int(config["experiment"]["seed"] if seed is None else seed)
-    configured_seeds = [int(value) for value in config["experiment"].get("model_seeds", [])]
-    if configured_seeds and seed not in configured_seeds:
-        raise ValueError(f"Seed {seed} is not declared in experiment.model_seeds.")
     seed_everything(seed, bool(config["experiment"].get("deterministic", True)))
     run_id, artifact_dir, checkpoint_dir, logger = _prepare_run(config, seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Run ID: %s", run_id)
     logger.info("Device: %s", device)
 
-    bundle = _build_training_bundle(config, seed)
+    bundle = build_dataset_bundle(config)
     if overfit is not None:
-        if not isinstance(overfit, dict):
-            raise ValueError("training.overfit must be a mapping")
         bundle = balanced_overfit_bundle(
             bundle,
             class_count=int(overfit["class_count"]),
@@ -98,6 +68,7 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
             int(overfit["class_count"]),
             int(overfit["samples_per_class"]),
         )
+
     num_classes = len(bundle.classes)
     model = build_model(config["model"], num_classes).to(device)
     parameter_count = sum(
@@ -111,40 +82,31 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
 
     train_loader = build_loader(bundle.train, config["dataset"], shuffle=True)
     validation_loader = build_loader(bundle.validation, config["dataset"], shuffle=False)
-    holdout_loader = (
-        None
-        if bundle.holdout is None
-        else build_loader(bundle.holdout, config["dataset"], shuffle=False)
-    )
-
     optimizer = make_optimizer(model, config["training"])
     scheduler = make_scheduler(optimizer, config["training"])
     criterion = make_criterion(config["training"])
     amp_enabled = bool(config["training"].get("amp", False) and device.type == "cuda")
     try:
         scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
-    except (AttributeError, TypeError):  # PyTorch versions before the unified AMP API
+    except (AttributeError, TypeError):  # PyTorch 2.1/2.2 compatibility
         scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
     select_metric = str(config["training"].get("select_metric", "macro_f1"))
 
-    resolved_config = dict(config)
-    resolved_config["experiment"] = dict(config["experiment"])
+    commit = git_commit()
+    dirty = git_is_dirty()
+    resolved_config = copy.deepcopy(config)
     resolved_config["experiment"]["seed"] = seed
-    resolved_config["model"] = dict(config["model"])
     resolved_config["model"]["num_classes"] = num_classes
     runtime = {
         "run_id": run_id,
         "device": str(device),
-        "git_commit": git_commit(),
-        "git_dirty": git_is_dirty(),
+        "git_commit": commit,
+        "git_dirty": dirty,
         "trainable_parameters": parameter_count,
         "parameter_breakdown": parameter_breakdown,
         "classes": bundle.classes,
         "official_test_used": False,
     }
-    recipe_id = config["training"].get("recipe_id")
-    if recipe_id is not None:
-        runtime["recipe_id"] = str(recipe_id)
     for field in (
         "dataset_index_sha256",
         "split_manifest_sha256",
@@ -155,19 +117,14 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
             runtime[field] = value
     environment_path = artifact_dir / "environment.json"
     write_json(collect_environment(device), environment_path)
-    runtime["environment_file"] = environment_path.name
     runtime["environment_sha256"] = sha256_file(environment_path)
-    dataset_root = Path(config["dataset"].get("root", ""))
-    for name in ("dataset_manifest.json", "split_manifest.json"):
-        path = dataset_root / name
-        if path.is_file():
-            runtime[f"{path.stem}_sha256"] = sha256_file(path)
     resolved_config["runtime"] = runtime
     save_config(resolved_config, artifact_dir / "config_resolved.yaml")
 
     best_score = float("-inf")
     best_epoch = -1
     peak_cuda_memory_bytes = 0
+    checkpoint_path = checkpoint_dir / "best.pt"
     for epoch in range(1, int(config["training"]["epochs"]) + 1):
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
@@ -183,29 +140,25 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
             config["training"].get("gradient_clip_norm"),
             int(config["training"].get("gradient_accumulation_steps", 1)),
         )
-        validation_result, _ = evaluate(
-            model, validation_loader, criterion, device, num_classes
-        )
-        epoch_peak_cuda_memory_bytes = (
+        validation, _ = evaluate(model, validation_loader, criterion, device, num_classes)
+        epoch_peak_memory = (
             int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else None
         )
-        if epoch_peak_cuda_memory_bytes is not None:
-            peak_cuda_memory_bytes = max(
-                peak_cuda_memory_bytes, epoch_peak_cuda_memory_bytes
-            )
+        if epoch_peak_memory is not None:
+            peak_cuda_memory_bytes = max(peak_cuda_memory_bytes, epoch_peak_memory)
         scheduler.step()
         row = {
             "epoch": epoch,
             "learning_rate": learning_rate,
             "train_loss": train_metrics["loss"],
             "train_accuracy": train_metrics["accuracy"],
-            "validation_loss": validation_result.loss,
-            "validation_accuracy": validation_result.accuracy,
-            "validation_macro_f1": validation_result.macro_f1,
+            "validation_loss": validation.loss,
+            "validation_accuracy": validation.accuracy,
+            "validation_macro_f1": validation.macro_f1,
             "epoch_seconds": train_metrics["seconds"],
             "gradient_norm_mean": train_metrics["gradient_norm_mean"],
             "gradient_clip_fraction": train_metrics["gradient_clip_fraction"],
-            "peak_cuda_memory_bytes": epoch_peak_cuda_memory_bytes,
+            "peak_cuda_memory_bytes": epoch_peak_memory,
         }
         append_csv(row, artifact_dir / "history.csv")
         logger.info(
@@ -218,257 +171,60 @@ def train_experiment(config: dict[str, Any], seed: int | None = None) -> dict:
             row["epoch_seconds"],
         )
 
-        score = getattr(validation_result, select_metric)
-        save_checkpoint(
-            checkpoint_dir / "last.pt", model, optimizer, epoch, score, resolved_config, num_classes
-        )
+        score = float(getattr(validation, select_metric))
         if score > best_score:
             best_score = score
             best_epoch = epoch
             save_checkpoint(
-                checkpoint_dir / "best.pt", model, optimizer, epoch, score, resolved_config, num_classes
+                checkpoint_path,
+                model,
+                epoch,
+                score,
+                resolved_config,
+                num_classes,
             )
 
-    restore_best_model(checkpoint_dir / "best.pt", model, device, logger)
-    validation_result, validation_predictions = evaluate(
-        model, validation_loader, criterion, device, num_classes
+    restore_best_model(checkpoint_path, model, device, logger)
+    validation, predictions = evaluate(
+        model,
+        validation_loader,
+        criterion,
+        device,
+        num_classes,
+        collect_predictions=overfit is None,
     )
-    write_json(validation_result.to_dict(), artifact_dir / "validation_metrics.json")
-    save_confusion_matrix(
-        validation_result.confusion_matrix.numpy(),
-        bundle.classes,
-        artifact_dir / "validation_confusion_matrix.png",
-    )
+    write_json(validation.to_dict(), artifact_dir / "validation_metrics.json")
+    shortcut_correlations = None
+    if predictions is not None:
+        from etsr.dvslip.shortcut import align_prediction_shortcuts
 
-    validation_shortcut_diagnostics = None
-    if config["dataset"]["name"] == "dvslip":
-        from etsr.dvslip.shortcut import prediction_shortcut_diagnostics
-
-        np.savez_compressed(
-            artifact_dir / "validation_predictions.npz", **validation_predictions
+        rows, shortcut_correlations = align_prediction_shortcuts(
+            bundle.validation,
+            predictions,
+            bin_width_us=int(config["representation"]["bin_width_us"]),
         )
-        diagnostic_rows, validation_shortcut_diagnostics = (
-            prediction_shortcut_diagnostics(
-                bundle.validation,
-                validation_predictions,
-                bin_width_us=int(config["representation"]["bin_width_us"]),
-            )
-        )
-        write_csv(
-            diagnostic_rows,
-            artifact_dir / "validation_shortcut_diagnostics.csv",
-        )
-        write_json(
-            validation_shortcut_diagnostics,
-            artifact_dir / "validation_shortcut_diagnostics.json",
-        )
-
+        write_csv(rows, artifact_dir / "validation_shortcuts.csv")
     summary = {
         "run_id": run_id,
         "seed": seed,
         "best_epoch": best_epoch,
         "best_validation_score": best_score,
         "selection_metric": select_metric,
-        "validation": validation_result.to_dict(),
+        "validation": validation.to_dict(),
         "trainable_parameters": parameter_count,
         "parameter_breakdown": parameter_breakdown,
-        "checkpoint": str((checkpoint_dir / "best.pt").resolve()),
+        "checkpoint": str(checkpoint_path.resolve()),
         "artifact_dir": str(artifact_dir.resolve()),
-        "git_commit": git_commit(),
-        "git_dirty": git_is_dirty(),
+        "git_commit": commit,
+        "git_dirty": dirty,
         "official_test_used": False,
         "environment": str(environment_path.resolve()),
         "environment_sha256": runtime["environment_sha256"],
-        "peak_cuda_memory_bytes": (
-            peak_cuda_memory_bytes if device.type == "cuda" else None
-        ),
+        "peak_cuda_memory_bytes": (peak_cuda_memory_bytes if device.type == "cuda" else None),
     }
-    if validation_shortcut_diagnostics is not None:
-        summary["validation_shortcut_diagnostics"] = validation_shortcut_diagnostics
-
-    if bool(config["training"].get("evaluate_holdout", True)):
-        if holdout_loader is None:
-            raise RuntimeError("This training configuration has no development holdout dataset.")
-        holdout_result, holdout_predictions = evaluate(
-            model, holdout_loader, criterion, device, num_classes
-        )
-        write_json(holdout_result.to_dict(), artifact_dir / "test_metrics.json")
-        np.savez_compressed(artifact_dir / "test_predictions.npz", **holdout_predictions)
-        save_confusion_matrix(
-            holdout_result.confusion_matrix.numpy(),
-            bundle.classes,
-            artifact_dir / "confusion_matrix.png",
-        )
-        profile = None
-        if bool(config.get("profiling", {}).get("enabled", True)):
-            profile = profile_model(
-                model, holdout_loader, device, config.get("profiling", {})
-            )
-            write_json(profile, artifact_dir / "profile.json")
-        summary.update(
-            {
-                "test": holdout_result.to_dict(),
-                "profile": profile,
-                "official_test_used": config["dataset"].get("name") == "dvsgc",
-            }
-        )
-        logger.info(
-            "Holdout | accuracy %.4f | macro-F1 %.4f | best epoch %d",
-            holdout_result.accuracy,
-            holdout_result.macro_f1,
-            best_epoch,
-        )
-    elif config["dataset"]["name"] == "dvslip" and bool(
-        config.get("profiling", {}).get("enabled", True)
-    ):
-        profile = profile_model(model, validation_loader, device, config.get("profiling", {}))
-        write_json(profile, artifact_dir / "profile.json")
-        summary["profile"] = profile
-
+    if shortcut_correlations is not None:
+        summary["validation_shortcut_correlations"] = shortcut_correlations
     write_json(summary, artifact_dir / "summary.json")
     logger.info("Artifacts: %s", artifact_dir)
-    logger.info("Checkpoint: %s", checkpoint_dir / "best.pt")
-    return summary
-
-
-def run_temporal_audit(config: dict[str, Any], checkpoint_path: str | Path) -> dict:
-    checkpoint_path = Path(checkpoint_path)
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    seed = int(config["experiment"]["seed"])
-    seed_everything(seed, bool(config["experiment"].get("deterministic", True)))
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    run_id = checkpoint_path.parent.name
-    artifact_dir = ensure_dir(Path(config["experiment"]["artifact_root"]) / run_id / "audit")
-    logger = configure_logging(artifact_dir / "audit.log")
-    bundle = build_dataset_bundle(config["dataset"], seed)
-    num_classes = int(checkpoint.get("num_classes", len(bundle.classes)))
-    model = build_model(config["model"], num_classes).to(device)
-    model.load_state_dict(checkpoint["model"])
-    criterion = make_criterion(config["training"])
-
-    rows = []
-    all_results = {}
-    all_predictions = {}
-    resolved_perturbation_methods = set()
-    for item in config.get("audit", {}).get("perturbations", [{"name": "original"}]):
-        spec = PerturbationSpec.from_dict(item)
-        dataset = PerturbedDataset(bundle.holdout, spec)
-        loader = build_loader(dataset, config["dataset"], shuffle=False)
-        result, predictions = evaluate(model, loader, criterion, device, num_classes)
-        label = spec.name if spec.target_mode == "keep" else f"{spec.name}__{spec.target_mode}"
-        if label in all_results:
-            raise ValueError(f"Duplicate audit condition label: {label}")
-        resolved_perturbation_methods.add(dataset.resolved_method)
-        resolved_item = dict(item)
-        resolved_item["resolved_method"] = dataset.resolved_method
-        metrics = result.to_dict()
-        metrics["perturbation"] = resolved_item
-        all_results[label] = metrics
-        all_predictions[label] = predictions
-        rows.append(
-            {
-                "condition": label,
-                "accuracy": result.accuracy,
-                "macro_f1": result.macro_f1,
-                "loss": result.loss,
-                "resolved_method": dataset.resolved_method,
-            }
-        )
-        if bool(config.get("audit", {}).get("save_predictions", True)):
-            np.savez_compressed(artifact_dir / f"predictions__{label}.npz", **predictions)
-        logger.info("%s | accuracy %.4f | macro-F1 %.4f", label, result.accuracy, result.macro_f1)
-
-    original_metrics = all_results.get("original")
-    original_predictions = all_predictions.get("original")
-    paired_analysis = {}
-    paired_csv_fields = (
-        "prediction_changed_count",
-        "prediction_changed_rate",
-        "target_changed_count",
-        "target_changed_rate",
-        "correct_to_incorrect_count",
-        "correct_to_incorrect_rate",
-        "correct_to_incorrect_rate_given_original_correct",
-        "incorrect_to_correct_count",
-        "incorrect_to_correct_rate",
-        "incorrect_to_correct_rate_given_original_incorrect",
-    )
-    for row in rows:
-        label = row["condition"]
-        if original_metrics is None:
-            row["accuracy_drop_from_original"] = None
-            row["macro_f1_drop_from_original"] = None
-        else:
-            row["accuracy_drop_from_original"] = original_metrics["accuracy"] - row["accuracy"]
-            row["macro_f1_drop_from_original"] = (
-                original_metrics["macro_f1"] - row["macro_f1"]
-            )
-            all_results[label]["degradation_from_original"] = {
-                "accuracy_drop": row["accuracy_drop_from_original"],
-                "macro_f1_drop": row["macro_f1_drop_from_original"],
-            }
-
-        analysis = None
-        if original_predictions is not None:
-            analysis = paired_prediction_analysis(
-                original_predictions, all_predictions[label], num_classes
-            )
-            paired_analysis[label] = analysis
-        for field in paired_csv_fields:
-            row[field] = None if analysis is None else analysis[field]
-
-    prefix_rows = []
-    original_loader = build_loader(bundle.holdout, config["dataset"], shuffle=False)
-    fractions = [float(value) for value in config.get("audit", {}).get("prefix_fractions", [1.0])]
-    for fraction in fractions:
-        result, _ = evaluate(
-            model, original_loader, criterion, device, num_classes, prefix_fraction=fraction
-        )
-        prefix_rows.append(
-            {"fraction": fraction, "accuracy": result.accuracy, "macro_f1": result.macro_f1}
-        )
-    if len(prefix_rows) >= 2:
-        prefix_fraction_values = [row["fraction"] for row in prefix_rows]
-        prefix_accuracy_values = [row["accuracy"] for row in prefix_rows]
-        raw_area = prefix_auc(prefix_fraction_values, prefix_accuracy_values)
-        normalized_area = normalized_prefix_auc(
-            prefix_fraction_values, prefix_accuracy_values
-        )
-    else:
-        raw_area = None
-        normalized_area = None
-
-    write_csv(rows, artifact_dir / "perturbation_summary.csv")
-    write_csv(prefix_rows, artifact_dir / "prefix_curve.csv")
-    save_prefix_curve(prefix_rows, artifact_dir / "prefix_curve.png")
-
-    limitations = ["perturbation sensitivity alone does not prove causal temporal understanding"]
-    if "paired_reversed_action_sample" in resolved_perturbation_methods:
-        limitations.append(
-            "reverse_actions uses the paired reversed-class sample with the same source filename; "
-            "it is a valid reversed action chain, not a frame-exact rearrangement of the original tensor"
-        )
-    if "equal_temporal_chunks" in resolved_perturbation_methods:
-        limitations.append(
-            "reverse_segments uses equal temporal chunks because true action boundaries are unavailable"
-        )
-
-    summary = {
-        "checkpoint": str(checkpoint_path.resolve()),
-        "conditions": all_results,
-        "paired_analysis": paired_analysis,
-        "prefix_curve": prefix_rows,
-        "prefix_accuracy_auc": raw_area,
-        "prefix_accuracy_auc_raw": raw_area,
-        "prefix_accuracy_auc_normalized": normalized_area,
-        "prefix_auc_interval": [min(fractions), max(fractions)] if fractions else None,
-        "limitations": limitations,
-    }
-    write_json(summary, artifact_dir / "audit_summary.json")
-    if raw_area is not None:
-        logger.info("Prefix accuracy AUC raw: %.4f", raw_area)
-    if normalized_area is not None:
-        logger.info("Prefix accuracy AUC normalized: %.4f", normalized_area)
-    logger.info("Audit artifacts: %s", artifact_dir)
+    logger.info("Checkpoint: %s", checkpoint_path)
     return summary

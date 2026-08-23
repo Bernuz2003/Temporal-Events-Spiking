@@ -51,7 +51,6 @@ class MultiStepLIF(nn.Module):
         self.threshold = float(threshold)
         self.detach_reset = detach_reset
         self.surrogate_alpha = float(surrogate_alpha)
-        self.last_firing_rate = 0.0
 
     def forward(self, current: torch.Tensor) -> torch.Tensor:
         if current.ndim < 2:
@@ -64,6 +63,4 @@ class MultiStepLIF(nn.Module):
             reset_spike = spike.detach() if self.detach_reset else spike
             membrane = membrane - reset_spike * self.threshold
             spikes.append(spike)
-        output = torch.stack(spikes, dim=0)
-        self.last_firing_rate = float(output.detach().mean().item())
-        return output
+        return torch.stack(spikes, dim=0)

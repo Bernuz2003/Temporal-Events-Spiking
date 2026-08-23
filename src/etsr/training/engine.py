@@ -1,52 +1,32 @@
-"""Dense-frame training/evaluation engine retained through P0.
-
-The `(frames, targets, indices)` batch contract is an observed limitation, not the canonical API for
-the future raw-event DVS-Lip pipeline.
-"""
+"""Minimal training and validation loop for encoded event tensors."""
 
 from __future__ import annotations
 
 import logging
-import math
 import time
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from etsr.evaluation.metrics import ClassificationAccumulator, ClassificationResult
-from etsr.profiling.activity import FiringRateProfiler
-from etsr.profiling.energy import estimate_horowitz_energy
-from etsr.profiling.operations import OperationProfiler
 from etsr.training.checkpointing import load_model_state
 
 
 def make_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Optimizer:
-    name = str(config.get("optimizer", "adamw")).lower()
-    kwargs = dict(
+    return torch.optim.AdamW(
+        model.parameters(),
         lr=float(config.get("learning_rate", 1e-3)),
         weight_decay=float(config.get("weight_decay", 0.0)),
     )
-    if name == "adamw":
-        return torch.optim.AdamW(model.parameters(), **kwargs)
-    if name == "sgd":
-        return torch.optim.SGD(model.parameters(), momentum=0.9, **kwargs)
-    raise ValueError(f"Unsupported optimizer: {name}")
 
 
 def make_scheduler(
     optimizer: torch.optim.Optimizer,
     config: dict[str, Any],
 ):
-    """Build the epoch scheduler, preserving the legacy no-warmup default."""
-
-    if str(config.get("scheduler", "cosine")).lower() != "cosine":
-        raise ValueError(f"Unsupported scheduler: {config.get('scheduler')}")
-
     epochs = int(config["epochs"])
     warmup_epochs = int(config.get("warmup_epochs", 0))
     minimum_lr = float(config.get("min_learning_rate", 0.0))
@@ -105,8 +85,7 @@ def train_one_epoch(
     optimizer_steps = 0
     optimizer.zero_grad(set_to_none=True)
 
-    progress = tqdm(loader, desc="train", leave=False)
-    for batch_index, (frames, targets, _indices) in enumerate(progress):
+    for batch_index, (frames, targets, _indices) in enumerate(loader):
         frames = frames.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
 
@@ -119,9 +98,9 @@ def train_one_epoch(
         batch_size = int(targets.numel())
         accumulated_samples += batch_size
         scaler.scale(loss * batch_size).backward()
+        batches_seen = batch_index + 1
         group_complete = (
-            (batch_index + 1) % gradient_accumulation_steps == 0
-            or batch_index + 1 == total_batches
+            batches_seen % gradient_accumulation_steps == 0 or batches_seen == total_batches
         )
         if group_complete:
             scaler.unscale_(optimizer)
@@ -143,21 +122,16 @@ def train_one_epoch(
         loss_sum += float(loss.detach().item()) * batch_size
         correct += int((logits.argmax(1) == targets).sum().item())
         samples += batch_size
-        progress.set_postfix(loss=f"{loss_sum / samples:.4f}")
 
     return {
         "loss": loss_sum / max(1, samples),
         "accuracy": correct / max(1, samples),
         "seconds": time.perf_counter() - start,
         "gradient_norm_mean": (
-            gradient_norm_sum / max(1, optimizer_steps)
-            if gradient_clip_norm is not None
-            else None
+            gradient_norm_sum / max(1, optimizer_steps) if gradient_clip_norm is not None else None
         ),
         "gradient_clip_fraction": (
-            clipped_steps / max(1, optimizer_steps)
-            if gradient_clip_norm is not None
-            else None
+            clipped_steps / max(1, optimizer_steps) if gradient_clip_norm is not None else None
         ),
     }
 
@@ -169,16 +143,11 @@ def evaluate(
     criterion: nn.Module,
     device: torch.device,
     num_classes: int,
-    prefix_fraction: float | None = None,
-) -> tuple[ClassificationResult, dict[str, np.ndarray]]:
+    collect_predictions: bool = False,
+) -> tuple[ClassificationResult, dict[str, Any] | None]:
     model.eval()
-    accumulator = ClassificationAccumulator(num_classes)
-    for batch_index, (frames, targets, indices) in enumerate(
-        tqdm(loader, desc="eval", leave=False)
-    ):
-        if prefix_fraction is not None:
-            prefix = max(1, math.ceil(frames.shape[1] * prefix_fraction))
-            frames = frames[:, :prefix]
+    accumulator = ClassificationAccumulator(num_classes, collect_predictions)
+    for batch_index, (frames, targets, indices) in enumerate(loader):
         frames = frames.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
         logits = model(frames)
@@ -187,52 +156,8 @@ def evaluate(
             raise FloatingPointError(f"Non-finite evaluation loss at batch {batch_index}.")
         accumulator.update(logits, targets, loss, indices)
 
-    return accumulator.compute(), {
-        "indices": np.asarray(accumulator.indices, dtype=np.int64),
-        "targets": np.asarray(accumulator.targets, dtype=np.int64),
-        "predictions": np.asarray(accumulator.predictions, dtype=np.int64),
-        "margins": np.asarray(accumulator.margins, dtype=np.float64),
-    }
-
-
-@torch.no_grad()
-def profile_model(
-    model: nn.Module,
-    loader: DataLoader,
-    device: torch.device,
-    config: dict[str, Any],
-) -> dict:
-    model.eval()
-    firing = FiringRateProfiler(model)
-    operations = OperationProfiler(model)
-    samples = 0
-    max_batches = int(config.get("max_batches", 8))
-
-    for batch_index, (frames, _targets, _indices) in enumerate(loader):
-        if batch_index >= max_batches:
-            break
-        frames = frames.to(device)
-        operations.set_batch_size(frames.shape[0])
-        model(frames)
-        samples += int(frames.shape[0])
-
-    firing_summary = firing.summary()
-    operation_summary = operations.summary(samples)
-    firing.close()
-    operations.close()
-
-    energy = estimate_horowitz_energy(
-        operation_summary["mac_ops_per_sample"],
-        operation_summary["ac_ops_per_sample"],
-        float(config.get("mac_energy_pj", 4.6)),
-        float(config.get("ac_energy_pj", 0.9)),
-    )
-    return {
-        "profiled_samples": samples,
-        "firing": firing_summary,
-        "operations": operation_summary,
-        "energy": energy,
-    }
+    predictions = accumulator.prediction_arrays() if collect_predictions else None
+    return accumulator.compute(), predictions
 
 
 def restore_best_model(

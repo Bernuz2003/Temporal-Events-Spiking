@@ -14,7 +14,7 @@ from etsr.models.spiking import MultiStepLIF
 
 
 class MiniQKFormer(nn.Module):
-    """Compact QKFormer-like baseline for controlled temporal audits.
+    """Compact QKFormer-like DVS-Lip baseline.
 
     This implementation is intentionally self-contained and CPU-compatible. It preserves the main
     research structure—hierarchical SPEDS-like embedding, Q-K token gating, spike self-attention—
@@ -40,9 +40,7 @@ class MiniQKFormer(nn.Module):
         self.num_classes = num_classes
         half = embed_dim // 2
 
-        self.patch_embed1 = InitialPatchEmbedding(
-            in_channels, embed_dim, lif_tau, lif_threshold
-        )
+        self.patch_embed1 = InitialPatchEmbedding(in_channels, embed_dim, lif_tau, lif_threshold)
         self.stage1 = SpikingBlock(
             attention=TokenQKAttention(half, num_heads, lif_tau, lif_threshold),
             dim=half,
@@ -50,9 +48,7 @@ class MiniQKFormer(nn.Module):
             tau=lif_tau,
             threshold=lif_threshold,
         )
-        self.patch_embed2 = PatchEmbeddingStage(
-            half, embed_dim, lif_tau, lif_threshold
-        )
+        self.patch_embed2 = PatchEmbeddingStage(half, embed_dim, lif_tau, lif_threshold)
         self.stage2 = SpikingBlock(
             attention=SpikingSelfAttention(embed_dim, num_heads, lif_tau, lif_threshold),
             dim=embed_dim,
@@ -61,7 +57,6 @@ class MiniQKFormer(nn.Module):
             threshold=lif_threshold,
         )
         self.head = nn.Linear(embed_dim, num_classes)
-        self.head.op_kind = "mac"
 
         for module in self.modules():
             if isinstance(module, MultiStepLIF):
@@ -77,55 +72,16 @@ class MiniQKFormer(nn.Module):
             if getattr(module, "bias", None) is not None:
                 nn.init.zeros_(module.bias)
 
-    def _encode(
-        self, frames: torch.Tensor, record_trace: bool = False
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    def _encode(self, frames: torch.Tensor) -> torch.Tensor:
         if frames.ndim != 5:
             raise ValueError("Expected input [B, T, C, H, W].")
         x = frames.permute(1, 0, 2, 3, 4).contiguous()
-        trace = {"input": x} if record_trace else {}
         x = self.patch_embed1(x)
-        if record_trace:
-            trace["patch_embed1"] = x
         x = self.stage1(x)
-        if record_trace:
-            trace["stage1"] = x
         x = self.patch_embed2(x)
-        if record_trace:
-            trace["patch_embed2"] = x
-        x = self.stage2(x)
-        if record_trace:
-            trace["stage2"] = x
-        return x, trace
+        return self.stage2(x)
 
     def forward(self, frames: torch.Tensor) -> torch.Tensor:
-        x, _trace = self._encode(frames, record_trace=False)
+        x = self._encode(frames)
         pooled = x.mean(dim=(0, 3, 4))
         return self.head(pooled)
-
-    def forward_with_trace(self, frames: torch.Tensor) -> dict[str, object]:
-        """Return compact time-resolved features without changing the standard forward path."""
-        x, raw_trace = self._encode(frames, record_trace=True)
-        compact_trace = {
-            name: value.mean(dim=(3, 4)).permute(1, 0, 2).contiguous()
-            for name, value in raw_trace.items()
-        }
-        final_features = compact_trace["stage2"]
-        per_timestep_logits = self.head(final_features)
-        denominator = torch.arange(
-            1,
-            per_timestep_logits.shape[1] + 1,
-            device=per_timestep_logits.device,
-            dtype=per_timestep_logits.dtype,
-        ).view(1, -1, 1)
-        cumulative_logits = per_timestep_logits.cumsum(dim=1) / denominator
-        return {
-            "logits": cumulative_logits[:, -1],
-            "cumulative_logits": cumulative_logits,
-            "per_timestep_logits": per_timestep_logits,
-            "evidence_without_bias": torch.nn.functional.linear(
-                final_features, self.head.weight, bias=None
-            ),
-            "head_bias": self.head.bias,
-            "features": compact_trace,
-        }

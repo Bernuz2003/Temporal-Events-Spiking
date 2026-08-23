@@ -1,11 +1,6 @@
 PYTHON ?= python
 RUFF ?= ruff
-CONFIG ?= configs/temporal_audit_dvsgc_order2.yaml
-SMOKE_CONFIG ?= configs/smoke.yaml
-AUDIT_CONFIG ?= configs/mechanistic_audit_dvsgc_order2.yaml
-CHECKPOINT ?=
-SEED ?=
-CHECKPOINTS ?=
+CONFIG ?= configs/dvslip_e0.yaml
 DVSLIP_TRAIN_ROOT ?=
 DVSLIP_SPLIT_MANIFEST ?= data/dvslip_development_split.json
 DVSLIP_PREFLIGHT_OUTPUT ?= artifacts/dvslip_preflight.json
@@ -17,27 +12,20 @@ SMILIES_CONFIG ?=
 SMILIES_SESSION ?=
 SMILIES_TRAIN_ARGS ?=
 
-.PHONY: install install-dev test smoke lint check-scripts clean
+.PHONY: install install-dev test lint check-scripts clean
 .PHONY: prepare-dvslip-split preflight-dvslip profile-dvslip shortcut-dvslip
-.PHONY: train temporal-audit prepare-matched-dvsgc train-audit-seed mechanistic-audit
+.PHONY: train
 .PHONY: smilies-build smilies-dvslip-prepare smilies-dvslip-gate
 .PHONY: smilies-train
 
 install:
 	$(PYTHON) -m pip install -e .
-	$(PYTHON) -m pip install spikingjelly==0.0.0.0.14
-	$(PYTHON) -m pip install --no-deps dvsgc==0.1.2
 
 install-dev:
 	$(PYTHON) -m pip install -e '.[dev]'
-	$(PYTHON) -m pip install spikingjelly==0.0.0.0.14
-	$(PYTHON) -m pip install --no-deps dvsgc==0.1.2
 
 test:
 	$(PYTHON) -m pytest -q
-
-smoke:
-	PYTHON="$(PYTHON)" bash scripts/checks/smoke_test.sh "$(SMOKE_CONFIG)"
 
 prepare-dvslip-split:
 	@test -n "$(DVSLIP_TRAIN_ROOT)" || (echo "Uso: make prepare-dvslip-split DVSLIP_TRAIN_ROOT=/path/to/DVS-Lip/train" && exit 1)
@@ -57,21 +45,6 @@ shortcut-dvslip:
 
 train:
 	$(PYTHON) -m etsr.cli train --config $(CONFIG)
-
-temporal-audit:
-	@test -n "$(CHECKPOINT)" || (echo "Uso: make temporal-audit CHECKPOINT=checkpoints/<RUN_ID>/best.pt" && exit 1)
-	$(PYTHON) -m etsr.cli temporal-audit --config $(CONFIG) --checkpoint $(CHECKPOINT)
-
-prepare-matched-dvsgc:
-	$(PYTHON) -m etsr.cli prepare-matched-dvsgc --config $(AUDIT_CONFIG)
-
-train-audit-seed:
-	@test -n "$(SEED)" || (echo "Uso: make train-audit-seed SEED=42" && exit 1)
-	$(PYTHON) -m etsr.cli train --config $(AUDIT_CONFIG) --seed $(SEED)
-
-mechanistic-audit:
-	@test -n "$(CHECKPOINTS)" || (echo "Uso: make mechanistic-audit CHECKPOINTS='42=... 123=... 2026=...'" && exit 1)
-	bash scripts/legacy/dvsgc/run_mechanistic_audit.sh $(AUDIT_CONFIG) $(CHECKPOINTS)
 
 lint:
 	$(RUFF) check src tests

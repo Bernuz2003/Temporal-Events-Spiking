@@ -59,8 +59,7 @@ def test_warmup_cosine_scheduler_reaches_base_and_minimum_rates():
 def test_gradient_accumulation_steps_once_per_complete_or_final_group(monkeypatch):
     frames = torch.arange(5, dtype=torch.float32).reshape(5, 1)
     targets = torch.tensor([0, 1, 0, 1, 0])
-    indices = torch.arange(5)
-    loader = DataLoader(TensorDataset(frames, targets, indices), batch_size=1)
+    loader = DataLoader(TensorDataset(frames, targets, torch.arange(5)), batch_size=1)
     model = nn.Linear(1, 2)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
     optimizer_steps = 0
@@ -93,7 +92,6 @@ def test_gradient_accumulation_steps_once_per_complete_or_final_group(monkeypatc
 def test_gradient_accumulation_weights_a_short_final_microbatch_by_sample():
     frames = torch.tensor([[0.0], [1.0], [2.0]])
     targets = torch.tensor([0, 1, 0])
-    indices = torch.arange(3)
     accumulated_model = nn.Linear(1, 2)
     full_batch_model = nn.Linear(1, 2)
     full_batch_model.load_state_dict(accumulated_model.state_dict())
@@ -101,7 +99,7 @@ def test_gradient_accumulation_weights_a_short_final_microbatch_by_sample():
     accumulated_optimizer = torch.optim.SGD(accumulated_model.parameters(), lr=0.01)
     train_one_epoch(
         accumulated_model,
-        DataLoader(TensorDataset(frames, targets, indices), batch_size=2),
+        DataLoader(TensorDataset(frames, targets, torch.arange(3)), batch_size=2),
         accumulated_optimizer,
         nn.CrossEntropyLoss(),
         torch.device("cpu"),
@@ -124,10 +122,11 @@ def test_gradient_accumulation_weights_a_short_final_microbatch_by_sample():
 
 def test_balanced_overfit_bundle_reuses_only_the_selected_train_samples():
     targets = torch.tensor([0, 0, 0, 1, 1, 1, 2, 2])
-    dataset = TensorDataset(torch.arange(8), targets, torch.arange(8))
+    dataset = TensorDataset(torch.arange(8), targets)
+    dataset.targets = targets
     bundle = DatasetBundle(
         train=dataset,
-        validation=TensorDataset(torch.tensor([99]), torch.tensor([2]), torch.tensor([0])),
+        validation=TensorDataset(torch.tensor([99]), torch.tensor([2])),
         holdout=None,
         classes=["zero", "one", "two"],
     )
