@@ -8,16 +8,18 @@ IMAGE="${IMAGE:-$REPO/containers/temporal-event-spiking.sif}"
 TRAIN_ROOT="data/DVS-Lip/train"
 SPLIT_MANIFEST="data/dvslip_development_split.json"
 R0_CONFIG="configs/dvslip_e0_recipe_r0.yaml"
+R1_CONFIG="configs/dvslip_e0_recipe_r1.yaml"
 PILOT_CONFIG="artifacts/runtime-configs/dvslip_e0_recipe_r0_cost_pilot.yaml"
 
 usage() {
   cat >&2 <<EOF
-Uso: $0 {prepare|gate|pilot|train}
+Uso: $0 {prepare|gate|pilot|train|diagnose}
 
   prepare  genera lo split development train-only
   gate     verifica CUDA, test, preflight completo e shortcut D016
   pilot    avvia in screen il cost pilot da un'epoca
   train    avvia in screen il training completo dvslip_e0_r0
+  diagnose confronta i gradienti r0/r1 sul checkpoint indicato da DVSLIP_CHECKPOINT
 EOF
 }
 
@@ -180,10 +182,42 @@ train() {
   exec bash "$SCRIPT_DIR/run_training.sh" "$R0_CONFIG" dvslip_e0_r0
 }
 
+diagnose() {
+  require_runtime
+  require_split
+  require_clean_worktree
+  local checkpoint="${DVSLIP_CHECKPOINT:-}"
+  local candidate_config="${DVSLIP_DIAGNOSTIC_CONFIG:-$R1_CONFIG}"
+  local output="${DVSLIP_DIAGNOSTIC_OUTPUT:-artifacts/dvslip_checkpoint_surrogate_comparison.json}"
+  [[ -n "$checkpoint" ]] || {
+    echo "Impostare DVSLIP_CHECKPOINT=checkpoints/<RUN_ID>/last.pt." >&2
+    exit 2
+  }
+  [[ "$checkpoint" != /* && -f "$REPO/$checkpoint" ]] || {
+    echo "Checkpoint relativo al repository non trovato: $checkpoint" >&2
+    exit 2
+  }
+  [[ "$candidate_config" != /* && -f "$REPO/$candidate_config" ]] || {
+    echo "Config candidata relativa al repository non trovata: $candidate_config" >&2
+    exit 2
+  }
+  [[ "$output" != /* ]] || {
+    echo "L'output diagnostico deve essere relativo al repository: $output" >&2
+    exit 2
+  }
+  container gpu env CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+    python scripts/checks/diagnose_dvslip_checkpoint.py \
+      --checkpoint "$checkpoint" \
+      --candidate-config "$candidate_config" \
+      --output "$output" \
+      --device cuda
+}
+
 case "${1:-}" in
   prepare) prepare ;;
   gate) gate ;;
   pilot) pilot ;;
   train) train ;;
+  diagnose) diagnose ;;
   *) usage; exit 2 ;;
 esac

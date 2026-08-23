@@ -24,11 +24,15 @@
 - E0 is implemented as the explicit D014 physical-time count encoder and adapts to the shared
   training engine without exposing an official-test holdout. The exhaustive 14,896-sample check
   preserves every event and observes maximum voxel count 17, so the uint8 gate is closed.
-- Candidate recipe `dvslip_e0_r0` is implemented in `configs/dvslip_e0_recipe_r0.yaml` under the
-  two-run maximum budget of D015. The real RTX A4000 pilot measured 482.6 seconds of training and
-  1.24 GB peak allocated CUDA memory at physical batch 4; r0 now uses physical batch 16 with
-  two-step accumulation, preserving effective batch 32. No full DVS-Lip training has been run and
-  the recipe is not frozen.
+- Candidate `dvslip_e0_r0` failed its optimization gate: through epoch 28 it remained near chance
+  with severe backward attenuation despite non-collapsed features, logits and firing activity. The
+  FP32 checkpoint diagnostic localizes the defect to gradient propagation through the steep custom
+  surrogate rather than to AMP, a dead SSA path or a constant temporal-mean readout. r0 remains
+  unchanged and is not a freeze candidate.
+- D019 defines `dvslip_e0_r1` as a single backward-only intervention: logistic sigmoid surrogate
+  alpha 4 in place of fast-sigmoid slope 25. Legacy configs retain their prior default and the hard
+  spike forward/state dict are unchanged. A reproducible same-checkpoint comparator is ready; r1
+  training is not yet authorized.
 - The expanded shortcut/provenance suite passes all 60 tests inside the SMILIES image. PyTorch
   2.2.2 emits one non-blocking `SequentialLR` deprecation warning from its own milestone hand-off;
   the tested learning-rate trajectory remains correct.
@@ -49,12 +53,13 @@
 
 ## Open gate
 
-- Pull the selected-batch/determinism commit on the server, confirm a clean worktree and start r0.
+- Run the r0-versus-r1 same-checkpoint gradient comparison on the server. It must report exact
+  forward equivalence and materially recover early-layer gradients before an overfit check is run.
 
 ## Next implementation task
 
-Run `dvslip_e0_r0` with seed 42, monitor its first epochs and inspect the completed artifacts before
-freezing the recipe.
+Inspect the surrogate-comparison artifact. If its gate passes, add and run the smallest balanced
+train-only overfit check; do not start the 64-epoch r1 training yet.
 
 ## Deferred external operations
 

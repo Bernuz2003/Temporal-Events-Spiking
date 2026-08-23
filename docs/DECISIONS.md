@@ -295,3 +295,35 @@ Append-only. A later entry may supersede an earlier decision; historical entries
   recipe rather than described as bitwise equivalent.
 - **Reversal condition:** on CUDA OOM, fall back to physical batch 8 with four-step accumulation. Do
   not change the effective batch or another scientific recipe dimension in response to memory.
+
+## D019 — Test a wider backward surrogate before changing the forward architecture
+
+- **Date:** 2026-08-23
+- **Evidence:** `dvslip_e0_r0` remains near chance through epoch 28 with a negligible train/validation
+  gap. A balanced-batch FP32 diagnostic on `last.pt` rules out a dead forward path: the final pooled
+  features have mean inter-sample standard deviation 0.0486, logits vary across samples and every
+  major stage fires. It instead measures mean parameter gradients 378 times smaller in stage 2
+  than in the head, 62,911 times smaller in stage 1 and 1.65 million times smaller in the first
+  embedding. Mean LIF-output gradient falls by about 13.2 million times from the final to the first
+  LIF. Because this diagnostic is FP32, AMP is not the primary cause.
+- **Decision:** retain `dvslip_e0_r0` unchanged as a failed optimization result. Candidate
+  `dvslip_e0_r1` changes only the backward surrogate from the original fast-sigmoid slope 25 to the
+  logistic sigmoid derivative with alpha 4; its hard-spike forward, neuron dynamics, parameters,
+  representation, readout and training recipe remain unchanged. Configurations without explicit
+  surrogate fields preserve the r0 behavior, and old checkpoints remain state-dict compatible.
+  Before any new training, compare both backward functions on the same r0 checkpoint and balanced
+  validation batch, requiring exact forward equivalence and at least a tenfold increase in mean
+  gradient magnitude in both the first embedding and stage 1. Then require a small train-only
+  overfit check before authorizing a full r1 run.
+- **Why:** the official QKFormer implementation uses SpikingJelly LIF nodes and direct residual
+  additions rather than documenting this repository's steep custom surrogate; SpikingJelly's
+  default sigmoid surrogate uses alpha 4. Testing that backward-only difference is the smallest
+  evidence-backed intervention. Changing residual topology, thresholds, readout or learning rate
+  at the same time would destroy causal attribution.
+- **Rejected now:** continue r0 to 64 epochs as if it were a viable freeze candidate; blame AMP;
+  change the forward residual/LIF topology together with the surrogate; spend a full training run
+  before the checkpoint and overfit gates pass.
+- **Reversal condition:** do not train r1 if logits are not exactly forward-equivalent, if the
+  comparison does not materially recover gradients in the first embedding/stage, or if the
+  train-only overfit check still cannot learn. In that case diagnose residual topology and neuron
+  dynamics one variable at a time.

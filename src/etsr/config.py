@@ -84,8 +84,19 @@ def _validate_dvslip(config: dict[str, Any]) -> None:
         raise ConfigError("DVS-Lip representation.window_us must divide into exact bins")
     if representation["count_cap"] > 255:
         raise ConfigError("DVS-Lip E0 count_cap must fit uint8")
-    if int(config["model"].get("in_channels", 0)) != 2:
+    model = config["model"]
+    if int(model.get("in_channels", 0)) != 2:
         raise ConfigError("DVS-Lip E0 requires model.in_channels=2")
+    surrogate_name = str(model.get("surrogate_name", "fast_sigmoid"))
+    if surrogate_name not in {"fast_sigmoid", "sigmoid"}:
+        raise ConfigError("model.surrogate_name must be fast_sigmoid or sigmoid")
+    surrogate_alpha = model.get("surrogate_alpha", 25.0)
+    if (
+        type(surrogate_alpha) not in (int, float)
+        or isinstance(surrogate_alpha, bool)
+        or surrogate_alpha <= 0.0
+    ):
+        raise ConfigError("model.surrogate_alpha must be positive")
 
     augmentation = config.get("augmentation")
     if not isinstance(augmentation, dict):

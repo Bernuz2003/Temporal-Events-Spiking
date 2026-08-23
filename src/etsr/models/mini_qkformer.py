@@ -29,6 +29,8 @@ class MiniQKFormer(nn.Module):
         mlp_ratio: float = 2.0,
         lif_tau: float = 2.0,
         lif_threshold: float = 1.0,
+        surrogate_name: str = "fast_sigmoid",
+        surrogate_alpha: float = 25.0,
     ) -> None:
         super().__init__()
         if embed_dim % 4 != 0:
@@ -37,24 +39,52 @@ class MiniQKFormer(nn.Module):
         half = embed_dim // 2
 
         self.patch_embed1 = InitialPatchEmbedding(
-            in_channels, embed_dim, lif_tau, lif_threshold
+            in_channels,
+            embed_dim,
+            lif_tau,
+            lif_threshold,
+            surrogate_name,
+            surrogate_alpha,
         )
         self.stage1 = SpikingBlock(
-            attention=TokenQKAttention(half, num_heads, lif_tau, lif_threshold),
+            attention=TokenQKAttention(
+                half,
+                num_heads,
+                lif_tau,
+                lif_threshold,
+                surrogate_name,
+                surrogate_alpha,
+            ),
             dim=half,
             mlp_ratio=mlp_ratio,
             tau=lif_tau,
             threshold=lif_threshold,
+            surrogate_name=surrogate_name,
+            surrogate_alpha=surrogate_alpha,
         )
         self.patch_embed2 = PatchEmbeddingStage(
-            half, embed_dim, lif_tau, lif_threshold
+            half,
+            embed_dim,
+            lif_tau,
+            lif_threshold,
+            surrogate_name,
+            surrogate_alpha,
         )
         self.stage2 = SpikingBlock(
-            attention=SpikingSelfAttention(embed_dim, num_heads, lif_tau, lif_threshold),
+            attention=SpikingSelfAttention(
+                embed_dim,
+                num_heads,
+                lif_tau,
+                lif_threshold,
+                surrogate_name,
+                surrogate_alpha,
+            ),
             dim=embed_dim,
             mlp_ratio=mlp_ratio,
             tau=lif_tau,
             threshold=lif_threshold,
+            surrogate_name=surrogate_name,
+            surrogate_alpha=surrogate_alpha,
         )
         self.head = nn.Linear(embed_dim, num_classes)
         self.head.op_kind = "mac"

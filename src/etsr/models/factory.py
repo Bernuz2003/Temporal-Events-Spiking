@@ -19,4 +19,6 @@ def build_model(config: dict[str, Any], num_classes: int) -> nn.Module:
         mlp_ratio=float(config.get("mlp_ratio", 2.0)),
         lif_tau=float(config.get("lif_tau", 2.0)),
         lif_threshold=float(config.get("lif_threshold", 1.0)),
+        surrogate_name=str(config.get("surrogate_name", "fast_sigmoid")),
+        surrogate_alpha=float(config.get("surrogate_alpha", 25.0)),
     )

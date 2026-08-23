@@ -20,6 +20,20 @@ def _time_distributed_1d(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     return output.reshape(time_steps, batch_size, *output.shape[1:])
 
 
+def _make_lif(
+    tau: float,
+    threshold: float,
+    surrogate_name: str,
+    surrogate_alpha: float,
+) -> MultiStepLIF:
+    return MultiStepLIF(
+        tau=tau,
+        threshold=threshold,
+        surrogate_name=surrogate_name,
+        surrogate_alpha=surrogate_alpha,
+    )
+
+
 class ConvBNLIF2d(nn.Module):
     def __init__(
         self,
@@ -31,6 +45,8 @@ class ConvBNLIF2d(nn.Module):
         tau: float = 2.0,
         threshold: float = 1.0,
         op_kind: str = "ac",
+        surrogate_name: str = "fast_sigmoid",
+        surrogate_alpha: float = 25.0,
     ) -> None:
         super().__init__()
         self.conv = nn.Conv2d(
@@ -43,7 +59,7 @@ class ConvBNLIF2d(nn.Module):
         )
         self.conv.op_kind = op_kind
         self.bn = nn.BatchNorm2d(out_channels)
-        self.lif = MultiStepLIF(tau=tau, threshold=threshold)
+        self.lif = _make_lif(tau, threshold, surrogate_name, surrogate_alpha)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = _time_distributed_2d(self.conv, x)
@@ -80,18 +96,65 @@ class ConvBN2d(nn.Module):
 class InitialPatchEmbedding(nn.Module):
     """Compact SPEDS-like front-end: 128 -> 16 spatial resolution."""
 
-    def __init__(self, in_channels: int, embed_dim: int, tau: float, threshold: float):
+    def __init__(
+        self,
+        in_channels: int,
+        embed_dim: int,
+        tau: float,
+        threshold: float,
+        surrogate_name: str = "fast_sigmoid",
+        surrogate_alpha: float = 25.0,
+    ):
         super().__init__()
         quarter = embed_dim // 4
         half = embed_dim // 2
         self.main1 = ConvBNLIF2d(
-            in_channels, quarter, 3, stride=1, padding=1, tau=tau, threshold=threshold, op_kind="mac"
+            in_channels,
+            quarter,
+            3,
+            stride=1,
+            padding=1,
+            tau=tau,
+            threshold=threshold,
+            op_kind="mac",
+            surrogate_name=surrogate_name,
+            surrogate_alpha=surrogate_alpha,
         )
-        self.main2 = ConvBNLIF2d(quarter, half, 3, stride=2, padding=1, tau=tau, threshold=threshold)
-        self.main3 = ConvBNLIF2d(half, half, 3, stride=2, padding=1, tau=tau, threshold=threshold)
-        self.main4 = ConvBNLIF2d(half, half, 3, stride=2, padding=1, tau=tau, threshold=threshold)
+        self.main2 = ConvBNLIF2d(
+            quarter,
+            half,
+            3,
+            stride=2,
+            padding=1,
+            tau=tau,
+            threshold=threshold,
+            surrogate_name=surrogate_name,
+            surrogate_alpha=surrogate_alpha,
+        )
+        self.main3 = ConvBNLIF2d(
+            half,
+            half,
+            3,
+            stride=2,
+            padding=1,
+            tau=tau,
+            threshold=threshold,
+            surrogate_name=surrogate_name,
+            surrogate_alpha=surrogate_alpha,
+        )
+        self.main4 = ConvBNLIF2d(
+            half,
+            half,
+            3,
+            stride=2,
+            padding=1,
+            tau=tau,
+            threshold=threshold,
+            surrogate_name=surrogate_name,
+            surrogate_alpha=surrogate_alpha,
+        )
         self.shortcut = ConvBN2d(quarter, half, 1, stride=8, op_kind="ac")
-        self.output_lif = MultiStepLIF(tau=tau, threshold=threshold)
+        self.output_lif = _make_lif(tau, threshold, surrogate_name, surrogate_alpha)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.main1(x)
@@ -104,14 +167,30 @@ class InitialPatchEmbedding(nn.Module):
 
 
 class PatchEmbeddingStage(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, tau: float, threshold: float):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        tau: float,
+        threshold: float,
+        surrogate_name: str = "fast_sigmoid",
+        surrogate_alpha: float = 25.0,
+    ):
         super().__init__()
         self.proj = ConvBNLIF2d(
-            in_channels, out_channels, 3, stride=1, padding=1, tau=tau, threshold=threshold
+            in_channels,
+            out_channels,
+            3,
+            stride=1,
+            padding=1,
+            tau=tau,
+            threshold=threshold,
+            surrogate_name=surrogate_name,
+            surrogate_alpha=surrogate_alpha,
         )
         self.down = ConvBN2d(out_channels, out_channels, 3, stride=2, padding=1)
         self.shortcut = ConvBN2d(in_channels, out_channels, 1, stride=2)
-        self.output_lif = MultiStepLIF(tau=tau, threshold=threshold)
+        self.output_lif = _make_lif(tau, threshold, surrogate_name, surrogate_alpha)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.output_lif(self.down(self.proj(x)) + self.shortcut(x))
@@ -120,7 +199,15 @@ class PatchEmbeddingStage(nn.Module):
 class TokenQKAttention(nn.Module):
     """Q-K token gating inspired by QKFormer, without an N x N attention map."""
 
-    def __init__(self, dim: int, num_heads: int, tau: float, threshold: float):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        tau: float,
+        threshold: float,
+        surrogate_name: str = "fast_sigmoid",
+        surrogate_alpha: float = 25.0,
+    ):
         super().__init__()
         if dim % num_heads != 0:
             raise ValueError("dim must be divisible by num_heads")
@@ -134,10 +221,10 @@ class TokenQKAttention(nn.Module):
         self.q_bn = nn.BatchNorm1d(dim)
         self.k_bn = nn.BatchNorm1d(dim)
         self.proj_bn = nn.BatchNorm1d(dim)
-        self.q_lif = MultiStepLIF(tau=tau, threshold=threshold)
-        self.k_lif = MultiStepLIF(tau=tau, threshold=threshold)
-        self.attn_lif = MultiStepLIF(tau=tau, threshold=0.5)
-        self.proj_lif = MultiStepLIF(tau=tau, threshold=threshold)
+        self.q_lif = _make_lif(tau, threshold, surrogate_name, surrogate_alpha)
+        self.k_lif = _make_lif(tau, threshold, surrogate_name, surrogate_alpha)
+        self.attn_lif = _make_lif(tau, 0.5, surrogate_name, surrogate_alpha)
+        self.proj_lif = _make_lif(tau, threshold, surrogate_name, surrogate_alpha)
         self.last_mixing_ac_per_sample = 0.0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -171,7 +258,15 @@ class SpikingSelfAttention(nn.Module):
     mixing in flattened tensors.
     """
 
-    def __init__(self, dim: int, num_heads: int, tau: float, threshold: float):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        tau: float,
+        threshold: float,
+        surrogate_name: str = "fast_sigmoid",
+        surrogate_alpha: float = 25.0,
+    ):
         super().__init__()
         if dim % num_heads != 0:
             raise ValueError("dim must be divisible by num_heads")
@@ -188,11 +283,11 @@ class SpikingSelfAttention(nn.Module):
         self.k_bn = nn.BatchNorm1d(dim)
         self.v_bn = nn.BatchNorm1d(dim)
         self.proj_bn = nn.BatchNorm1d(dim)
-        self.q_lif = MultiStepLIF(tau=tau, threshold=threshold)
-        self.k_lif = MultiStepLIF(tau=tau, threshold=threshold)
-        self.v_lif = MultiStepLIF(tau=tau, threshold=threshold)
-        self.attn_lif = MultiStepLIF(tau=tau, threshold=0.5)
-        self.proj_lif = MultiStepLIF(tau=tau, threshold=threshold)
+        self.q_lif = _make_lif(tau, threshold, surrogate_name, surrogate_alpha)
+        self.k_lif = _make_lif(tau, threshold, surrogate_name, surrogate_alpha)
+        self.v_lif = _make_lif(tau, threshold, surrogate_name, surrogate_alpha)
+        self.attn_lif = _make_lif(tau, 0.5, surrogate_name, surrogate_alpha)
+        self.proj_lif = _make_lif(tau, threshold, surrogate_name, surrogate_alpha)
         self.last_mixing_ac_per_sample = 0.0
 
     def _project(self, x: torch.Tensor, conv, bn, lif) -> torch.Tensor:
@@ -237,23 +332,67 @@ class SpikingSelfAttention(nn.Module):
 
 
 class SpikingMLP(nn.Module):
-    def __init__(self, dim: int, ratio: float, tau: float, threshold: float):
+    def __init__(
+        self,
+        dim: int,
+        ratio: float,
+        tau: float,
+        threshold: float,
+        surrogate_name: str = "fast_sigmoid",
+        surrogate_alpha: float = 25.0,
+    ):
         super().__init__()
         hidden = int(dim * ratio)
-        self.fc1 = ConvBNLIF2d(dim, hidden, 1, tau=tau, threshold=threshold)
-        self.fc2 = ConvBNLIF2d(hidden, dim, 1, tau=tau, threshold=threshold)
+        self.fc1 = ConvBNLIF2d(
+            dim,
+            hidden,
+            1,
+            tau=tau,
+            threshold=threshold,
+            surrogate_name=surrogate_name,
+            surrogate_alpha=surrogate_alpha,
+        )
+        self.fc2 = ConvBNLIF2d(
+            hidden,
+            dim,
+            1,
+            tau=tau,
+            threshold=threshold,
+            surrogate_name=surrogate_name,
+            surrogate_alpha=surrogate_alpha,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.fc2(self.fc1(x))
 
 
 class SpikingBlock(nn.Module):
-    def __init__(self, attention: nn.Module, dim: int, mlp_ratio: float, tau: float, threshold: float):
+    def __init__(
+        self,
+        attention: nn.Module,
+        dim: int,
+        mlp_ratio: float,
+        tau: float,
+        threshold: float,
+        surrogate_name: str = "fast_sigmoid",
+        surrogate_alpha: float = 25.0,
+    ):
         super().__init__()
         self.attention = attention
-        self.attention_residual_lif = MultiStepLIF(tau=tau, threshold=threshold)
-        self.mlp = SpikingMLP(dim, mlp_ratio, tau, threshold)
-        self.mlp_residual_lif = MultiStepLIF(tau=tau, threshold=threshold)
+        self.attention_residual_lif = _make_lif(
+            tau, threshold, surrogate_name, surrogate_alpha
+        )
+        self.mlp = SpikingMLP(
+            dim,
+            mlp_ratio,
+            tau,
+            threshold,
+            surrogate_name,
+            surrogate_alpha,
+        )
+        self.mlp_residual_lif = _make_lif(
+            tau, threshold, surrogate_name, surrogate_alpha
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.attention_residual_lif(x + self.attention(x))
