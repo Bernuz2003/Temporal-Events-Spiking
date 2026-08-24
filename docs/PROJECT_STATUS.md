@@ -1,7 +1,7 @@
 # Project status
 
 **Updated:** 2026-08-24
-**Phase:** DVS-Lip baseline stabilization and DVS-Gesture real-data gate
+**Phase:** DVS-Lip baseline stabilization and DVS-Gesture E0 gate
 
 ## Current state
 
@@ -27,22 +27,21 @@
   completed 64-epoch screening run.
 - DVS-Lip remains the architecture-development benchmark. DVS-Gesture, DailyDVS-200 and CIFAR10-DVS
   will compare only their frozen baseline with the final DVS-Lip-selected architecture.
-- The real DVS-Gesture archive is now present under `data/DvsGesture/`. Its official MD5 is verified;
-  the 122 recordings reproduce the released disjoint lists (98 train, 24 test). Preparation remains
-  strictly limited to train. The extracted source and compressed archive are retained together only
-  until preparation/profile validation succeeds.
-- Ruff, bytecode compilation, shell syntax and diff checks pass locally. The local Python lacks
-  PyTorch/NumPy/pytest, so checkpoint tests and real DVS-Gesture preparation remain to be verified in
-  the SMILIES container.
+- DVS-Gesture preparation and exhaustive raw-event validation pass on all 1,176 official-train
+  gestures from 23 subjects; the official test remains unused. The deterministic hash-ranked
+  validation subjects `[8, 11, 17, 19, 22]` give 912 train and 264 validation samples with
+  near-exact class proportions. The sole candidate E0 config uses a 20 s physical window with 200
+  ms bins (100 steps), covering the observed 18.457 s maximum without duration normalization.
+- Ruff, bytecode compilation, shell syntax and diff checks pass locally. The complete test suite and
+  exhaustive DVS-Gesture E0 count-cap scan remain server-side gates.
 
 ## Open gate
 
-1. Commit the current implementation and pass the generic DVS-Lip gate with the existing image.
-2. Launch the fresh 128-epoch DVS-Lip run; use `last.pt` only if that run is interrupted.
-3. Prepare and exhaustively profile the official DVS-Gesture train archive without opening its
-   official test split.
+1. Let the active 128-epoch DVS-Lip run finish; use `last.pt` only if it is interrupted.
+2. Exhaustively scan DVS-Gesture E0 for exact event preservation and uint8 count-cap safety.
+3. Pass a bounded DVS-Gesture overfit before authorizing its complete baseline run.
 
 ## Next task
 
-Review the real DVS-Gesture profile, then choose its development subjects, physical-time E0 bins and
-baseline recipe before adding a runnable training configuration.
+Run the DVS-Gesture E0 representation scan and bounded overfit without competing for the GPU used by
+the active DVS-Lip run.

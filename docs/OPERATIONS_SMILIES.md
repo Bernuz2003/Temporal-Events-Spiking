@@ -111,6 +111,10 @@ Keep both source forms until this gate passes. Afterwards the extracted 5 GB dir
 for normal training: the verified compressed archive is sufficient for recovery, while the model
 uses only `events/train`. No source file is removed automatically.
 
+The profiled E0 candidate is `configs/dvsgesture_e0.yaml`. Before full training, exhaustively verify
+its 20 s / 200 ms count encoding, then run the ordinary bounded overfit gate. Do not run either while
+another training job needs the same host resources.
+
 ## Screen controls
 
 ```bash

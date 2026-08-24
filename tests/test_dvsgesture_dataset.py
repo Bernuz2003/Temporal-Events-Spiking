@@ -1,6 +1,7 @@
 import csv
 import json
 import struct
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +10,17 @@ from etsr.data.factory import build_dataset_bundle
 from etsr.dvsgesture.dataset import DvsGestureDataset, load_dvsgesture_index
 from etsr.dvsgesture.prepare import prepare_dvsgesture_train
 from etsr.dvsgesture.profile import run_dvsgesture_profile
+
+
+def test_canonical_dvsgesture_config_follows_the_profiled_protocol():
+    config = load_config(Path(__file__).parents[1] / "configs" / "dvsgesture_e0.yaml")
+
+    assert config["dataset"]["validation_subjects"] == [8, 11, 17, 19, 22]
+    assert config["representation"]["window_us"] == 20_000_000
+    assert config["representation"]["bin_width_us"] == 200_000
+    assert config["dataset"]["batch_size"] * config["training"][
+        "gradient_accumulation_steps"
+    ] == 32
 
 
 def _write_recording(source_root, subject, *, invert_annotated_segment=False):
