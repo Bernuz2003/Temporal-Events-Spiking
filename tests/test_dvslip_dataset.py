@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -10,6 +12,19 @@ from etsr.dvslip.dataset import (
     load_dvslip_index,
 )
 from etsr.dvslip.split import prepare_dvslip_development_split
+
+
+def test_dvslip_split_imports_without_a_circular_dependency():
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from etsr.dvslip.split import prepare_dvslip_development_split",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _write_event_sample(path, timestamps=(0, 100, 400)):
