@@ -11,7 +11,7 @@ from etsr.dvsgesture.prepare import prepare_dvsgesture_train
 from etsr.dvsgesture.profile import run_dvsgesture_profile
 
 
-def _write_recording(source_root, subject):
+def _write_recording(source_root, subject, *, invert_annotated_segment=False):
     stem = f"user{subject:02d}_lab"
     rows = []
     events = []
@@ -19,11 +19,15 @@ def _write_recording(source_root, subject):
         start = target * 1_000
         end = start + 100
         rows.append((target + 1, start, end))
-        for delta, polarity in ((10, 0), (50, 1), (90, 0)):
+        deltas = (50, 10, 90) if invert_annotated_segment and target == 0 else (10, 50, 90)
+        for delta, polarity in zip(deltas, (0, 1, 0), strict=True):
             x = target + 1
             y = target + 2
             address = (x << 17) | (y << 2) | (polarity << 1) | 1
             events.append((address, start + delta))
+        if target == 4:
+            # The official user08_led file has one reversal in this unannotated inter-gesture gap.
+            events.extend(((1, 4_500), (1, 4_400)))
 
     payload = b"".join(struct.pack("<II", address, timestamp) for address, timestamp in events)
     packet_header = struct.pack(
@@ -168,3 +172,13 @@ def test_preparation_refuses_to_overwrite_existing_derived_data(tmp_path):
 
     with pytest.raises(FileExistsError, match="remove it explicitly"):
         prepare_dvsgesture_train(source_root, train_root)
+
+
+def test_preparation_rejects_nonmonotonic_events_inside_an_annotation(tmp_path):
+    source_root = tmp_path / "DvsGesture"
+    source_root.mkdir()
+    name = _write_recording(source_root, 1, invert_annotated_segment=True)
+    (source_root / "trials_to_train.txt").write_text(name, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Annotated segment 0 has non-monotonic timestamps"):
+        prepare_dvsgesture_train(source_root, tmp_path / "events" / "train")

@@ -115,7 +115,13 @@ def prepare_dvsgesture_train(
                     raise ValueError(
                         f"Annotated segment {row_index} contains no events: {recording_name}"
                     )
-                relative_timestamps = events["t"][mask] - start
+                segment_timestamps = events["t"][mask]
+                if np.any(segment_timestamps[1:] < segment_timestamps[:-1]):
+                    raise ValueError(
+                        f"Annotated segment {row_index} has non-monotonic timestamps: "
+                        f"{recording_name}"
+                    )
+                relative_timestamps = segment_timestamps - start
                 sample_path = temporary_root / str(target) / f"{recording_stem}__{row_index:02d}.npz"
                 np.savez_compressed(
                     sample_path,

@@ -70,8 +70,6 @@ def load_aedat_v3(path: str | Path) -> dict[str, np.ndarray]:
     if not timestamps:
         raise ValueError(f"No polarity events found in AEDAT recording: {recording}")
     timestamp_array = np.asarray(timestamps, dtype=np.uint64)
-    if np.any(timestamp_array[1:] < timestamp_array[:-1]):
-        raise ValueError(f"AEDAT timestamps are not monotonic: {recording}")
     return {
         "t": timestamp_array,
         "x": np.asarray(x_coords, dtype=np.uint16),
