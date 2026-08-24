@@ -21,8 +21,13 @@ Temporal-Events-Spiking/
 ├── checkpoints/                          # model weights
 ├── containers/temporal-event-spiking.sif # immutable image
 └── data/
-    ├── DVS-Lip/train/
-    └── dvslip_development_split.json
+    ├── DVS-Lip/
+    │   ├── DVS-Lip/train/
+    │   └── dvslip_development_split.json
+    └── DvsGesture/
+        ├── DvsGesture.tar.gz              # verified source archive
+        ├── DvsGesture/                    # temporary extracted source
+        └── events/train/                  # generated train-only samples
 ```
 
 `screen` runs on the host. Singularity mounts the entire repository at `/workspace`, so relative
@@ -42,6 +47,9 @@ git status --short --branch
 make smilies-build
 ```
 
+The image contains dependencies only; repository code is mounted at runtime. Code/config changes do
+not require a rebuild unless `temporal_event_spiking.def` or its dependencies changed.
+
 The build script uses `containers/temporal_event_spiking.def`, stores cache and temporary files in
 `.singularity/`, builds `containers/temporal-event-spiking.sif` and runs `singularity test`. It
 refuses to overwrite an existing image; rebuild deliberately with:
@@ -52,7 +60,8 @@ REBUILD=1 make smilies-build
 
 ## DVS-Lip sequence
 
-Only the official `train/` directory is needed. Once it is present under `data/DVS-Lip/train`, run:
+Only the official `train/` directory is needed. Once it is present under
+`data/DVS-Lip/DVS-Lip/train`, run:
 
 ```bash
 make smilies-prepare DATASET=dvslip
@@ -62,19 +71,31 @@ make smilies-gate DATASET=dvslip
 `gate` verifies a clean worktree, host and container CUDA, pytest, Ruff, shell syntax, bytecode
 compilation, the full hash preflight and the D016 shortcut control.
 
-The corrected residual topology has passed its bounded overfit gate. The authorized complete E0
-run uses the canonical configuration without overrides:
+The 64-epoch stabilization run was still improving at its boundary. The canonical E0 recipe now
+uses one 128-epoch cosine schedule from scratch:
 
 ```bash
 make smilies-train \
   SMILIES_CONFIG=configs/dvslip_e0.yaml \
-  SMILIES_SESSION=dvslip_e0_full
+  SMILIES_SESSION=dvslip_e0_128
 ```
+
+Every epoch atomically updates `last.pt` with model, optimizer, scheduler and AMP scaler state. If
+the process is interrupted, do not pull a new commit or change the YAML; resume the same run with:
+
+```bash
+make smilies-train \
+  SMILIES_CONFIG=configs/dvslip_e0.yaml \
+  SMILIES_SESSION=dvslip_e0_resume \
+  SMILIES_TRAIN_ARGS='--resume checkpoints/<run-id>/last.pt'
+```
+
+`best.pt` remains the validation-selected model and is not a resumable training checkpoint.
 
 ## DVS-Gesture preparation
 
-Manually extract the official `DvsGesture.tar.gz` so that
-`data/DVS-Gesture/DvsGesture/trials_to_train.txt` exists. The active workflow deliberately reads
+The verified archive and extracted directory are expected at
+`data/DvsGesture/DvsGesture.tar.gz` and `data/DvsGesture/DvsGesture/`. The active workflow reads
 only the official train list:
 
 ```bash
@@ -82,16 +103,20 @@ make smilies-prepare DATASET=dvsgesture
 make smilies-gate DATASET=dvsgesture
 ```
 
-The first command writes derived raw-event segments under `data/DVS-Gesture/events/train`; the gate
+The first command writes derived raw-event segments under `data/DvsGesture/events/train`; the gate
 exhaustively validates them and writes `artifacts/dvsgesture_dataset_profile.json`. If the extracted
 directory differs, pass `DVSGESTURE_SOURCE_ROOT=path/inside/repository`.
+
+Keep both source forms until this gate passes. Afterwards the extracted 5 GB directory is redundant
+for normal training: the verified compressed archive is sufficient for recovery, while the model
+uses only `events/train`. No source file is removed automatically.
 
 ## Screen controls
 
 ```bash
 screen -ls
-screen -r dvslip_e0_full
-tail -f artifacts/screen/dvslip_e0_full.log
+screen -r dvslip_e0_128
+tail -f artifacts/screen/dvslip_e0_128.log
 ```
 
 Detach with `Ctrl-a`, then `d`. A session terminates automatically when its training process exits.

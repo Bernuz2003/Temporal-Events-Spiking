@@ -91,5 +91,7 @@ def build_loader(dataset: Dataset, config: dict[str, Any], shuffle: bool) -> Dat
         num_workers=int(config.get("num_workers", 0)),
         pin_memory=bool(config.get("pin_memory", False)),
         drop_last=False,
-        persistent_workers=bool(config.get("num_workers", 0) > 0),
+        # Recreate workers at epoch boundaries so a restored main RNG state also restores their
+        # augmentation seeds after an interrupted run.
+        persistent_workers=False,
     )

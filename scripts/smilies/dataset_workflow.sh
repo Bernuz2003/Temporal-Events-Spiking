@@ -5,10 +5,10 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 SINGULARITY="${SINGULARITY:-singularity}"
 IMAGE="${IMAGE:-$REPO/containers/temporal-event-spiking.sif}"
-DVSLIP_TRAIN_ROOT="${DVSLIP_TRAIN_ROOT:-data/DVS-Lip/train}"
-DVSLIP_SPLIT_MANIFEST="${DVSLIP_SPLIT_MANIFEST:-data/dvslip_development_split.json}"
-DVSGESTURE_SOURCE_ROOT="${DVSGESTURE_SOURCE_ROOT:-data/DVS-Gesture/DvsGesture}"
-DVSGESTURE_TRAIN_ROOT="${DVSGESTURE_TRAIN_ROOT:-data/DVS-Gesture/events/train}"
+DVSLIP_TRAIN_ROOT="${DVSLIP_TRAIN_ROOT:-data/DVS-Lip/DVS-Lip/train}"
+DVSLIP_SPLIT_MANIFEST="${DVSLIP_SPLIT_MANIFEST:-data/DVS-Lip/dvslip_development_split.json}"
+DVSGESTURE_SOURCE_ROOT="${DVSGESTURE_SOURCE_ROOT:-data/DvsGesture/DvsGesture}"
+DVSGESTURE_TRAIN_ROOT="${DVSGESTURE_TRAIN_ROOT:-data/DvsGesture/events/train}"
 
 usage() {
   echo "Uso: $0 {dvslip|dvsgesture} {prepare|gate}" >&2

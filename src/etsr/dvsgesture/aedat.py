@@ -41,9 +41,9 @@ def load_aedat_v3(path: str | Path) -> dict[str, np.ndarray]:
                 timestamp_overflow,
                 event_capacity,
                 event_number,
-                _event_valid,
+                event_valid,
             ) = struct.unpack("<HHIIIIII", header)
-            if event_size <= 0 or event_number > event_capacity:
+            if event_size <= 0 or event_valid > event_number or event_number > event_capacity:
                 raise ValueError(f"Invalid AEDAT packet dimensions in {recording}")
 
             payload = handle.read(event_capacity * event_size)
@@ -54,12 +54,18 @@ def load_aedat_v3(path: str | Path) -> dict[str, np.ndarray]:
             if event_size < 8:
                 raise ValueError(f"Invalid polarity-event size in {recording}: {event_size}")
 
+            valid_events = 0
             for offset in range(0, event_number * event_size, event_size):
                 address, timestamp = struct.unpack_from("<II", payload, offset)
-                x_coords.append((address >> 17) & 0x7FFF)
-                y_coords.append((address >> 2) & 0x7FFF)
+                if not address & 1:
+                    continue
+                valid_events += 1
+                x_coords.append((address >> 17) & 0x1FFF)
+                y_coords.append((address >> 2) & 0x1FFF)
                 polarities.append((address >> 1) & 1)
                 timestamps.append(timestamp | (timestamp_overflow << 31))
+            if valid_events != event_valid:
+                raise ValueError(f"AEDAT valid-event count mismatch in {recording}")
 
     if not timestamps:
         raise ValueError(f"No polarity events found in AEDAT recording: {recording}")

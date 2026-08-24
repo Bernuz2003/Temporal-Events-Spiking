@@ -13,6 +13,10 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--seed", type=int)
     train.add_argument("--epochs", type=int, help="Override the configured run length")
     train.add_argument(
+        "--resume",
+        help="Resume the same run from its epoch-boundary last.pt checkpoint",
+    )
+    train.add_argument(
         "--overfit",
         nargs=2,
         type=int,
@@ -44,7 +48,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate the deterministic sample-stratified DVS-Lip development split",
     )
     prepare_dvslip.add_argument("--train-root", required=True)
-    prepare_dvslip.add_argument("--output", default="data/dvslip_development_split.json")
+    prepare_dvslip.add_argument(
+        "--output",
+        default="data/DVS-Lip/dvslip_development_split.json",
+    )
 
     profile_dvslip = subparsers.add_parser(
         "profile-dvslip",
@@ -112,7 +119,7 @@ def main() -> None:
             config["experiment"]["name"] += "_overfit"
             if "recipe_id" in config["training"]:
                 config["training"]["recipe_id"] += "_overfit"
-        print(train_experiment(config, seed=args.seed))
+        print(train_experiment(config, seed=args.seed, resume_from=args.resume))
     elif args.command == "preflight-dvslip":
         from etsr.dvslip.preflight import run_dvslip_preflight
 

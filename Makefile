@@ -1,15 +1,15 @@
 PYTHON ?= python
 RUFF ?= ruff
 CONFIG ?= configs/dvslip_e0.yaml
-DVSLIP_TRAIN_ROOT ?=
-DVSLIP_SPLIT_MANIFEST ?= data/dvslip_development_split.json
+DVSLIP_TRAIN_ROOT ?= data/DVS-Lip/DVS-Lip/train
+DVSLIP_SPLIT_MANIFEST ?= data/DVS-Lip/dvslip_development_split.json
 DVSLIP_PREFLIGHT_OUTPUT ?= artifacts/dvslip_preflight.json
 DVSLIP_PROFILE_OUTPUT ?= artifacts/dvslip_dataset_profile.json
 DVSLIP_SHORTCUT_OUTPUT ?= artifacts/dvslip_shortcut_control.json
 DVSLIP_CONFIG ?= configs/dvslip_e0.yaml
 DVSLIP_HASH_SAMPLES ?= 0
-DVSGESTURE_SOURCE_ROOT ?=
-DVSGESTURE_TRAIN_ROOT ?= data/DVS-Gesture/events/train
+DVSGESTURE_SOURCE_ROOT ?= data/DvsGesture/DvsGesture
+DVSGESTURE_TRAIN_ROOT ?= data/DvsGesture/events/train
 DVSGESTURE_PREPARATION_OUTPUT ?= artifacts/dvsgesture_preparation.json
 DVSGESTURE_PROFILE_OUTPUT ?= artifacts/dvsgesture_dataset_profile.json
 DATASET ?=
@@ -34,15 +34,12 @@ test:
 	$(PYTHON) -m pytest -q
 
 prepare-dvslip-split:
-	@test -n "$(DVSLIP_TRAIN_ROOT)" || (echo "Uso: make prepare-dvslip-split DVSLIP_TRAIN_ROOT=/path/to/DVS-Lip/train" && exit 1)
 	$(PYTHON) -m etsr.cli prepare-dvslip-split --train-root "$(DVSLIP_TRAIN_ROOT)" --output "$(DVSLIP_SPLIT_MANIFEST)"
 
 preflight-dvslip:
-	@test -n "$(DVSLIP_TRAIN_ROOT)" || (echo "Uso: make preflight-dvslip DVSLIP_TRAIN_ROOT=/path/to/DVS-Lip/train" && exit 1)
 	$(PYTHON) -m etsr.cli preflight-dvslip --train-root "$(DVSLIP_TRAIN_ROOT)" --output "$(DVSLIP_PREFLIGHT_OUTPUT)" $(if $(wildcard $(DVSLIP_SPLIT_MANIFEST)),--split-manifest "$(DVSLIP_SPLIT_MANIFEST)") $(if $(filter 1 true yes,$(DVSLIP_HASH_SAMPLES)),--hash-samples)
 
 profile-dvslip:
-	@test -n "$(DVSLIP_TRAIN_ROOT)" || (echo "Uso: make profile-dvslip DVSLIP_TRAIN_ROOT=/path/to/DVS-Lip/train" && exit 1)
 	@test -f "$(DVSLIP_SPLIT_MANIFEST)" || (echo "Manifest split mancante: $(DVSLIP_SPLIT_MANIFEST)" && exit 1)
 	$(PYTHON) -m etsr.cli profile-dvslip --train-root "$(DVSLIP_TRAIN_ROOT)" --split-manifest "$(DVSLIP_SPLIT_MANIFEST)" --output "$(DVSLIP_PROFILE_OUTPUT)"
 
@@ -50,7 +47,6 @@ shortcut-dvslip:
 	$(PYTHON) -m etsr.cli shortcut-dvslip --config "$(DVSLIP_CONFIG)" --output "$(DVSLIP_SHORTCUT_OUTPUT)"
 
 prepare-dvsgesture:
-	@test -n "$(DVSGESTURE_SOURCE_ROOT)" || (echo "Uso: make prepare-dvsgesture DVSGESTURE_SOURCE_ROOT=/path/to/DvsGesture" && exit 1)
 	$(PYTHON) -m etsr.cli prepare-dvsgesture --source-root "$(DVSGESTURE_SOURCE_ROOT)" --output-root "$(DVSGESTURE_TRAIN_ROOT)" --report "$(DVSGESTURE_PREPARATION_OUTPUT)"
 
 profile-dvsgesture:

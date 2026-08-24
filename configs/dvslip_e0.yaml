@@ -7,8 +7,8 @@ experiment:
 
 dataset:
   name: dvslip
-  root: data/DVS-Lip/train
-  split_manifest: data/dvslip_development_split.json
+  root: data/DVS-Lip/DVS-Lip/train
+  split_manifest: data/DVS-Lip/dvslip_development_split.json
   batch_size: 16
   num_workers: 4
   pin_memory: true
@@ -33,8 +33,8 @@ model:
   surrogate_alpha: 4.0
 
 training:
-  recipe_id: dvslip_e0
-  epochs: 64
+  recipe_id: dvslip_e0_128
+  epochs: 128
   optimizer: adamw
   learning_rate: 0.0003
   min_learning_rate: 0.000001

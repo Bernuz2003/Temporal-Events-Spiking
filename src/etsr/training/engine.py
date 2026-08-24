@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -81,6 +82,9 @@ def train_one_epoch(
     total_batches = len(loader)
     accumulated_samples = 0
     gradient_norm_sum = 0.0
+    finite_gradient_steps = 0
+    nonfinite_gradient_steps = 0
+    amp_overflow_steps = 0
     clipped_steps = 0
     optimizer_steps = 0
     optimizer.zero_grad(set_to_none=True)
@@ -107,14 +111,31 @@ def train_one_epoch(
             for parameter in model.parameters():
                 if parameter.grad is not None:
                     parameter.grad.div_(accumulated_samples)
+            gradient_is_finite = True
             if gradient_clip_norm is not None:
                 gradient_norm = float(
                     nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm).item()
                 )
-                gradient_norm_sum += gradient_norm
-                clipped_steps += int(gradient_norm > gradient_clip_norm)
+                gradient_is_finite = math.isfinite(gradient_norm)
+                if gradient_is_finite:
+                    gradient_norm_sum += gradient_norm
+                    finite_gradient_steps += 1
+                    clipped_steps += int(gradient_norm > gradient_clip_norm)
+                else:
+                    nonfinite_gradient_steps += 1
+            scale_before = float(scaler.get_scale()) if amp_enabled else None
             scaler.step(optimizer)
             scaler.update()
+            overflow = (
+                amp_enabled
+                and scale_before is not None
+                and float(scaler.get_scale()) < scale_before
+            )
+            amp_overflow_steps += int(overflow)
+            if not gradient_is_finite and not overflow:
+                raise FloatingPointError(
+                    f"Non-finite gradient at optimizer step {optimizer_steps + 1}."
+                )
             optimizer.zero_grad(set_to_none=True)
             accumulated_samples = 0
             optimizer_steps += 1
@@ -128,11 +149,21 @@ def train_one_epoch(
         "accuracy": correct / max(1, samples),
         "seconds": time.perf_counter() - start,
         "gradient_norm_mean": (
-            gradient_norm_sum / max(1, optimizer_steps) if gradient_clip_norm is not None else None
+            gradient_norm_sum / max(1, finite_gradient_steps)
+            if gradient_clip_norm is not None
+            else None
         ),
         "gradient_clip_fraction": (
-            clipped_steps / max(1, optimizer_steps) if gradient_clip_norm is not None else None
+            clipped_steps / max(1, finite_gradient_steps)
+            if gradient_clip_norm is not None
+            else None
         ),
+        "gradient_nonfinite_fraction": (
+            nonfinite_gradient_steps / max(1, optimizer_steps)
+            if gradient_clip_norm is not None
+            else None
+        ),
+        "amp_overflow_fraction": amp_overflow_steps / max(1, optimizer_steps),
     }
 
 

@@ -22,7 +22,7 @@ def _write_recording(source_root, subject):
         for delta, polarity in ((10, 0), (50, 1), (90, 0)):
             x = target + 1
             y = target + 2
-            address = (x << 17) | (y << 2) | (polarity << 1)
+            address = (x << 17) | (y << 2) | (polarity << 1) | 1
             events.append((address, start + delta))
 
     payload = b"".join(struct.pack("<II", address, timestamp) for address, timestamp in events)

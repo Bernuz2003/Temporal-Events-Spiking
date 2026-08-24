@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from etsr.cli import build_parser
 from etsr.data.common import DatasetBundle, balanced_overfit_bundle
+from etsr.training.checkpointing import load_training_state, save_training_state
 from etsr.training.engine import make_scheduler, train_one_epoch
 
 
@@ -21,14 +22,32 @@ class _DisabledScaler:
     def update(self):
         return None
 
+    def state_dict(self):
+        return {}
+
+    def load_state_dict(self, _state):
+        return None
+
 
 def test_train_cli_accepts_generic_overfit_and_epoch_overrides():
     args = build_parser().parse_args(
-        ["train", "--config", "fixture.yaml", "--overfit", "16", "4", "--epochs", "50"]
+        [
+            "train",
+            "--config",
+            "fixture.yaml",
+            "--overfit",
+            "16",
+            "4",
+            "--epochs",
+            "50",
+            "--resume",
+            "last.pt",
+        ]
     )
 
     assert args.overfit == [16, 4]
     assert args.epochs == 50
+    assert args.resume == "last.pt"
 
 
 def test_warmup_cosine_scheduler_reaches_base_and_minimum_rates():
@@ -87,6 +106,8 @@ def test_gradient_accumulation_steps_once_per_complete_or_final_group(monkeypatc
     assert metrics["accuracy"] >= 0.0
     assert metrics["gradient_norm_mean"] is not None
     assert 0.0 <= metrics["gradient_clip_fraction"] <= 1.0
+    assert metrics["gradient_nonfinite_fraction"] == 0.0
+    assert metrics["amp_overflow_fraction"] == 0.0
 
 
 def test_gradient_accumulation_weights_a_short_final_microbatch_by_sample():
@@ -136,3 +157,54 @@ def test_balanced_overfit_bundle_reuses_only_the_selected_train_samples():
     assert overfit.train is overfit.validation
     assert len(overfit.train) == 4
     assert [int(overfit.train[index][1]) for index in range(4)] == [0, 0, 1, 1]
+
+
+def test_last_checkpoint_restores_complete_epoch_boundary_state(tmp_path):
+    model = nn.Linear(2, 2)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=4)
+    scaler = _DisabledScaler()
+    model(torch.ones(1, 2)).sum().backward()
+    optimizer.step()
+    scheduler.step()
+    original = {name: value.detach().clone() for name, value in model.state_dict().items()}
+    original_lr = optimizer.param_groups[0]["lr"]
+    path = tmp_path / "last.pt"
+    torch.manual_seed(123)
+
+    save_training_state(
+        path,
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        scaler=scaler,
+        epoch=3,
+        best_score=0.5,
+        best_epoch=2,
+        config={"experiment": {"name": "fixture"}},
+        num_classes=2,
+        run_id="fixture__seed7",
+        artifact_dir=tmp_path / "artifacts",
+        peak_cuda_memory_bytes=123,
+    )
+    expected_random_value = torch.rand(())
+    with torch.no_grad():
+        model.weight.zero_()
+    optimizer.param_groups[0]["lr"] = 9.0
+    torch.manual_seed(999)
+
+    checkpoint = load_training_state(
+        path,
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        scaler=scaler,
+    )
+
+    assert checkpoint["epoch"] == 3
+    assert checkpoint["best_epoch"] == 2
+    assert checkpoint["peak_cuda_memory_bytes"] == 123
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(original_lr)
+    assert torch.equal(torch.rand(()), expected_random_value)
+    for name, value in model.state_dict().items():
+        assert torch.equal(value, original[name])
