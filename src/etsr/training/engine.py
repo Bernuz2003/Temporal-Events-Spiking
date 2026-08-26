@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -175,13 +176,35 @@ def evaluate(
     device: torch.device,
     num_classes: int,
     collect_predictions: bool = False,
+    prefix_steps: int | Sequence[int] | None = None,
 ) -> tuple[ClassificationResult, dict[str, Any] | None]:
     model.eval()
     accumulator = ClassificationAccumulator(num_classes, collect_predictions)
     for batch_index, (frames, targets, indices) in enumerate(loader):
         frames = frames.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
-        logits = model(frames)
+        if prefix_steps is None:
+            logits = model(frames)
+        elif isinstance(prefix_steps, int):
+            if not 1 <= prefix_steps <= frames.shape[1]:
+                raise ValueError("prefix_steps must fit the encoded time axis.")
+            logits = model(frames[:, :prefix_steps])
+        else:
+            batch_steps = torch.as_tensor(
+                [prefix_steps[int(index)] for index in indices],
+                dtype=torch.long,
+                device=device,
+            )
+            if bool(((batch_steps < 1) | (batch_steps > frames.shape[1])).any().item()):
+                raise ValueError("Every per-sample prefix must fit the encoded time axis.")
+            positions: list[torch.Tensor] = []
+            outputs: list[torch.Tensor] = []
+            for steps in torch.unique(batch_steps, sorted=True):
+                selected = torch.nonzero(batch_steps == steps, as_tuple=False).squeeze(1)
+                positions.append(selected)
+                outputs.append(model(frames.index_select(0, selected)[:, : int(steps.item())]))
+            order = torch.cat(positions).argsort()
+            logits = torch.cat(outputs).index_select(0, order)
         loss = criterion(logits, targets)
         if not bool(torch.isfinite(loss).item()):
             raise FloatingPointError(f"Non-finite evaluation loss at batch {batch_index}.")

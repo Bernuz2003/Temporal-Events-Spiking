@@ -2,15 +2,26 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
 import torch
+from torch import nn
+from torch.utils.data import DataLoader
 
 from etsr.config import save_config
 from etsr.data.common import balanced_overfit_bundle, build_loader
 from etsr.data.factory import build_dataset_bundle
+from etsr.evaluation.metrics import (
+    ClassificationResult,
+    grouped_accuracies,
+    interval_normalized_auc,
+    paired_confusions,
+    trapezoidal_auc,
+)
 from etsr.models.factory import build_model
 from etsr.reproducibility import (
     collect_environment,
@@ -64,6 +75,149 @@ def _config_contract(config: dict[str, Any]) -> dict[str, Any]:
     }
     contract.get("model", {}).pop("num_classes", None)
     return contract
+
+
+def _evaluate_prefixes(
+    config: dict[str, Any],
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+    num_classes: int,
+    full_validation: ClassificationResult,
+) -> dict[str, tuple[list[dict[str, float | int]], dict[str, Any]]] | None:
+    evaluation = config.get("evaluation", {})
+    absolute_times_us = evaluation.get("absolute_prefix_times_us")
+    relative_fractions = evaluation.get("relative_prefix_fractions")
+    if absolute_times_us is None and relative_fractions is None:
+        return None
+
+    representation = config["representation"]
+    bin_width_us = int(representation["bin_width_us"])
+    total_steps = int(representation["window_us"]) // bin_width_us
+    outputs: dict[str, tuple[list[dict[str, float | int]], dict[str, Any]]] = {}
+
+    if absolute_times_us is not None:
+        observed_steps = [
+            max(1, math.ceil(int(requested_us) / bin_width_us))
+            for requested_us in absolute_times_us
+        ]
+        if len(observed_steps) != len(set(observed_steps)):
+            raise ValueError("Absolute prefix times resolve to duplicate encoded time steps.")
+
+        rows: list[dict[str, float | int]] = []
+        for requested_us, steps in zip(absolute_times_us, observed_steps, strict=True):
+            if steps == total_steps:
+                result = full_validation
+            else:
+                result, _ = evaluate(
+                    model,
+                    loader,
+                    criterion,
+                    device,
+                    num_classes,
+                    prefix_steps=steps,
+                )
+            rows.append(
+                {
+                    "requested_us": int(requested_us),
+                    "observed_us": steps * bin_width_us,
+                    "observed_time_steps": steps,
+                    "accuracy": result.accuracy,
+                    "macro_f1": result.macro_f1,
+                    "loss": result.loss,
+                }
+            )
+        points = [float(row["observed_us"]) for row in rows]
+        accuracies = [float(row["accuracy"]) for row in rows]
+        outputs["absolute_time"] = (
+            rows,
+            {
+                "axis": "physical_time_us",
+                "endpoint_knowledge": "none",
+                "accuracy_auc_us": trapezoidal_auc(points, accuracies),
+                "accuracy_auc_normalized": interval_normalized_auc(points, accuracies),
+                "measured_interval_us": [int(points[0]), int(points[-1])],
+                "point_count": len(rows),
+            },
+        )
+
+    if relative_fractions is not None:
+        raw_dataset = getattr(loader.dataset, "raw_dataset", None)
+        if raw_dataset is None or len(raw_dataset) != len(loader.dataset):
+            raise ValueError("Relative prefix evaluation requires an aligned raw event dataset.")
+        durations_us = [int(raw_dataset[index].duration_us) for index in range(len(raw_dataset))]
+
+        rows = []
+        for requested_fraction in relative_fractions:
+            sample_steps = [
+                min(
+                    total_steps,
+                    max(1, math.ceil(duration_us * float(requested_fraction) / bin_width_us)),
+                )
+                for duration_us in durations_us
+            ]
+            result, _ = evaluate(
+                model,
+                loader,
+                criterion,
+                device,
+                num_classes,
+                prefix_steps=sample_steps,
+            )
+            rows.append(
+                {
+                    "requested_duration_fraction": float(requested_fraction),
+                    "minimum_observed_us": min(sample_steps) * bin_width_us,
+                    "maximum_observed_us": max(sample_steps) * bin_width_us,
+                    "accuracy": result.accuracy,
+                    "macro_f1": result.macro_f1,
+                    "loss": result.loss,
+                }
+            )
+        points = [float(row["requested_duration_fraction"]) for row in rows]
+        accuracies = [float(row["accuracy"]) for row in rows]
+        outputs["relative_duration"] = (
+            rows,
+            {
+                "axis": "fraction_of_sample_duration",
+                "endpoint_knowledge": "oracle_final_duration",
+                "accuracy_auc": trapezoidal_auc(points, accuracies),
+                "accuracy_auc_normalized": interval_normalized_auc(points, accuracies),
+                "measured_interval": [points[0], points[-1]],
+                "point_count": len(rows),
+            },
+        )
+
+    return outputs
+
+
+def _dvslip_group_metrics(
+    config: dict[str, Any], classes: list[str], confusion_matrix: torch.Tensor
+) -> dict[str, Any] | None:
+    manifest_path = config.get("evaluation", {}).get("class_groups_manifest")
+    if manifest_path is None:
+        return None
+
+    from etsr.dvslip.dataset import DvsLipExpectations
+    from etsr.dvslip.preflight import load_class_groups_manifest
+
+    manifest = load_class_groups_manifest(manifest_path, classes, DvsLipExpectations())
+    with Path(manifest_path).open(encoding="utf-8") as handle:
+        payload = json.load(handle)
+    semantics = payload["paper_semantics"]
+    groups = {metric: payload[group_name] for metric, group_name in semantics.items()}
+    return {
+        "manifest_sha256": manifest["sha256"],
+        "source_id": manifest["source_id"],
+        "paper_semantics": semantics,
+        "metrics": grouped_accuracies(confusion_matrix, classes, groups),
+        "visually_confusable_pair_errors": paired_confusions(
+            confusion_matrix,
+            classes,
+            payload["visually_confusable_pairs"],
+        ),
+    }
 
 
 def train_experiment(
@@ -279,7 +433,35 @@ def train_experiment(
         num_classes,
         collect_predictions=overfit is None,
     )
-    write_json(validation.to_dict(), artifact_dir / "validation_metrics.json")
+    validation_payload = validation.to_dict()
+    if config["dataset"]["name"] == "dvslip":
+        group_metrics = _dvslip_group_metrics(config, bundle.classes, validation.confusion_matrix)
+        if group_metrics is not None:
+            validation_payload["class_group_accuracies"] = group_metrics
+
+    prefix_evaluation = None
+    if overfit is None:
+        prefix_output = _evaluate_prefixes(
+            config,
+            model,
+            validation_loader,
+            criterion,
+            device,
+            num_classes,
+            validation,
+        )
+        if prefix_output is not None:
+            prefix_evaluation = {}
+            for curve_name, (prefix_rows, curve_summary) in prefix_output.items():
+                write_csv(prefix_rows, artifact_dir / f"prefix_curve_{curve_name}.csv")
+                prefix_evaluation[curve_name] = curve_summary
+                logger.info(
+                    "%s prefix accuracy AUC normalized: %.4f",
+                    curve_name,
+                    curve_summary["accuracy_auc_normalized"],
+                )
+
+    write_json(validation_payload, artifact_dir / "validation_metrics.json")
     shortcut_correlations = None
     if predictions is not None and config["dataset"]["name"] == "dvslip":
         from etsr.dvslip.shortcut import align_prediction_shortcuts
@@ -296,7 +478,7 @@ def train_experiment(
         "best_epoch": best_epoch,
         "best_validation_score": best_score,
         "selection_metric": select_metric,
-        "validation": validation.to_dict(),
+        "validation": validation_payload,
         "trainable_parameters": parameter_count,
         "parameter_breakdown": parameter_breakdown,
         "checkpoint": str(checkpoint_path.resolve()),
@@ -311,6 +493,8 @@ def train_experiment(
     }
     if shortcut_correlations is not None:
         summary["validation_shortcut_correlations"] = shortcut_correlations
+    if prefix_evaluation is not None:
+        summary["prefix_evaluation"] = prefix_evaluation
     write_json(summary, artifact_dir / "summary.json")
     logger.info("Artifacts: %s", artifact_dir)
     logger.info("Checkpoint: %s", checkpoint_path)

@@ -63,6 +63,64 @@ def _validate(config: dict[str, Any]) -> None:
         _validate_dvsgesture(config)
     else:
         raise ConfigError(f"Unsupported dataset: {dataset_name}")
+    _validate_evaluation(config, dataset_name)
+
+
+def _validate_evaluation(config: dict[str, Any], dataset_name: str) -> None:
+    evaluation = config.get("evaluation")
+    if evaluation is None:
+        return
+    if not isinstance(evaluation, dict):
+        raise ConfigError("evaluation must be a mapping")
+    unsupported = set(evaluation) - {
+        "absolute_prefix_times_us",
+        "relative_prefix_fractions",
+        "class_groups_manifest",
+    }
+    if unsupported:
+        raise ConfigError(f"Unsupported evaluation fields: {sorted(unsupported)}")
+
+    times = evaluation.get("absolute_prefix_times_us")
+    window_us = int(config.get("representation", {}).get("window_us", 0))
+    if times is not None:
+        if (
+            not isinstance(times, list)
+            or len(times) < 2
+            or any(type(value) is not int or value <= 0 for value in times)
+            or any(right <= left for left, right in zip(times, times[1:], strict=False))
+            or times[-1] != window_us
+        ):
+            raise ConfigError(
+                "evaluation.absolute_prefix_times_us must be strictly increasing positive "
+                "integers ending at representation.window_us"
+            )
+
+    fractions = evaluation.get("relative_prefix_fractions")
+    if fractions is not None:
+        if (
+            not isinstance(fractions, list)
+            or len(fractions) < 2
+            or any(
+                type(fraction) not in (int, float) or not 0.0 < float(fraction) <= 1.0
+                for fraction in fractions
+            )
+            or any(
+                float(right) <= float(left)
+                for left, right in zip(fractions, fractions[1:], strict=False)
+            )
+            or float(fractions[-1]) != 1.0
+        ):
+            raise ConfigError(
+                "evaluation.relative_prefix_fractions must be strictly increasing values in "
+                "(0, 1] ending at 1.0"
+            )
+
+    class_groups = evaluation.get("class_groups_manifest")
+    if class_groups is not None:
+        if dataset_name != "dvslip":
+            raise ConfigError("evaluation.class_groups_manifest is currently DVS-Lip-specific")
+        if not isinstance(class_groups, str) or not class_groups.strip():
+            raise ConfigError("evaluation.class_groups_manifest must be a non-empty path")
 
 
 def _validate_dvslip(config: dict[str, Any]) -> None:

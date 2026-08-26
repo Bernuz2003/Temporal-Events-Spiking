@@ -21,6 +21,8 @@ def test_canonical_dvsgesture_config_follows_the_profiled_protocol():
     assert config["dataset"]["batch_size"] * config["training"][
         "gradient_accumulation_steps"
     ] == 32
+    assert config["evaluation"]["absolute_prefix_times_us"][-1] == 20_000_000
+    assert config["evaluation"]["relative_prefix_fractions"] == [0.1, 0.25, 0.5, 0.75, 1.0]
 
 
 def _write_recording(source_root, subject, *, invert_annotated_segment=False):

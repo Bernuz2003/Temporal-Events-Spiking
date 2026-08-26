@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from etsr.cli import build_parser
 from etsr.data.common import DatasetBundle, balanced_overfit_bundle
 from etsr.training.checkpointing import load_training_state, save_training_state
-from etsr.training.engine import make_scheduler, train_one_epoch
+from etsr.training.engine import evaluate, make_scheduler, train_one_epoch
 
 
 class _DisabledScaler:
@@ -27,6 +27,16 @@ class _DisabledScaler:
 
     def load_state_dict(self, _state):
         return None
+
+
+class _TimeStepRecorder(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.observed_steps = []
+
+    def forward(self, frames):
+        self.observed_steps.append(frames.shape[1])
+        return torch.zeros(frames.shape[0], 2)
 
 
 def test_train_cli_accepts_generic_overfit_and_epoch_overrides():
@@ -157,6 +167,50 @@ def test_balanced_overfit_bundle_reuses_only_the_selected_train_samples():
     assert overfit.train is overfit.validation
     assert len(overfit.train) == 4
     assert [int(overfit.train[index][1]) for index in range(4)] == [0, 0, 1, 1]
+
+
+def test_evaluate_limits_input_to_the_requested_temporal_prefix():
+    model = _TimeStepRecorder()
+    frames = torch.ones(3, 5, 2, 4, 4)
+    targets = torch.tensor([0, 1, 0])
+    loader = DataLoader(TensorDataset(frames, targets, torch.arange(3)), batch_size=2)
+
+    result, _ = evaluate(
+        model,
+        loader,
+        nn.CrossEntropyLoss(),
+        torch.device("cpu"),
+        num_classes=2,
+        prefix_steps=2,
+    )
+
+    assert result.samples == 3
+    assert model.observed_steps == [2, 2]
+
+
+def test_evaluate_groups_sample_specific_prefixes_without_reordering_outputs():
+    class PrefixSensitiveModel(nn.Module):
+        def forward(self, frames):
+            score = frames.sum(dim=(1, 2, 3, 4))
+            return torch.stack((score, -score), dim=1)
+
+    frames = torch.zeros(3, 4, 1, 1, 1)
+    frames[0, :, 0, 0, 0] = torch.tensor([1.0, 1.0, 1.0, 1.0])
+    frames[1, :, 0, 0, 0] = torch.tensor([-1.0, -1.0, -1.0, -1.0])
+    frames[2, :, 0, 0, 0] = torch.tensor([1.0, -1.0, -1.0, -1.0])
+    targets = torch.tensor([0, 1, 1])
+    loader = DataLoader(TensorDataset(frames, targets, torch.arange(3)), batch_size=3)
+
+    result, _ = evaluate(
+        PrefixSensitiveModel(),
+        loader,
+        nn.CrossEntropyLoss(),
+        torch.device("cpu"),
+        num_classes=2,
+        prefix_steps=[1, 2, 4],
+    )
+
+    assert result.accuracy == 1.0
 
 
 def test_last_checkpoint_restores_complete_epoch_boundary_state(tmp_path):

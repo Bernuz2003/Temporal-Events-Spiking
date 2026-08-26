@@ -399,3 +399,78 @@ Append-only. A later entry may supersede an earlier decision; historical entries
   verified format, stop before creating a recipe and revise the adapter from the observed files.
 - **Refs:** <https://openaccess.thecvf.com/content_cvpr_2017/html/Amir_A_Low_Power_CVPR_2017_paper.html>,
   <https://github.com/fangwei123456/spikingjelly/blob/master/spikingjelly/datasets/dvs128_gesture.py>.
+
+## D023 — Freeze the 128-epoch E0 development baseline
+
+- **Date:** 2026-08-25
+- **Evidence:** clean run `dvslip_e0__20260824_114511__seed42` at commit `d30da00`, seed 42,
+  completes 128 epochs without official-test access. The Macro-F1-selected epoch 112 reaches 44.81%
+  development accuracy and 44.15% Macro-F1; derived paper-semantic group accuracies are Acc1 37.07%
+  and Acc2 52.54%. Minimum validation loss occurs at epoch 126, while the last 32 epochs average
+  43.68% accuracy with no material upward trend. The run takes 8.55 training GPU-hours and peaks at
+  4.92 GB allocated CUDA memory. All 100 classes have nonzero recall. A mid-run pull added only the
+  DVS-Gesture config, tests and documentation; it changed no DVS-Lip config or runtime source, so
+  the start-time `d30da00` provenance remains an accurate description of the executing process.
+- **Decision:** freeze `configs/dvslip_e0.yaml` as the E0 screening recipe and use `best.pt` from
+  epoch 112 as its selected checkpoint. Do not extend `last.pt` beyond the completed cosine
+  schedule. The next architecture/representation screens must retain this optimizer, 128-epoch
+  schedule, effective batch 32, augmentation and selection rule unless a later decision explicitly
+  reopens recipe stabilization.
+- **Shortcut interpretation:** the fixed global-statistic control reaches 2.64% validation
+  accuracy, far below the network. Correctness correlations with duration and active-bin count are
+  0.111 and 0.109; margin correlations are 0.130 and 0.128. Duration is therefore observable and
+  weakly associated with success, but it does not explain most predictions. Retain the caveat and
+  prioritize the planned P2 temporal/readout controls rather than invalidating E0.
+- **Numerical caveat:** AMP dynamic scaling skips 29 of 47,616 optimizer steps (0.061%) and all
+  losses remain finite. Gradient clipping is active on 99.8% of finite steps, so clipping is an
+  operative part of the frozen recipe rather than a rarely used guard; comparisons must keep it
+  fixed, and raw norm magnitude must not be interpreted as a cross-capacity result.
+- **Scope:** this is a single-seed development baseline, not a confirmatory result or a literature
+  reproduction. Published numbers use different representations, capacities and official-test
+  selection protocols. The required approximately 1M/2M capacity scan remains the gate before
+  concluding that a performance gap is architectural.
+- **Reversal condition:** reopen the recipe only if the capacity scan shows an optimization failure
+  rather than ordinary capacity sensitivity, or later replicated runs are numerically unstable.
+
+## D024 — Freeze DVS-Gesture E0 as a transfer baseline
+
+- **Date:** 2026-08-26
+- **Evidence:** clean run `dvsgesture_e0__20260825_213021__seed42` at commit `9393b3c`, seed
+  42, uses only the 23 official-train subjects and the predeclared five-subject development
+  validation split. The Macro-F1-selected epoch 117 reaches 84.47% accuracy and 83.62% Macro-F1
+  on 264 gestures; train accuracy reaches 100%, minimum validation loss occurs at epoch 75, and
+  epoch 128 finishes at 82.58%/80.90%. The run uses 489,227 parameters, 3.41 training GPU-hours and
+  6.13 GB peak allocated CUDA memory. Ten of 3,712 optimizer steps overflow under AMP (0.27%), all
+  handled by dynamic scaling; finite-step clipping is active throughout.
+- **Decision:** freeze the epoch-117 checkpoint and `configs/dvsgesture_e0.yaml` as the
+  DVS-Gesture development baseline. Do not tune the architecture or recipe on DVS-Gesture: after
+  DVS-Lip selects the final architecture, evaluate only that final candidate against this baseline
+  under the same DVS-Gesture protocol.
+- **Interpretation:** this establishes that the shared event/encoder/model path transfers and learns
+  a speaker-disjoint gesture task. Remaining errors concentrate in directionally related gestures
+  and `air_guitar`/`other_gestures`; the train/validation gap is ordinary generalization limitation,
+  not the optimization failure previously found on DVS-Lip.
+- **Scope:** single-seed official-train development evidence only. It is not directly comparable
+  with published official-test accuracy, and the official six-subject test remains untouched.
+- **Reversal condition:** reopen this baseline only for a correctness defect or if the final-model
+  comparison reveals numerical instability under the frozen recipe.
+
+## D025 — Separate physical-time and utterance-relative prefix metrics
+
+- **Date:** 2026-08-26
+- **Evidence:** a prefix expressed as a fraction of the fixed encoder window maps to 0.2–2 s on
+  DVS-Lip and 2–20 s on DVS-Gesture, not to the same fraction of each sample. Fixed windows contain
+  dataset- and sample-dependent zero tails, so a single fractional axis conflates physical latency,
+  utterance progress and padding. The DVS-Lip E0 result also shows that direct substitutions inside
+  the 25 declared visual pairs are a material, separately interpretable part of Acc1.
+- **Decision:** final checkpoint evaluation reports (1) an absolute physical-time curve, requiring
+  no endpoint knowledge, and (2) a sample-duration-relative curve marked as an offline diagnostic
+  with oracle final-duration knowledge. Each curve has its own CSV, axis, measured interval and
+  interval-normalized accuracy AUC. DVS-Lip reports Acc1, Acc2 and both aggregate and per-pair direct
+  confusions from the versioned source manifest.
+- **Why:** the physical curve answers the causal latency question; the relative curve compares
+  progress across variable-duration samples without being misrepresented as deployable timing.
+  Keeping both prevents a convenient but scientifically ambiguous pAUC from guiding capacity or
+  architecture selection.
+- **Reversal condition:** replace either axis only if the deployment contract changes or an online,
+  independently validated endpoint detector makes relative progress available causally.

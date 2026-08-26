@@ -1,6 +1,10 @@
+from pathlib import Path
+
 import torch
 from torch import nn
 
+from etsr.config import load_config
+from etsr.models.factory import build_model
 from etsr.models.layers import (
     ConvBNLIF2d,
     InitialPatchEmbedding,
@@ -57,3 +61,23 @@ def test_speds_shortcuts_spike_each_branch_before_direct_addition():
     assert isinstance(stage.down, ConvBNLIF2d)
     assert isinstance(stage.shortcut, ConvBNLIF2d)
     assert not hasattr(stage, "output_lif")
+
+
+def test_dvslip_capacity_scan_changes_only_model_width():
+    root = Path(__file__).parents[1]
+    baseline = load_config(root / "configs" / "dvslip_e0.yaml")
+    candidates = (
+        ("dvslip_e0_capacity_1m.yaml", 192, 1_113_508),
+        ("dvslip_e0_capacity_2m.yaml", 256, 1_967_972),
+    )
+
+    for filename, width, expected_parameters in candidates:
+        config = load_config(root / "configs" / filename)
+        assert config["dataset"] == baseline["dataset"]
+        assert config["representation"] == baseline["representation"]
+        assert config["augmentation"] == baseline["augmentation"]
+        assert config["evaluation"] == baseline["evaluation"]
+        assert config["training"] == baseline["training"]
+        assert config["model"] == {**baseline["model"], "embed_dim": width}
+        model = build_model(config["model"], num_classes=100)
+        assert sum(parameter.numel() for parameter in model.parameters()) == expected_parameters
