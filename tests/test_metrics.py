@@ -61,8 +61,8 @@ def test_auc_reports_raw_and_interval_normalized_values_on_either_time_axis():
     points = [250_000, 500_000, 1_000_000]
     accuracies = [0.2, 0.4, 0.8]
 
-    assert trapezoidal_auc(points, accuracies) == pytest.approx(412_500)
-    assert interval_normalized_auc(points, accuracies) == pytest.approx(0.55)
+    assert trapezoidal_auc(points, accuracies) == pytest.approx(375_000)
+    assert interval_normalized_auc(points, accuracies) == pytest.approx(0.5)
 
     with pytest.raises(ValueError, match="strictly increasing"):
         trapezoidal_auc([0.5, 0.5], [0.2, 0.3])
