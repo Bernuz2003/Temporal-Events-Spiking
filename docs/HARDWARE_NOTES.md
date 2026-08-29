@@ -1,31 +1,34 @@
 # Hardware notes
 
-**Status:** accounting contract prepared; no FPGA target or synthesis result yet
+**Status:** checkpoint profiler implemented; container acceptance pending; no FPGA target or
+synthesis result yet
 
 ## Current verified capabilities
 
-The repository currently reports:
+`profile-checkpoint` is designed to report from a compatible `best.pt` and a deterministic
+validation subset:
 
-- tagged Conv/Linear MAC or activity-weighted AC operations;
-- custom QKTA/SSA mixing AC estimates;
-- LIF firing rates;
-- Horowitz-style arithmetic proxy using configurable MAC/AC constants.
+- analytical Conv/Linear MAC and binary-AC potential;
+- binary-AC activity estimates from observed input density;
+- dense-potential SOP for QKTA/SSA attention;
+- LIF firing rates, FP32 runtime state size, and state accesses;
+- observed activation-buffer maxima and inference nonlinearities.
 
-Default legacy constants are 4.6 pJ/MAC and 0.9 pJ/AC. The output correctly states that it excludes
-memory, routing, control and clocking and is not measured FPGA energy.
+The profiler deliberately emits no Horowitz energy proxy. Numeric format and hardware target are not
+fixed, so such a scalar would add apparent precision without representing measured FPGA energy.
 
 ## Missing accounting required by the new phase
 
-- persistent state bits and precision;
-- state reads and writes;
-- buffer depth and traffic;
-- decay/gate arithmetic;
-- comparisons and bit shifts;
-- sigmoid/tanh/exp or LUT implementation;
+- selected hardware precision for weights, state and activations;
+- scheduled buffer depth and memory traffic;
+- bit shifts and exact synthesized decay/reset arithmetic;
 - BRAM/DSP expectation;
 - feedback critical path;
 - zero-skip feasibility;
 - offline, chunked and step execution semantics.
+
+Current state bits, reads/writes, decay/reset operations and activation-buffer maxima describe the
+executed FP32 model. They are profiling evidence, not a synthesized memory schedule.
 
 No stateful temporal candidate may be called hardware-efficient from parameter count or spike rate
 alone.

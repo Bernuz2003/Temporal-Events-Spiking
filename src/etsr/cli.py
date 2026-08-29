@@ -24,6 +24,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Train and evaluate on one small balanced train-only subset",
     )
 
+    evaluate = subparsers.add_parser(
+        "evaluate-checkpoint",
+        help="Apply current validation metrics to a compatible selected best.pt checkpoint",
+    )
+    evaluate.add_argument("--config", required=True)
+    evaluate.add_argument("--checkpoint", required=True)
+    evaluate.add_argument("--output", required=True)
+
+    profile = subparsers.add_parser(
+        "profile-checkpoint",
+        help="Profile operations, activity and LIF state for a compatible best.pt checkpoint",
+    )
+    profile.add_argument("--config", required=True)
+    profile.add_argument("--checkpoint", required=True)
+    profile.add_argument("--output", required=True)
+    profile.add_argument("--samples", type=int, default=64)
+
     preflight = subparsers.add_parser(
         "preflight-dvslip",
         help="Validate the prospective official-train DVS-Lip archive without opening test",
@@ -120,6 +137,40 @@ def main() -> None:
             if "recipe_id" in config["training"]:
                 config["training"]["recipe_id"] += "_overfit"
         print(train_experiment(config, seed=args.seed, resume_from=args.resume))
+    elif args.command == "evaluate-checkpoint":
+        from etsr.config import load_config
+        from etsr.runner import evaluate_checkpoint
+
+        config = load_config(args.config)
+        summary = evaluate_checkpoint(config, args.checkpoint, args.output)
+        print(
+            {
+                "output": str(Path(args.output).resolve()),
+                "checkpoint_epoch": summary["checkpoint_epoch"],
+                "accuracy": summary["validation"]["accuracy"],
+                "macro_f1": summary["validation"]["macro_f1"],
+                "official_test_used": summary["official_test_used"],
+            }
+        )
+    elif args.command == "profile-checkpoint":
+        from etsr.config import load_config
+        from etsr.runner import profile_checkpoint
+
+        config = load_config(args.config)
+        profile = profile_checkpoint(
+            config,
+            args.checkpoint,
+            args.output,
+            max_samples=args.samples,
+        )
+        print(
+            {
+                "output": str(Path(args.output).resolve()),
+                "samples_profiled": profile["samples_profiled"],
+                "trainable_parameters": profile["parameters"]["trainable_elements"],
+                "official_test_used": profile["official_test_used"],
+            }
+        )
     elif args.command == "preflight-dvslip":
         from etsr.dvslip.preflight import run_dvslip_preflight
 

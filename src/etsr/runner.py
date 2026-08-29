@@ -13,7 +13,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from etsr.config import save_config
-from etsr.data.common import balanced_overfit_bundle, build_loader
+from etsr.data.common import DatasetBundle, balanced_overfit_bundle, build_loader
 from etsr.data.factory import build_dataset_bundle
 from etsr.evaluation.metrics import (
     ClassificationResult,
@@ -75,6 +75,57 @@ def _config_contract(config: dict[str, Any]) -> dict[str, Any]:
     }
     contract.get("model", {}).pop("num_classes", None)
     return contract
+
+
+def _checkpoint_evaluation_contract(config: dict[str, Any]) -> dict[str, Any]:
+    """Fields that must match to evaluate old weights under a current metric definition."""
+
+    contract = {
+        key: copy.deepcopy(config[key])
+        for key in ("dataset", "representation", "augmentation", "model", "training")
+    }
+    contract["model"].pop("num_classes", None)
+    return contract
+
+
+def _load_checkpoint_context(
+    config: dict[str, Any], checkpoint_path: str | Path
+) -> tuple[Path, dict[str, Any], DatasetBundle, nn.Module, torch.device, dict[str, Any]]:
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    required = {"model", "epoch", "score", "config", "num_classes"}
+    missing = required - set(checkpoint)
+    if missing:
+        raise ValueError(
+            "Operation requires a validation-selected best.pt checkpoint; "
+            f"missing: {sorted(missing)}"
+        )
+    if _checkpoint_evaluation_contract(config) != _checkpoint_evaluation_contract(
+        checkpoint["config"]
+    ):
+        raise ValueError("Config changes the checkpoint data, model or training contract.")
+
+    seed_everything(
+        int(config["experiment"]["seed"]),
+        bool(config["experiment"].get("deterministic", True)),
+    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    bundle = build_dataset_bundle(config)
+    num_classes = len(bundle.classes)
+    if int(checkpoint["num_classes"]) != num_classes:
+        raise ValueError("Checkpoint class count differs from the configured dataset.")
+    checkpoint_runtime = checkpoint["config"].get("runtime", {})
+    if checkpoint_runtime.get("classes") != bundle.classes:
+        raise ValueError("Checkpoint class order differs from the configured dataset.")
+    dataset_metadata = getattr(bundle.validation, "runtime_metadata", {})
+    for name, value in dataset_metadata.items():
+        if name.endswith("_sha256") and checkpoint_runtime.get(name) != value:
+            raise ValueError(f"Checkpoint and configured dataset differ in {name}.")
+    model = build_model(config["model"], num_classes).to(device)
+    model.load_state_dict(checkpoint["model"])
+    return checkpoint_path, checkpoint, bundle, model, device, dataset_metadata
 
 
 def _evaluate_prefixes(
@@ -218,6 +269,168 @@ def _dvslip_group_metrics(
             payload["visually_confusable_pairs"],
         ),
     }
+
+
+def _write_final_evaluation(
+    config: dict[str, Any],
+    model: nn.Module,
+    bundle: DatasetBundle,
+    validation_loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+    output_dir: Path,
+    logger: logging.Logger,
+    *,
+    complete: bool,
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None]:
+    num_classes = len(bundle.classes)
+    validation, predictions = evaluate(
+        model,
+        validation_loader,
+        criterion,
+        device,
+        num_classes,
+        collect_predictions=complete,
+    )
+    validation_payload = validation.to_dict()
+    if config["dataset"]["name"] == "dvslip":
+        group_metrics = _dvslip_group_metrics(config, bundle.classes, validation.confusion_matrix)
+        if group_metrics is not None:
+            validation_payload["class_group_accuracies"] = group_metrics
+
+    prefix_evaluation = None
+    if complete:
+        prefix_output = _evaluate_prefixes(
+            config,
+            model,
+            validation_loader,
+            criterion,
+            device,
+            num_classes,
+            validation,
+        )
+        if prefix_output is not None:
+            prefix_evaluation = {}
+            for curve_name, (prefix_rows, curve_summary) in prefix_output.items():
+                write_csv(prefix_rows, output_dir / f"prefix_curve_{curve_name}.csv")
+                prefix_evaluation[curve_name] = curve_summary
+                logger.info(
+                    "%s prefix accuracy AUC normalized: %.4f",
+                    curve_name,
+                    curve_summary["accuracy_auc_normalized"],
+                )
+
+    write_json(validation_payload, output_dir / "validation_metrics.json")
+    shortcut_correlations = None
+    if predictions is not None and config["dataset"]["name"] == "dvslip":
+        from etsr.dvslip.shortcut import align_prediction_shortcuts
+
+        rows, shortcut_correlations = align_prediction_shortcuts(
+            bundle.validation,
+            predictions,
+            bin_width_us=int(config["representation"]["bin_width_us"]),
+        )
+        write_csv(rows, output_dir / "validation_shortcuts.csv")
+    return validation_payload, shortcut_correlations, prefix_evaluation
+
+
+def evaluate_checkpoint(
+    config: dict[str, Any],
+    checkpoint_path: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Evaluate selected weights with current metrics without repeating training."""
+
+    config = copy.deepcopy(config)
+    checkpoint_path, checkpoint, bundle, model, device, dataset_metadata = (
+        _load_checkpoint_context(config, checkpoint_path)
+    )
+    output = ensure_dir(output_dir)
+    logger = configure_logging(output / "evaluation.log")
+    logger.info("Checkpoint: %s", checkpoint_path)
+    logger.info("Device: %s", device)
+
+    parameter_count = sum(
+        parameter.numel() for parameter in model.parameters() if parameter.requires_grad
+    )
+    validation_loader = build_loader(bundle.validation, config["dataset"], shuffle=False)
+    criterion = make_criterion(config["training"])
+    validation, shortcuts, prefixes = _write_final_evaluation(
+        config,
+        model,
+        bundle,
+        validation_loader,
+        criterion,
+        device,
+        output,
+        logger,
+        complete=True,
+    )
+
+    environment_path = output / "environment.json"
+    write_json(collect_environment(device), environment_path)
+    save_config(config, output / "config_evaluated.yaml")
+    summary = {
+        "checkpoint": str(checkpoint_path.resolve()),
+        "checkpoint_sha256": sha256_file(checkpoint_path),
+        "checkpoint_epoch": int(checkpoint["epoch"]),
+        "checkpoint_score": float(checkpoint["score"]),
+        "checkpoint_git_commit": checkpoint["config"].get("runtime", {}).get("git_commit"),
+        "evaluation_git_commit": git_commit(),
+        "evaluation_git_dirty": git_is_dirty(),
+        "device": str(device),
+        "seed": int(config["experiment"]["seed"]),
+        "trainable_parameters": parameter_count,
+        "validation": validation,
+        "official_test_used": False,
+        "environment": str(environment_path.resolve()),
+        "environment_sha256": sha256_file(environment_path),
+    }
+    summary.update(dataset_metadata)
+    if shortcuts is not None:
+        summary["validation_shortcut_correlations"] = shortcuts
+    if prefixes is not None:
+        summary["prefix_evaluation"] = prefixes
+    write_json(summary, output / "evaluation_summary.json")
+    logger.info("Evaluation artifacts: %s", output)
+    return summary
+
+
+def profile_checkpoint(
+    config: dict[str, Any],
+    checkpoint_path: str | Path,
+    output_path: str | Path,
+    *,
+    max_samples: int = 64,
+) -> dict[str, Any]:
+    """Profile one selected checkpoint without assigning unverified energy costs."""
+
+    from etsr.profiling import profile_model
+
+    config = copy.deepcopy(config)
+    checkpoint_path, checkpoint, bundle, model, device, dataset_metadata = (
+        _load_checkpoint_context(config, checkpoint_path)
+    )
+    loader = build_loader(bundle.validation, config["dataset"], shuffle=False)
+    profile = profile_model(model, loader, device, max_samples)
+    profile.update(
+        {
+            "checkpoint": str(checkpoint_path.resolve()),
+            "checkpoint_sha256": sha256_file(checkpoint_path),
+            "checkpoint_epoch": int(checkpoint["epoch"]),
+            "checkpoint_git_commit": checkpoint["config"].get("runtime", {}).get("git_commit"),
+            "profiling_git_commit": git_commit(),
+            "profiling_git_dirty": git_is_dirty(),
+            "device": str(device),
+            "dataset": dataset_metadata,
+            "representation": getattr(bundle.validation, "representation_metadata", {}),
+            "official_test_used": False,
+        }
+    )
+    output = Path(output_path)
+    ensure_dir(output.parent)
+    write_json(profile, output)
+    return profile
 
 
 def train_experiment(
@@ -425,53 +638,17 @@ def train_experiment(
         )
 
     restore_best_model(checkpoint_path, model, device, logger)
-    validation, predictions = evaluate(
+    validation_payload, shortcut_correlations, prefix_evaluation = _write_final_evaluation(
+        config,
         model,
+        bundle,
         validation_loader,
         criterion,
         device,
-        num_classes,
-        collect_predictions=overfit is None,
+        artifact_dir,
+        logger,
+        complete=overfit is None,
     )
-    validation_payload = validation.to_dict()
-    if config["dataset"]["name"] == "dvslip":
-        group_metrics = _dvslip_group_metrics(config, bundle.classes, validation.confusion_matrix)
-        if group_metrics is not None:
-            validation_payload["class_group_accuracies"] = group_metrics
-
-    prefix_evaluation = None
-    if overfit is None:
-        prefix_output = _evaluate_prefixes(
-            config,
-            model,
-            validation_loader,
-            criterion,
-            device,
-            num_classes,
-            validation,
-        )
-        if prefix_output is not None:
-            prefix_evaluation = {}
-            for curve_name, (prefix_rows, curve_summary) in prefix_output.items():
-                write_csv(prefix_rows, artifact_dir / f"prefix_curve_{curve_name}.csv")
-                prefix_evaluation[curve_name] = curve_summary
-                logger.info(
-                    "%s prefix accuracy AUC normalized: %.4f",
-                    curve_name,
-                    curve_summary["accuracy_auc_normalized"],
-                )
-
-    write_json(validation_payload, artifact_dir / "validation_metrics.json")
-    shortcut_correlations = None
-    if predictions is not None and config["dataset"]["name"] == "dvslip":
-        from etsr.dvslip.shortcut import align_prediction_shortcuts
-
-        rows, shortcut_correlations = align_prediction_shortcuts(
-            bundle.validation,
-            predictions,
-            bin_width_us=int(config["representation"]["bin_width_us"]),
-        )
-        write_csv(rows, artifact_dir / "validation_shortcuts.csv")
     summary = {
         "run_id": run_id,
         "seed": seed,

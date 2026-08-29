@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from etsr.cli import build_parser
 from etsr.data.common import DatasetBundle, balanced_overfit_bundle
+from etsr.runner import _checkpoint_evaluation_contract
 from etsr.training.checkpointing import load_training_state, save_training_state
 from etsr.training.engine import evaluate, make_scheduler, train_one_epoch
 
@@ -58,6 +59,55 @@ def test_train_cli_accepts_generic_overfit_and_epoch_overrides():
     assert args.overfit == [16, 4]
     assert args.epochs == 50
     assert args.resume == "last.pt"
+
+
+def test_checkpoint_evaluation_cli_requires_explicit_inputs():
+    args = build_parser().parse_args(
+        [
+            "evaluate-checkpoint",
+            "--config",
+            "configs/dvslip_e0.yaml",
+            "--checkpoint",
+            "checkpoints/run/best.pt",
+            "--output",
+            "artifacts/run/checkpoint_evaluation",
+        ]
+    )
+
+    assert args.checkpoint.endswith("best.pt")
+    assert args.output.endswith("checkpoint_evaluation")
+
+
+def test_checkpoint_profile_cli_has_a_bounded_default_sample_count():
+    args = build_parser().parse_args(
+        [
+            "profile-checkpoint",
+            "--config",
+            "configs/dvslip_e0.yaml",
+            "--checkpoint",
+            "checkpoints/run/best.pt",
+            "--output",
+            "artifacts/run/hardware_profile.json",
+        ]
+    )
+
+    assert args.samples == 64
+
+
+def test_checkpoint_evaluation_contract_allows_only_metric_changes():
+    common = {
+        "dataset": {"name": "dvslip"},
+        "representation": {"name": "count_frames_e0"},
+        "augmentation": {"horizontal_flip_probability": 0.5},
+        "model": {"name": "mini_qkformer", "embed_dim": 128},
+        "training": {"recipe_id": "e0"},
+    }
+    checkpoint = {**common, "evaluation": {}}
+    current = {**common, "evaluation": {"relative_prefix_fractions": [0.5, 1.0]}}
+
+    assert _checkpoint_evaluation_contract(checkpoint) == _checkpoint_evaluation_contract(current)
+    current["model"] = {**current["model"], "embed_dim": 192}
+    assert _checkpoint_evaluation_contract(checkpoint) != _checkpoint_evaluation_contract(current)
 
 
 def test_warmup_cosine_scheduler_reaches_base_and_minimum_rates():
