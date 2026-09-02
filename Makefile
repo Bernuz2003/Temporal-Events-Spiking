@@ -6,6 +6,7 @@ DVSLIP_SPLIT_MANIFEST ?= data/DVS-Lip/dvslip_development_split.json
 DVSLIP_PREFLIGHT_OUTPUT ?= artifacts/dvslip_preflight.json
 DVSLIP_PROFILE_OUTPUT ?= artifacts/dvslip_dataset_profile.json
 DVSLIP_SHORTCUT_OUTPUT ?= artifacts/dvslip_shortcut_control.json
+DVSLIP_TEMPORAL_CONTROL_OUTPUT ?= artifacts/dvslip_temporal_shortcut_control.json
 DVSLIP_CONFIG ?= configs/dvslip_e0.yaml
 DVSLIP_HASH_SAMPLES ?= 0
 DVSGESTURE_SOURCE_ROOT ?= data/DvsGesture/DvsGesture
@@ -18,10 +19,10 @@ SMILIES_SESSION ?=
 SMILIES_TRAIN_ARGS ?=
 
 .PHONY: install install-dev test lint check-scripts clean
-.PHONY: prepare-dvslip-split preflight-dvslip profile-dvslip shortcut-dvslip
+.PHONY: prepare-dvslip-split preflight-dvslip profile-dvslip shortcut-dvslip temporal-control-dvslip
 .PHONY: prepare-dvsgesture profile-dvsgesture
 .PHONY: train
-.PHONY: smilies-build smilies-prepare smilies-gate
+.PHONY: smilies-build smilies-prepare smilies-gate smilies-control
 .PHONY: smilies-train
 
 install:
@@ -45,6 +46,9 @@ profile-dvslip:
 
 shortcut-dvslip:
 	$(PYTHON) -m etsr.cli shortcut-dvslip --config "$(DVSLIP_CONFIG)" --output "$(DVSLIP_SHORTCUT_OUTPUT)"
+
+temporal-control-dvslip:
+	$(PYTHON) -m etsr.cli shortcut-dvslip --config "$(DVSLIP_CONFIG)" --output "$(DVSLIP_TEMPORAL_CONTROL_OUTPUT)" --temporal
 
 prepare-dvsgesture:
 	$(PYTHON) -m etsr.cli prepare-dvsgesture --source-root "$(DVSGESTURE_SOURCE_ROOT)" --output-root "$(DVSGESTURE_TRAIN_ROOT)" --report "$(DVSGESTURE_PREPARATION_OUTPUT)"
@@ -72,6 +76,10 @@ smilies-prepare:
 smilies-gate:
 	@test -n "$(DATASET)" || (echo "Uso: make smilies-gate DATASET={dvslip|dvsgesture}" && exit 1)
 	DVSLIP_TRAIN_ROOT="$(DVSLIP_TRAIN_ROOT)" DVSLIP_SPLIT_MANIFEST="$(DVSLIP_SPLIT_MANIFEST)" DVSGESTURE_SOURCE_ROOT="$(DVSGESTURE_SOURCE_ROOT)" DVSGESTURE_TRAIN_ROOT="$(DVSGESTURE_TRAIN_ROOT)" bash scripts/smilies/dataset_workflow.sh "$(DATASET)" gate
+
+smilies-control:
+	@test -n "$(DATASET)" || (echo "Uso: make smilies-control DATASET=dvslip" && exit 1)
+	DVSLIP_TRAIN_ROOT="$(DVSLIP_TRAIN_ROOT)" DVSLIP_SPLIT_MANIFEST="$(DVSLIP_SPLIT_MANIFEST)" bash scripts/smilies/dataset_workflow.sh "$(DATASET)" control
 
 smilies-train:
 	@test -n "$(SMILIES_CONFIG)" || (echo "Uso: make smilies-train SMILIES_CONFIG=configs/<dataset>.yaml [SMILIES_SESSION=nome] [SMILIES_TRAIN_ARGS='...']" && exit 1)

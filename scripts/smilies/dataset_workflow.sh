@@ -11,7 +11,7 @@ DVSGESTURE_SOURCE_ROOT="${DVSGESTURE_SOURCE_ROOT:-data/DvsGesture/DvsGesture}"
 DVSGESTURE_TRAIN_ROOT="${DVSGESTURE_TRAIN_ROOT:-data/DvsGesture/events/train}"
 
 usage() {
-  echo "Uso: $0 {dvslip|dvsgesture} {prepare|gate}" >&2
+  echo "Uso: $0 {dvslip|dvsgesture} {prepare|gate|control}" >&2
 }
 
 require_runtime() {
@@ -108,6 +108,19 @@ print("Artifact gate DVS-Lip verificato: ready, train-only")
 '
 }
 
+control_dvslip() {
+  require_runtime
+  require_clean_worktree
+  require_directory "$DVSLIP_TRAIN_ROOT"
+  [[ -f "$REPO/$DVSLIP_SPLIT_MANIFEST" ]] || {
+    echo "Split mancante: $REPO/$DVSLIP_SPLIT_MANIFEST; eseguire prima prepare." >&2
+    exit 1
+  }
+  container cpu make temporal-control-dvslip PYTHON=python \
+    DVSLIP_CONFIG=configs/dvslip_e0.yaml \
+    DVSLIP_TEMPORAL_CONTROL_OUTPUT=artifacts/dvslip_temporal_shortcut_control.json
+}
+
 prepare_dvsgesture() {
   require_runtime
   require_directory "$DVSGESTURE_SOURCE_ROOT"
@@ -144,6 +157,7 @@ ACTION="${2:-}"
 case "$DATASET:$ACTION" in
   dvslip:prepare) prepare_dvslip ;;
   dvslip:gate) gate_dvslip ;;
+  dvslip:control) control_dvslip ;;
   dvsgesture:prepare) prepare_dvsgesture ;;
   dvsgesture:gate) gate_dvsgesture ;;
   *) usage; exit 2 ;;

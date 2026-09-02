@@ -1,4 +1,5 @@
 from dataclasses import replace
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -131,6 +132,44 @@ def test_encoded_dataset_applies_training_only_horizontal_flip():
 
     assert torch.equal(flipped_frames, torch.flip(plain_frames, dims=(-1,)))
     assert int(flipped_frames.sum()) == int(plain_frames.sum())
+
+
+def test_encoded_dataset_applies_shape_preserving_temporal_and_spatial_masks():
+    class RawFixture:
+        height = 4
+        width = 4
+        classes = ["word"]
+        class_to_idx = {"word": 0}
+        sample_ids = ["word/7.npy"]
+        targets = (0,)
+
+        def __len__(self):
+            return 1
+
+        def __getitem__(self, _index):
+            return replace(_sample(), target=0)
+
+    with patch("torch.randint", side_effect=(torch.tensor(40), torch.tensor(0))):
+        temporal, _, _ = EncodedEventDataset(
+            RawFixture(),
+            _encoder(),
+            temporal_mask_count=1,
+            temporal_mask_max_steps=40,
+        )[0]
+    with patch(
+        "torch.randint",
+        side_effect=(torch.tensor(4), torch.tensor(0), torch.tensor(0)),
+    ):
+        spatial, _, _ = EncodedEventDataset(
+            RawFixture(),
+            _encoder(),
+            spatial_erasing_count=1,
+            spatial_erasing_max_pixels=4,
+        )[0]
+
+    assert temporal.shape == spatial.shape == (40, 2, 4, 4)
+    assert torch.count_nonzero(temporal) == 0
+    assert torch.count_nonzero(spatial) == 0
 
 
 def test_dvslip_config_requires_explicit_representation_and_train_root(tmp_path):

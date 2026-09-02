@@ -7,6 +7,7 @@ from etsr.dvslip.shortcut import (
     align_prediction_shortcuts,
     eta_squared,
     sample_shortcut_statistics,
+    temporal_count_features,
 )
 
 
@@ -36,6 +37,46 @@ def test_shortcut_statistics_separate_raw_duration_from_e0_observable_bins():
 def test_eta_squared_reports_class_explained_scalar_variance():
     assert eta_squared(np.array([0.0, 0.0, 10.0, 10.0]), np.array([0, 0, 1, 1])) == 1.0
     assert eta_squared(np.ones(4), np.array([0, 0, 1, 1])) == 0.0
+
+
+def test_temporal_control_preserves_counts_but_removes_bin_order():
+    forward = EventSample(
+        x=np.zeros(4, dtype=np.int64),
+        y=np.zeros(4, dtype=np.int64),
+        t_us=np.array([0, 1, 100, 200]),
+        polarity=np.array([0, 0, 1, 0]),
+        target=0,
+        sample_id="forward",
+        speaker_id=None,
+        duration_us=200,
+        metadata={},
+    )
+    reversed_bins = EventSample(
+        x=forward.x,
+        y=forward.y,
+        t_us=np.array([0, 100, 200, 201]),
+        polarity=np.array([0, 1, 0, 0]),
+        target=0,
+        sample_id="reversed",
+        speaker_id=None,
+        duration_us=201,
+        metadata={},
+    )
+
+    aligned_forward, invariant_forward = temporal_count_features(
+        forward,
+        bin_width_us=100,
+        time_steps=3,
+    )
+    aligned_reversed, invariant_reversed = temporal_count_features(
+        reversed_bins,
+        bin_width_us=100,
+        time_steps=3,
+    )
+
+    assert not np.array_equal(aligned_forward, aligned_reversed)
+    assert np.array_equal(invariant_forward, invariant_reversed)
+    assert aligned_forward.sum() == invariant_forward.sum() == 4
 
 
 def test_fixed_logistic_control_learns_a_separable_global_shortcut():

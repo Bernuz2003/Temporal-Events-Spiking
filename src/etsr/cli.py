@@ -27,6 +27,31 @@ def build_parser() -> argparse.ArgumentParser:
         metavar=("CLASSES", "SAMPLES_PER_CLASS"),
         help="Train and evaluate on one small balanced train-only subset",
     )
+    train.add_argument("--readout", choices=("mean", "last", "diagonal_gated"))
+    train.add_argument(
+        "--bin-width-us",
+        type=int,
+        help="Override only E0 physical bin width for the controlled coarse/fine comparison",
+    )
+    train.add_argument(
+        "--no-cross-time",
+        action="store_true",
+        help="Reset every LIF between timesteps for the P2 dependency control",
+    )
+    train.add_argument(
+        "--temporal-mask",
+        nargs=2,
+        type=int,
+        metavar=("COUNT", "MAX_STEPS"),
+        help="Apply COUNT training-only temporal masks of up to MAX_STEPS",
+    )
+    train.add_argument(
+        "--spatial-erasing",
+        nargs=2,
+        type=int,
+        metavar=("COUNT", "MAX_PIXELS"),
+        help="Apply COUNT training-only square cutouts of up to MAX_PIXELS",
+    )
 
     evaluate = subparsers.add_parser(
         "evaluate-checkpoint",
@@ -88,6 +113,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     shortcut_dvslip.add_argument("--config", default="configs/dvslip_e0.yaml")
     shortcut_dvslip.add_argument("--output", default="artifacts/dvslip_shortcut_control.json")
+    shortcut_dvslip.add_argument(
+        "--temporal",
+        action="store_true",
+        help="Also compare time-aligned and order-invariant per-bin polarity counts",
+    )
 
     prepare_dvsgesture = subparsers.add_parser(
         "prepare-dvsgesture",
@@ -116,10 +146,41 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     if args.command == "train":
-        from etsr.config import load_config
+        from etsr.config import load_config, validate_config
         from etsr.runner import train_experiment
 
         config = load_config(args.config)
+        experiment_suffixes = []
+        recipe_suffixes = []
+        if args.bin_width_us is not None:
+            if args.bin_width_us <= 0:
+                raise ValueError("--bin-width-us must be positive")
+            config["representation"]["bin_width_us"] = args.bin_width_us
+            experiment_suffixes.append(f"bin_{args.bin_width_us}us")
+        if args.readout is not None:
+            config["model"]["readout"] = args.readout
+            experiment_suffixes.append(f"readout_{args.readout}")
+        if args.no_cross_time:
+            config["model"]["lif_cross_time"] = False
+            experiment_suffixes.append("no_cross_time")
+        for argument, field_prefix, suffix_prefix in (
+            (args.temporal_mask, "temporal_mask", "tm"),
+            (args.spatial_erasing, "spatial_erasing", "se"),
+        ):
+            if argument is None:
+                continue
+            count, maximum = argument
+            if count <= 0 or maximum <= 0:
+                raise ValueError(f"--{field_prefix.replace('_', '-')} values must be positive")
+            extent_field = "max_steps" if field_prefix == "temporal_mask" else "max_pixels"
+            config["augmentation"][f"{field_prefix}_count"] = count
+            config["augmentation"][f"{field_prefix}_{extent_field}"] = maximum
+            experiment_suffixes.append(f"{suffix_prefix}{count}x{maximum}")
+            recipe_suffixes.append(f"{suffix_prefix}{count}x{maximum}")
+        if experiment_suffixes:
+            config["experiment"]["name"] += f"_{'_'.join(experiment_suffixes)}"
+        if recipe_suffixes:
+            config["training"]["recipe_id"] += f"_{'_'.join(recipe_suffixes)}"
         if args.epochs is not None:
             if args.epochs <= 0:
                 raise ValueError("--epochs must be positive")
@@ -140,6 +201,7 @@ def main() -> None:
             config["experiment"]["name"] += "_overfit"
             if "recipe_id" in config["training"]:
                 config["training"]["recipe_id"] += "_overfit"
+        validate_config(config)
         print(train_experiment(config, seed=args.seed, resume_from=args.resume))
     elif args.command == "evaluate-checkpoint":
         from etsr.config import load_config
@@ -241,6 +303,12 @@ def main() -> None:
             config["dataset"]["split_manifest"],
             args.output,
             bin_width_us=int(config["representation"]["bin_width_us"]),
+            time_steps=(
+                int(config["representation"]["window_us"])
+                // int(config["representation"]["bin_width_us"])
+                if args.temporal
+                else None
+            ),
         )
         print(
             {

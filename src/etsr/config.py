@@ -41,6 +41,12 @@ def save_config(config: dict[str, Any], path: str | Path) -> None:
         yaml.safe_dump(serializable, handle, sort_keys=False)
 
 
+def validate_config(config: dict[str, Any]) -> None:
+    """Validate an in-memory configuration after explicit CLI experiment overrides."""
+
+    _validate(config)
+
+
 def _validate(config: dict[str, Any]) -> None:
     for section in ("experiment", "dataset", "model", "training"):
         if section not in config or not isinstance(config[section], dict):
@@ -93,6 +99,12 @@ def _validate_evaluation(config: dict[str, Any], dataset_name: str) -> None:
             raise ConfigError(
                 "evaluation.absolute_prefix_times_us must be strictly increasing positive "
                 "integers ending at representation.window_us"
+            )
+        bin_width_us = int(config["representation"]["bin_width_us"])
+        observed_steps = [(int(value) + bin_width_us - 1) // bin_width_us for value in times]
+        if len(observed_steps) != len(set(observed_steps)):
+            raise ConfigError(
+                "evaluation.absolute_prefix_times_us collapse to duplicate encoded steps"
             )
 
     fractions = evaluation.get("relative_prefix_fractions")
@@ -184,11 +196,22 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         or surrogate_alpha <= 0.0
     ):
         raise ConfigError("model.surrogate_alpha must be positive")
+    if type(model.get("lif_cross_time", True)) is not bool:
+        raise ConfigError("model.lif_cross_time must be boolean")
+    if model.get("readout", "mean") not in {"mean", "last", "diagonal_gated"}:
+        raise ConfigError("model.readout must be mean, last or diagonal_gated")
 
     augmentation = config.get("augmentation")
     if not isinstance(augmentation, dict):
         raise ConfigError(f"{dataset_label} requires an augmentation section")
-    unsupported_augmentations = set(augmentation) - {"horizontal_flip_probability"}
+    supported_augmentations = {
+        "horizontal_flip_probability",
+        "temporal_mask_count",
+        "temporal_mask_max_steps",
+        "spatial_erasing_count",
+        "spatial_erasing_max_pixels",
+    }
+    unsupported_augmentations = set(augmentation) - supported_augmentations
     if unsupported_augmentations:
         raise ConfigError(
             f"Unsupported {dataset_label} augmentations: {sorted(unsupported_augmentations)}"
@@ -196,6 +219,19 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
     flip_probability = augmentation.get("horizontal_flip_probability")
     if type(flip_probability) not in (int, float) or not 0.0 <= flip_probability <= 1.0:
         raise ConfigError("augmentation.horizontal_flip_probability must be in [0, 1]")
+    for name in ("temporal_mask", "spatial_erasing"):
+        count = augmentation.get(f"{name}_count", 0)
+        extent_field = "max_steps" if name == "temporal_mask" else "max_pixels"
+        extent = augmentation.get(f"{name}_{extent_field}", 0)
+        if type(count) is not int or type(extent) is not int or count < 0 or extent < 0:
+            raise ConfigError(f"augmentation.{name} values must be non-negative integers")
+        if (count == 0) != (extent == 0):
+            raise ConfigError(
+                f"augmentation.{name} count and maximum must be enabled together"
+            )
+    time_steps = int(representation["window_us"]) // int(representation["bin_width_us"])
+    if int(augmentation.get("temporal_mask_max_steps", 0)) > time_steps:
+        raise ConfigError("augmentation.temporal_mask_max_steps must fit the time axis")
 
     training = config["training"]
     if not isinstance(training.get("recipe_id"), str) or not training["recipe_id"].strip():

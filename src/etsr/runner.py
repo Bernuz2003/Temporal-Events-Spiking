@@ -442,6 +442,13 @@ def train_experiment(
     overfit = config["training"].get("overfit")
     if overfit is not None:
         config["augmentation"]["horizontal_flip_probability"] = 0.0
+        for field in (
+            "temporal_mask_count",
+            "temporal_mask_max_steps",
+            "spatial_erasing_count",
+            "spatial_erasing_max_pixels",
+        ):
+            config["augmentation"][field] = 0
 
     seed = int(config["experiment"]["seed"] if seed is None else seed)
     config["experiment"]["seed"] = seed

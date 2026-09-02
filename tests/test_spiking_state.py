@@ -39,3 +39,13 @@ def test_sigmoid_surrogate_changes_only_the_backward_function():
     expected_gradient = 4.0 * sigmoid * (1.0 - sigmoid)
     assert torch.equal(spikes.detach(), expected_spikes)
     assert torch.allclose(x.grad, expected_gradient)
+
+
+def test_no_cross_time_lif_matches_independent_single_step_calls():
+    signal = torch.tensor([[0.0], [2.0], [4.0], [0.0]])
+    independent = MultiStepLIF(tau=2.0, threshold=1.0, cross_time=False)
+    reference = MultiStepLIF(tau=2.0, threshold=1.0)
+
+    expected = torch.cat([reference(step.unsqueeze(0)) for step in signal], dim=0)
+
+    assert torch.equal(independent(signal), expected)

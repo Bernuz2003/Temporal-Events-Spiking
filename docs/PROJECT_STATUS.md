@@ -1,7 +1,7 @@
 # Project status
 
-**Updated:** 2026-08-26
-**Phase:** frozen E0 baselines and DVS-Lip capacity gate
+**Updated:** 2026-09-02
+**Phase:** final DVS-Lip capacity point running; P2 controls implementation-ready
 
 ## Current state
 
@@ -47,20 +47,35 @@
   DVS-Lip additionally computes source-defined Acc1/Acc2 and direct substitutions within the 25
   declared confusable pairs. These metrics run only after restoring the selected best checkpoint;
   overfit checks do not pay their cost.
-- Two capacity-scan configs preserve the complete frozen DVS-Lip protocol and change only model
-  width: `embed_dim=192` (1,113,508 parameters) and `embed_dim=256` (1,967,972 parameters).
+- The aligned 1,113,508-parameter capacity run reaches 49.58% accuracy and 49.38% Macro-F1,
+  improving the 500k baseline by 4.77/5.22 points while more than doubling potential operations.
+  Its larger train/validation gap is a real generalization limitation, not evidence that longer
+  training is needed. The predeclared 1,967,972-parameter point is running and remains the final
+  capacity observation before width selection.
+- P2 uses the same model and training path rather than parallel experiment code. `NoCrossTime`
+  resets LIF state at every bin; readout is selectable among temporal mean, last state and a
+  six-parameter-per-channel diagonal gated recurrence. The profiler distinguishes LIF and gated
+  state and counts the gated inference operations. No P2 result is claimed until its run exists.
+- The P2-01 shortcut command compares aligned and order-invariant views of exactly the same
+  per-bin OFF/ON counts. The experimental control is deliberately separate from the ordinary data
+  gate. The same resolved-config path can vary only E0 bin width for the later coarse/fine 2x2.
+  Training-only temporal masking and time-consistent spatial erasing are available for a later
+  bounded generalization check; both are disabled by default and never applied to validation.
 - Ruff, bytecode compilation, shell syntax and diff checks pass locally. The complete test suite
   requires the project container because the local interpreter lacks the ML dependencies.
 
 ## Open gate
 
-1. Pass the complete test suite in the clean server/container gate.
-2. Run the predeclared approximately 1M/2M capacity sanity check with the frozen E0 recipe before
-   attributing the remaining accuracy gap to architecture or temporal representation.
-3. Interpret capacity together with parameter count, runtime and both explicitly labelled temporal
-   curves; freeze the smallest adequate width before starting P2 architecture controls.
+1. Pass the complete test suite for the new P2 controls in the clean server/container gate.
+2. Interpret the running 2M result with parameter, state, operation and temporal metrics; freeze the
+   smallest adequate width without extending the capacity scan.
+3. Run the CPU-only aligned/order-invariant control, then the selected-width `NoCrossTime`, last and
+   diagonal-gated conditions under the otherwise frozen recipe.
+4. Treat generalization as validation improvement, not gap minimization. After P2 selects the
+   temporal/readout baseline, screen temporal masking and spatial erasing one variable at a time;
+   retain them only when validation Macro-F1 improves without degrading physical-time pAUC.
 
 ## Next task
 
-Run the two DVS-Lip capacity controls one at a time on the RTX A4000, then select the capacity used
-for P2 without changing the frozen training recipe.
+Verify the P2 implementation in the project container and run the CPU-only temporal shortcut
+control while the final capacity result is pending.

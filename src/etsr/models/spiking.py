@@ -41,20 +41,26 @@ class MultiStepLIF(nn.Module):
         threshold: float = 1.0,
         detach_reset: bool = True,
         surrogate_alpha: float = 4.0,
+        cross_time: bool = True,
     ) -> None:
         super().__init__()
         if tau <= 1.0:
             raise ValueError("tau must be greater than 1 for a leaky neuron.")
         if surrogate_alpha <= 0.0:
             raise ValueError("surrogate_alpha must be positive.")
+        if type(cross_time) is not bool:
+            raise ValueError("cross_time must be boolean.")
         self.tau = float(tau)
         self.threshold = float(threshold)
         self.detach_reset = detach_reset
         self.surrogate_alpha = float(surrogate_alpha)
+        self.cross_time = cross_time
 
     def forward(self, current: torch.Tensor) -> torch.Tensor:
         if current.ndim < 2:
             raise ValueError("MultiStepLIF expects time-major input [T, ...].")
+        if not self.cross_time:
+            return spike_function(current / self.tau - self.threshold, self.surrogate_alpha)
         membrane = torch.zeros_like(current[0])
         spikes = []
         for current_t in current.unbind(0):

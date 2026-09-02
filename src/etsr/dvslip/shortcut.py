@@ -12,6 +12,7 @@ from torch import nn
 from etsr.data.events import EventSample
 from etsr.dvslip.dataset import DvsLipDataset, DvsLipExpectations, load_dvslip_index
 from etsr.evaluation.metrics import classification_metrics
+from etsr.reproducibility import git_commit, git_is_dirty
 from etsr.utils.io import ensure_dir, write_json
 
 
@@ -31,6 +32,33 @@ def sample_shortcut_statistics(sample: EventSample, bin_width_us: int) -> dict[s
             np.unique(np.asarray(sample.t_us, dtype=np.int64) // bin_width_us).size
         ),
     }
+
+
+def temporal_count_features(
+    sample: EventSample,
+    *,
+    bin_width_us: int,
+    time_steps: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return aligned and permutation-invariant views of the same per-bin polarity counts."""
+
+    if type(bin_width_us) is not int or bin_width_us <= 0:
+        raise ValueError("bin_width_us must be a positive integer.")
+    if type(time_steps) is not int or time_steps <= 0:
+        raise ValueError("time_steps must be a positive integer.")
+
+    time_bins = np.asarray(sample.t_us, dtype=np.int64) // bin_width_us
+    if time_bins.size == 0 or time_bins[0] < 0 or time_bins[-1] >= time_steps:
+        raise ValueError(f"Sample {sample.sample_id} does not fit the requested temporal window.")
+    polarities = np.asarray(sample.polarity, dtype=np.int64)
+    linear_indices = time_bins * 2 + polarities
+    counts = np.bincount(linear_indices, minlength=time_steps * 2).reshape(time_steps, 2)
+
+    # Sorting complete OFF/ON rows preserves the exact multiset of temporal bins while removing
+    # their positions. It is therefore a controlled order-invariant counterpart, not a weaker
+    # aggregate with different information content.
+    invariant_order = np.lexsort((counts[:, 1], counts[:, 0]))
+    return counts.reshape(-1), counts[invariant_order].reshape(-1)
 
 
 def eta_squared(values: np.ndarray, targets: np.ndarray) -> float:
@@ -64,18 +92,36 @@ def _pearson(x: np.ndarray, y: np.ndarray) -> float | None:
 def _collect_features(
     dataset: DvsLipDataset,
     bin_width_us: int,
-) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    *,
+    time_steps: int | None = None,
+) -> tuple[dict[str, np.ndarray], np.ndarray, tuple[np.ndarray, np.ndarray] | None]:
     statistics = []
     targets = []
+    aligned_temporal = []
+    invariant_temporal = []
     for index in range(len(dataset)):
         sample = dataset[index]
         statistics.append(sample_shortcut_statistics(sample, bin_width_us))
         targets.append(sample.target)
+        if time_steps is not None:
+            aligned, invariant = temporal_count_features(
+                sample,
+                bin_width_us=bin_width_us,
+                time_steps=time_steps,
+            )
+            aligned_temporal.append(aligned)
+            invariant_temporal.append(invariant)
     columns = {
         name: np.asarray([row[name] for row in statistics], dtype=np.float64)
         for name in ("duration_us", "event_count", "on_fraction", "active_time_bins")
     }
-    return columns, np.asarray(targets, dtype=np.int64)
+    temporal = None
+    if time_steps is not None:
+        temporal = (
+            np.asarray(aligned_temporal, dtype=np.float64),
+            np.asarray(invariant_temporal, dtype=np.float64),
+        )
+    return columns, np.asarray(targets, dtype=np.int64), temporal
 
 
 def _feature_matrix(columns: dict[str, np.ndarray], names: tuple[str, ...]) -> np.ndarray:
@@ -157,15 +203,24 @@ def run_dvslip_shortcut_control(
     expectations: DvsLipExpectations | None = None,
     l2_penalty: float = 1e-4,
     max_iterations: int = 100,
+    time_steps: int | None = None,
 ) -> dict[str, Any]:
-    """Fit raw-duration and E0-observable global controls on development train/validation."""
+    """Fit fixed global controls and optional aligned/order-invariant temporal controls."""
 
     dataset_index = load_dvslip_index(train_root, split_manifest, expectations=expectations)
     train = DvsLipDataset(dataset_index, "train")
     validation = DvsLipDataset(dataset_index, "validation")
 
-    train_columns, train_targets = _collect_features(train, bin_width_us)
-    validation_columns, validation_targets = _collect_features(validation, bin_width_us)
+    train_columns, train_targets, train_temporal = _collect_features(
+        train,
+        bin_width_us,
+        time_steps=time_steps,
+    )
+    validation_columns, validation_targets, validation_temporal = _collect_features(
+        validation,
+        bin_width_us,
+        time_steps=time_steps,
+    )
     all_targets = np.concatenate([train_targets, validation_targets])
     all_columns = {
         name: np.concatenate([train_columns[name], validation_columns[name]])
@@ -190,16 +245,43 @@ def run_dvslip_shortcut_control(
         }
         for name, feature_names in feature_sets.items()
     }
+    if time_steps is not None:
+        assert train_temporal is not None and validation_temporal is not None
+        temporal_feature_sets = {
+            "time_aligned_polarity_counts": (train_temporal[0], validation_temporal[0]),
+            "order_invariant_polarity_counts": (train_temporal[1], validation_temporal[1]),
+        }
+        for name, (train_features, validation_features) in temporal_feature_sets.items():
+            controls[name] = {
+                "features": ["off_count", "on_count"],
+                "feature_count": int(train_features.shape[1]),
+                **_fit_logistic_control(
+                    train_features,
+                    train_targets,
+                    validation_features,
+                    validation_targets,
+                    len(train.classes),
+                    l2_penalty=l2_penalty,
+                    max_iterations=max_iterations,
+                ),
+            }
     report = {
         "schema_version": 1,
-        "control_id": "dvslip_global_shortcuts_v1",
+        "control_id": (
+            "dvslip_temporal_shortcuts_v1"
+            if time_steps is not None
+            else "dvslip_global_shortcuts_v1"
+        ),
         "official_source_split": "train",
         "official_test_used": False,
+        "git_commit": git_commit(),
+        "git_dirty": git_is_dirty(),
         "dataset_index_sha256": train.dataset_index_sha256,
         "split_manifest_sha256": train.split_manifest_sha256,
         "sample_counts": {"train": len(train), "validation": len(validation)},
         "class_count": len(train.classes),
         "bin_width_us": bin_width_us,
+        "time_steps": time_steps,
         "eta_squared": {
             name: eta_squared(values, all_targets) for name, values in all_columns.items()
         },
@@ -217,8 +299,10 @@ def run_dvslip_shortcut_control(
         },
         "controls": controls,
         "interpretation": (
-            "Global-statistic control only; non-trivial accuracy is evidence of a shortcut floor, "
-            "not evidence that the full model uses the same shortcut."
+            "Non-trivial accuracy is evidence of a shortcut floor, not evidence that the full "
+            "model uses the same shortcut. A gain from time-aligned over order-invariant counts "
+            "shows that bin position is informative to this linear control; P2-02 must test whether "
+            "the neural model uses cross-time dependencies."
         ),
     }
     ensure_dir(Path(output_path).parent)

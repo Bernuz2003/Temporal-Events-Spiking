@@ -10,6 +10,7 @@ from etsr.models.layers import (
     SpikingSelfAttention,
     TokenQKAttention,
 )
+from etsr.models.readout import DiagonalGatedReadout
 from etsr.models.spiking import MultiStepLIF
 
 
@@ -31,13 +32,20 @@ class MiniQKFormer(nn.Module):
         lif_tau: float = 2.0,
         lif_threshold: float = 1.0,
         surrogate_alpha: float = 4.0,
+        lif_cross_time: bool = True,
+        readout: str = "mean",
     ) -> None:
         super().__init__()
         if embed_dim % 4 != 0:
             raise ValueError("embed_dim must be divisible by four")
         if surrogate_alpha <= 0.0:
             raise ValueError("surrogate_alpha must be positive")
+        if type(lif_cross_time) is not bool:
+            raise ValueError("lif_cross_time must be boolean")
+        if readout not in {"mean", "last", "diagonal_gated"}:
+            raise ValueError(f"Unsupported readout: {readout}")
         self.num_classes = num_classes
+        self.readout_name = readout
         half = embed_dim // 2
 
         self.patch_embed1 = InitialPatchEmbedding(in_channels, embed_dim, lif_tau, lif_threshold)
@@ -57,10 +65,14 @@ class MiniQKFormer(nn.Module):
             threshold=lif_threshold,
         )
         self.head = nn.Linear(embed_dim, num_classes)
+        self.gated_readout = (
+            DiagonalGatedReadout(embed_dim) if readout == "diagonal_gated" else None
+        )
 
         for module in self.modules():
             if isinstance(module, MultiStepLIF):
                 module.surrogate_alpha = float(surrogate_alpha)
+                module.cross_time = lif_cross_time
         self.apply(self._initialize)
 
     @staticmethod
@@ -83,5 +95,14 @@ class MiniQKFormer(nn.Module):
 
     def forward(self, frames: torch.Tensor) -> torch.Tensor:
         x = self._encode(frames)
-        pooled = x.mean(dim=(0, 3, 4))
+        pooled = self._readout(x)
         return self.head(pooled)
+
+    def _readout(self, encoded: torch.Tensor) -> torch.Tensor:
+        spatial = encoded.mean(dim=(3, 4))
+        if self.readout_name == "mean":
+            return spatial.mean(dim=0)
+        if self.readout_name == "last":
+            return spatial[-1]
+        assert self.gated_readout is not None
+        return self.gated_readout(spatial)

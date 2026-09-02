@@ -35,6 +35,12 @@ def build_dvslip_bundle(
         raw_train,
         encoder,
         horizontal_flip_probability=float(augmentation_config["horizontal_flip_probability"]),
+        temporal_mask_count=int(augmentation_config.get("temporal_mask_count", 0)),
+        temporal_mask_max_steps=int(augmentation_config.get("temporal_mask_max_steps", 0)),
+        spatial_erasing_count=int(augmentation_config.get("spatial_erasing_count", 0)),
+        spatial_erasing_max_pixels=int(
+            augmentation_config.get("spatial_erasing_max_pixels", 0)
+        ),
     )
     validation = EncodedEventDataset(raw_validation, encoder)
     return DatasetBundle(

@@ -48,3 +48,42 @@ def test_hardware_profile_rejects_an_empty_sample_budget():
 
     with pytest.raises(ValueError, match="positive"):
         profile_model(model, loader, torch.device("cpu"), max_samples=0)
+
+
+def test_hardware_profile_distinguishes_no_cross_time_from_gated_readout_state():
+    frames = torch.zeros(1, 3, 2, 16, 16)
+    loader = DataLoader(TensorDataset(frames, torch.tensor([0]), torch.arange(1)))
+
+    independent = MiniQKFormer(
+        in_channels=2,
+        num_classes=2,
+        embed_dim=16,
+        num_heads=4,
+        lif_cross_time=False,
+    )
+    independent_profile = profile_model(
+        independent,
+        loader,
+        torch.device("cpu"),
+        max_samples=1,
+    )
+    assert independent_profile["state"]["persistent_state_elements"] == 0
+    assert independent_profile["state"]["reads_per_sample"] == 0
+    assert independent_profile["operations_per_sample"]["lif_comparison"] > 0
+    assert independent_profile["operations_per_sample"]["lif_reset_gate_potential"] == 0
+    assert independent_profile["execution"]["causal_sequence_equations"] is False
+
+    gated = MiniQKFormer(
+        in_channels=2,
+        num_classes=2,
+        embed_dim=16,
+        num_heads=4,
+        lif_cross_time=False,
+        readout="diagonal_gated",
+    )
+    gated_profile = profile_model(gated, loader, torch.device("cpu"), max_samples=1)
+    assert gated_profile["state"]["persistent_state_elements"] == 16
+    assert gated_profile["inference_non_linearities"]["sigmoid_per_sample"] == 3 * 16
+    assert gated_profile["inference_non_linearities"]["tanh_per_sample"] == 3 * 16
+    assert gated_profile["execution"]["causal_sequence_equations"] is True
+    assert gated_profile["layers"]["gated_readout"]["persistent_state_elements"] == 16

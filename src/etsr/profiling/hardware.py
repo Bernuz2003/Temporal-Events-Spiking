@@ -16,6 +16,7 @@ from etsr.models.layers import (
     SpikingSelfAttention,
     TokenQKAttention,
 )
+from etsr.models.readout import DiagonalGatedReadout
 from etsr.models.spiking import MultiStepLIF
 
 
@@ -36,6 +37,8 @@ class _HardwareProfiler:
                 hook = self._dense_hook(name)
             elif isinstance(module, MultiStepLIF):
                 hook = self._lif_hook(name)
+            elif isinstance(module, DiagonalGatedReadout):
+                hook = self._gated_readout_hook(name)
             elif isinstance(  # noqa: UP038 - removed by modern Ruff; tuple form is intentional.
                 module, (TokenQKAttention, SpikingSelfAttention)
             ):
@@ -82,19 +85,57 @@ class _HardwareProfiler:
         return record
 
     def _lif_hook(self, name: str):
-        def record(_module: nn.Module, _inputs: tuple[torch.Tensor], output: torch.Tensor) -> None:
+        def record(
+            module: MultiStepLIF,
+            _inputs: tuple[torch.Tensor],
+            output: torch.Tensor,
+        ) -> None:
             spikes = output.detach()
             layer = self.layers[name]
             layer["spikes"] += spikes.sum().item()
             layer["spike_elements"] += spikes.numel()
+            layer["cross_time_state"] = int(module.cross_time)
             self.totals["spikes"] += spikes.sum().item()
             self.totals["spike_elements"] += spikes.numel()
-            self.totals["state_updates"] += spikes.numel()
-            self.totals["state_reads"] += (spikes.shape[0] - 1) * spikes[0].numel()
-            self.state_shapes[name] = (
-                int(spikes[0].numel() // spikes.shape[1]),
-                spikes.element_size() * 8,
-            )
+            self.totals["lif_evaluations"] += spikes.numel()
+            if module.cross_time:
+                self.totals["lif_recurrent_evaluations"] += spikes.numel()
+                self.totals["lif_reset_spikes"] += spikes.sum().item()
+                self.totals["recurrent_state_updates"] += spikes.numel()
+                self.totals["state_reads"] += (spikes.shape[0] - 1) * spikes[0].numel()
+                self.state_shapes[name] = (
+                    int(spikes[0].numel() // spikes.shape[1]),
+                    spikes.element_size() * 8,
+                )
+            self._activation(output)
+
+        return record
+
+    def _gated_readout_hook(self, name: str):
+        def record(
+            _module: DiagonalGatedReadout,
+            inputs: tuple[torch.Tensor],
+            output: torch.Tensor,
+        ) -> None:
+            sequence = inputs[0]
+            time_steps, batch_size, channels = sequence.shape
+            elements = time_steps * batch_size * channels
+            # Gate and candidate each use one input and one recurrent channelwise weight.
+            affine_macs = 4 * elements
+            layer = self.layers[name]
+            layer["multivalued_mac_potential"] += affine_macs
+            layer["state_mix_multiply"] += elements
+            layer["state_mix_add"] += 2 * elements
+            layer["sigmoid"] += elements
+            layer["tanh"] += elements
+            self.totals["multivalued_mac_potential"] += affine_macs
+            self.totals["elementwise_multiply"] += elements
+            self.totals["elementwise_add"] += 2 * elements
+            self.totals["sigmoid"] += elements
+            self.totals["tanh"] += elements
+            self.totals["recurrent_state_updates"] += elements
+            self.totals["state_reads"] += (time_steps - 1) * batch_size * channels
+            self.state_shapes[name] = (channels, output.element_size() * 8)
             self._activation(output)
 
         return record
@@ -160,7 +201,8 @@ class _HardwareProfiler:
         per_sample["sop_potential"] = (
             per_sample["binary_ac_potential"] + per_sample["attention_sop_potential"]
         )
-        state_updates = self.totals["state_updates"] / samples
+        lif_evaluations = self.totals["lif_evaluations"] / samples
+        state_updates = self.totals["recurrent_state_updates"] / samples
         layers: dict[str, dict[str, float | int]] = {}
         for name, values in self.layers.items():
             layer = {
@@ -168,13 +210,18 @@ class _HardwareProfiler:
                 for key, value in values.items()
                 if key
                 not in {"calls", "input_elements", "input_nonzero", "binary_calls", "spikes", "spike_elements"}
+                and key not in {"cross_time_state", "persistent_state_elements"}
             }
             if values.get("input_elements"):
                 layer["input_nonzero_rate"] = values["input_nonzero"] / values["input_elements"]
                 layer["binary_input_call_fraction"] = values["binary_calls"] / values["calls"]
             if values.get("spike_elements"):
                 layer["firing_rate"] = values["spikes"] / values["spike_elements"]
+                layer["cross_time_state"] = bool(values["cross_time_state"])
+            if name in self.state_shapes:
                 layer["persistent_state_elements"] = self.state_shapes[name][0]
+            elif values.get("spike_elements"):
+                layer["persistent_state_elements"] = 0
             layers[name] = layer
 
         parameter_dtypes: dict[str, int] = defaultdict(int)
@@ -183,7 +230,7 @@ class _HardwareProfiler:
         state_elements = sum(elements for elements, _bits in self.state_shapes.values())
         state_bits = sum(elements * bits for elements, bits in self.state_shapes.values())
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "samples_profiled": samples,
             "parameters": {
                 "trainable_elements": sum(
@@ -200,10 +247,12 @@ class _HardwareProfiler:
             },
             "operations_per_sample": {
                 **per_sample,
-                "lif_comparison": state_updates,
-                "lif_decay": state_updates,
-                "lif_reset_gate_potential": state_updates,
-                "lif_reset_gate_activity": self.totals["spikes"] / samples,
+                "lif_comparison": lif_evaluations,
+                "lif_decay": lif_evaluations,
+                "lif_reset_gate_potential": self.totals["lif_recurrent_evaluations"]
+                / samples,
+                "lif_reset_gate_activity": self.totals["lif_reset_spikes"] / samples,
+                "elementwise_multiply": self.totals["elementwise_multiply"] / samples,
             },
             "activity": {
                 "global_firing_rate": self.totals["spikes"]
@@ -229,18 +278,24 @@ class _HardwareProfiler:
                 "scheduled_hardware_buffer_bits": None,
             },
             "execution": {
-                "causal_sequence_equations": True,
+                "causal_sequence_equations": bool(self.state_shapes),
                 "streaming_state_api": False,
-                "feedback_path": "local LIF membrane from t-1 to t",
+                "feedback_path": (
+                    "local LIF membrane and/or diagonal readout state from t-1 to t"
+                    if self.state_shapes
+                    else None
+                ),
                 "feedback_critical_path": None,
                 "bram_expectation": None,
                 "dsp_expectation": None,
             },
             "layers": layers,
             "inference_non_linearities": {
-                "threshold_comparisons_per_sample": state_updates,
-                "sigmoid_tanh_exp_lut_per_sample": 0,
-                "note": "surrogate sigmoid is training-only",
+                "threshold_comparisons_per_sample": lif_evaluations,
+                "sigmoid_per_sample": self.totals["sigmoid"] / samples,
+                "tanh_per_sample": self.totals["tanh"] / samples,
+                "exp_lut_per_sample": 0,
+                "note": "surrogate sigmoid is training-only; gated-readout sigmoid/tanh are inference operations",
             },
             "limitations": [
                 "BatchNorm is assumed fused into preceding affine layers at inference.",

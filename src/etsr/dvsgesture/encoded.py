@@ -37,7 +37,16 @@ def build_dvsgesture_bundle(
         count_cap=int(representation_config["count_cap"]),
     )
     return DatasetBundle(
-        train=EncodedEventDataset(raw_train, encoder),
+        train=EncodedEventDataset(
+            raw_train,
+            encoder,
+            temporal_mask_count=int(augmentation_config.get("temporal_mask_count", 0)),
+            temporal_mask_max_steps=int(augmentation_config.get("temporal_mask_max_steps", 0)),
+            spatial_erasing_count=int(augmentation_config.get("spatial_erasing_count", 0)),
+            spatial_erasing_max_pixels=int(
+                augmentation_config.get("spatial_erasing_max_pixels", 0)
+            ),
+        ),
         validation=EncodedEventDataset(raw_validation, encoder),
         holdout=None,
         classes=raw_train.classes,

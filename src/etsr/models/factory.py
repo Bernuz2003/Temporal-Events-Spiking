@@ -20,4 +20,6 @@ def build_model(config: dict[str, Any], num_classes: int) -> nn.Module:
         lif_tau=float(config.get("lif_tau", 2.0)),
         lif_threshold=float(config.get("lif_threshold", 1.0)),
         surrogate_alpha=float(config.get("surrogate_alpha", 4.0)),
+        lif_cross_time=config.get("lif_cross_time", True),
+        readout=str(config.get("readout", "mean")),
     )

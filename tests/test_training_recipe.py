@@ -53,12 +53,28 @@ def test_train_cli_accepts_generic_overfit_and_epoch_overrides():
             "50",
             "--resume",
             "last.pt",
+            "--readout",
+            "diagonal_gated",
+            "--bin-width-us",
+            "25000",
+            "--no-cross-time",
+            "--temporal-mask",
+            "6",
+            "8",
+            "--spatial-erasing",
+            "4",
+            "20",
         ]
     )
 
     assert args.overfit == [16, 4]
     assert args.epochs == 50
     assert args.resume == "last.pt"
+    assert args.readout == "diagonal_gated"
+    assert args.bin_width_us == 25_000
+    assert args.no_cross_time is True
+    assert args.temporal_mask == [6, 8]
+    assert args.spatial_erasing == [4, 20]
 
 
 def test_checkpoint_evaluation_cli_requires_explicit_inputs():
