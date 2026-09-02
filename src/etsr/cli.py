@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
+
+# Required before the command-local PyTorch import when deterministic CUDA matmul is enabled.
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 
 def build_parser() -> argparse.ArgumentParser:

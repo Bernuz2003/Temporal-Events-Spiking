@@ -14,6 +14,8 @@ import torch
 
 
 def seed_everything(seed: int, deterministic: bool = True) -> None:
+    if deterministic:
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -99,6 +101,7 @@ def collect_environment(selected_device: torch.device | str | None = None) -> di
             "cuda_compiled_version": torch.version.cuda,
             "cudnn_version": torch.backends.cudnn.version(),
             "deterministic_algorithms_enabled": bool(torch.are_deterministic_algorithms_enabled()),
+            "cublas_workspace_config": os.getenv("CUBLAS_WORKSPACE_CONFIG"),
             "cuda_devices": cuda_devices,
         },
         "threading": {
