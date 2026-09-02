@@ -97,6 +97,11 @@ def test_fixed_logistic_control_learns_a_separable_global_shortcut():
 
     assert result["validation"]["accuracy"] == 1.0
     assert result["optimization"]["iterations"] <= 40
+    assert np.isfinite(result["optimization"]["gradient_l2_norm"])
+    assert result["optimization"]["iteration_limit_reached"] is (
+        result["optimization"]["iterations"] >= 40
+    )
+    assert "confusion_matrix" not in result["validation"]
 
 
 def test_final_prediction_artifact_uses_stable_dataset_indices():

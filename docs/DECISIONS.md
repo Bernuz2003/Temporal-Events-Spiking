@@ -474,3 +474,70 @@ Append-only. A later entry may supersede an earlier decision; historical entries
   architecture selection.
 - **Reversal condition:** replace either axis only if the deployment contract changes or an online,
   independently validated endpoint detector makes relative progress available causally.
+
+## D026 — Use the 500k model as the architecture-development scale
+
+- **Date:** 2026-09-02
+- **Evidence:** the 1.11M model improves the aligned 500k baseline by 4.77 accuracy and 5.22
+  Macro-F1 points, but more than doubles potential operations and substantially increases training
+  time and the train/validation gap. The thesis target remains a compact effective architecture.
+- **Decision:** use the 500,708-parameter configuration for P2/P3 development and controlled
+  ablations. Keep the completed 1M and running 2M experiments as capacity evidence, not as the
+  default development platform. Validate only the final or clearly shortlisted architectural
+  improvement at 1M, and use 2M only when the capacity result makes that comparison informative.
+- **Interpretation:** this does not claim that 500k has saturated or maximizes accuracy. It chooses
+  the lowest-cost scale that learns reliably so more hypotheses can be tested under a fixed budget.
+- **Reversal condition:** revisit the development width only if 500k cannot discriminate otherwise
+  successful controls, or if a shortlisted change reverses sign when transferred to 1M.
+
+## D027 — Predeclare the P2 execution and readout selection rule
+
+- **Date:** 2026-09-02
+- **Decision:** run `NoCrossTime` as a dependency diagnostic and compare mean, last and diagonal-gated
+  readouts at the D026 500k scale under the otherwise unchanged recipe. A diagonal-gated full run
+  first requires at least 95% finite same-subset accuracy in the existing 16-by-4, 1,000-step
+  overfit gate.
+- **Selection:** validation Macro-F1 is primary; accuracy, causal physical-time pAUC and hardware
+  cost are supporting evidence. Treat a one-point Macro-F1 change as the minimum practically clear
+  single-seed gain. Within that band prefer the lower-state/lower-operation alternative; use another
+  seed only when a borderline result would change the selected temporal core.
+- **Constraint:** a smaller train/validation gap is not a win if it is caused by worse training fit,
+  and a readout is not retained when it materially degrades causal physical-time pAUC.
+- **NoCrossTime interpretation:** with mean readout it is bin-order invariant at inference, as tested
+  directly. Its delta from baseline measures what the current LIF recurrence contributes; it is not
+  a theoretical upper bound on what a future temporal core could learn from order.
+
+## D028 — Promote the clean recovered run as the canonical 500k artifact
+
+- **Date:** 2026-09-02
+- **Evidence:** clean run `dvslip_e0__20260825_211710__seed42` at commit `9393b3c`, with the
+  D023 dataset and split hashes, independently reproduces its selected epoch 112 and exact 44.81%
+  accuracy / 44.15% Macro-F1. Its complete artifact and checkpoint are the surviving evidence after
+  the original server data loss.
+- **Decision:** retain D023 as the historical recipe-freeze record, but use the recovered run above
+  as the canonical 500k checkpoint and artifact for every P2 comparison. This changes no recipe,
+  metric or scientific conclusion.
+- **Scope:** this remains sample-stratified, non-speaker-disjoint development evidence. It cannot be
+  compared numerically with published official speaker-disjoint test results as if the protocols
+  were equivalent.
+
+## D029 — Separate fixed-horizon and latest-event-snapshot readout tests
+
+- **Date:** 2026-09-02
+- **Evidence:** the canonical fixed-window mean checkpoint reaches 44.81% accuracy at 2.0 s but only
+  27.48% when evaluated at each sample's final occupied 50 ms bin. Because it was trained on the
+  fixed horizon, this is evidence of a large endpoint/padding interaction, not proof that padding
+  is harmful or that last/gated readouts must fail.
+- **Decision:** keep `fixed_window` as the default causal horizon and add `last_event` as an explicit
+  readout-time control. It derives the latest occupied E0 bin, masks only the trailing silent bins
+  for mean, selects that bin for last, and returns gated state at that bin.
+- **Causality:** this policy does not require knowing in advance that an event is final. A streaming
+  implementation can retain the latest event-bin snapshot while its working state continues through
+  silence, then return the latest snapshot at any fixed query time. The current batched equations
+  are causal, but end-to-end streaming equivalence remains a P4 gate rather than a present claim.
+- **Attribution:** compare `mean@last_event`, `last@last_event` and `gated@last_event` to isolate the
+  readout mechanism at one endpoint convention. Run fixed-window gated only if the deconfounded
+  control shortlists it, thereby testing whether learned state survives the complete fixed horizon.
+  P2-02 `NoCrossTime` remains unchanged at fixed-window mean.
+- **Instrumentation:** the hardware profile records the resolved readout/time mode and observed
+  per-channel update-gate means. Do not infer memory length from gate parameters alone.

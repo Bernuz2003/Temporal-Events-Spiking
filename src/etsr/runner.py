@@ -51,6 +51,18 @@ def _run_id(config: dict[str, Any], seed: int) -> str:
     return f"{config['experiment']['name']}__{timestamp}__seed{seed}"
 
 
+def _readout_metadata(config: dict[str, Any]) -> dict[str, str]:
+    readout_time = str(config["model"].get("readout_time", "fixed_window"))
+    return {
+        "name": str(config["model"].get("readout", "mean")),
+        "time": readout_time,
+        "endpoint_knowledge": "none",
+        "tail_policy": (
+            "latest_event_snapshot" if readout_time == "last_event" else "process_full_window"
+        ),
+    }
+
+
 def _prepare_run(
     config: dict[str, Any], seed: int, resume: dict[str, Any] | None
 ) -> tuple[str, Path, Path, logging.Logger]:
@@ -381,6 +393,7 @@ def evaluate_checkpoint(
         "device": str(device),
         "seed": int(config["experiment"]["seed"]),
         "trainable_parameters": parameter_count,
+        "readout": _readout_metadata(config),
         "validation": validation,
         "official_test_used": False,
         "environment": str(environment_path.resolve()),
@@ -424,6 +437,7 @@ def profile_checkpoint(
             "device": str(device),
             "dataset": dataset_metadata,
             "representation": getattr(bundle.validation, "representation_metadata", {}),
+            "readout": _readout_metadata(config),
             "official_test_used": False,
         }
     )
@@ -662,6 +676,7 @@ def train_experiment(
         "best_epoch": best_epoch,
         "best_validation_score": best_score,
         "selection_metric": select_metric,
+        "readout": _readout_metadata(config),
         "validation": validation_payload,
         "trainable_parameters": parameter_count,
         "parameter_breakdown": parameter_breakdown,

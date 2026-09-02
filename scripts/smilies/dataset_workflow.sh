@@ -102,7 +102,7 @@ assert preflight["protocol_gate_status"] == "ready"
 assert preflight["protocol_blockers"] == []
 assert preflight["dataset_content"]["complete"] is True
 assert preflight["official_test_used"] is False
-assert shortcut["control_id"] == "dvslip_global_shortcuts_v1"
+assert shortcut["control_id"] == "dvslip_global_shortcuts_v2"
 assert shortcut["official_test_used"] is False
 print("Artifact gate DVS-Lip verificato: ready, train-only")
 '

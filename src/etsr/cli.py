@@ -29,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train.add_argument("--readout", choices=("mean", "last", "diagonal_gated"))
     train.add_argument(
+        "--readout-time",
+        choices=("fixed_window", "last_event"),
+        help="Select the fixed horizon or the latest occupied event-bin snapshot for readout",
+    )
+    train.add_argument(
         "--bin-width-us",
         type=int,
         help="Override only E0 physical bin width for the controlled coarse/fine comparison",
@@ -160,6 +165,9 @@ def main() -> None:
         if args.readout is not None:
             config["model"]["readout"] = args.readout
             experiment_suffixes.append(f"readout_{args.readout}")
+        if args.readout_time is not None:
+            config["model"]["readout_time"] = args.readout_time
+            experiment_suffixes.append(f"readout_time_{args.readout_time}")
         if args.no_cross_time:
             config["model"]["lif_cross_time"] = False
             experiment_suffixes.append("no_cross_time")

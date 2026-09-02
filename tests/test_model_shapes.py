@@ -62,6 +62,24 @@ def test_mini_qkformer_supports_controlled_temporal_modes_and_readouts():
         )
 
 
+def test_no_cross_time_with_mean_readout_is_bin_order_invariant_at_inference():
+    model = MiniQKFormer(
+        in_channels=2,
+        num_classes=3,
+        embed_dim=16,
+        num_heads=4,
+        lif_cross_time=False,
+        readout="mean",
+    ).eval()
+    frames = torch.rand(2, 4, 2, 16, 16)
+
+    with torch.no_grad():
+        original = model(frames)
+        permuted = model(frames[:, [2, 0, 3, 1]])
+
+    assert torch.allclose(original, permuted)
+
+
 def test_diagonal_gated_readout_has_linear_state_and_parameter_cost():
     readout = DiagonalGatedReadout(8)
     sequence = torch.rand(5, 3, 8, requires_grad=True)
@@ -91,6 +109,49 @@ def test_mean_and_last_readouts_have_explicit_temporal_semantics():
 
     assert torch.equal(mean_model._readout(encoded), encoded.mean(dim=(0, 3, 4)))
     assert torch.equal(last_model._readout(encoded), encoded[-1, :, :, 0, 0])
+
+
+def test_last_event_readouts_exclude_only_the_trailing_silent_bins():
+    frames = torch.zeros(2, 4, 1, 1, 1)
+    frames[0, :2] = 1
+    frames[1, :3] = 1
+    valid_steps = MiniQKFormer._last_event_steps(frames)
+    encoded = torch.arange(4 * 2 * 4, dtype=torch.float32).reshape(4, 2, 4, 1, 1)
+
+    mean_model = MiniQKFormer(2, 2, embed_dim=4, num_heads=1, readout="mean")
+    last_model = MiniQKFormer(2, 2, embed_dim=4, num_heads=1, readout="last")
+
+    assert torch.equal(valid_steps, torch.tensor([2, 3]))
+    assert torch.allclose(
+        mean_model._readout(encoded, valid_steps),
+        torch.stack(
+            (
+                encoded[:2, 0].mean(dim=(0, 2, 3)),
+                encoded[:3, 1].mean(dim=(0, 2, 3)),
+            )
+        ),
+    )
+    assert torch.equal(
+        last_model._readout(encoded, valid_steps),
+        torch.stack((encoded[1, 0, :, 0, 0], encoded[2, 1, :, 0, 0])),
+    )
+
+
+def test_gated_readout_can_freeze_each_sample_at_its_last_event():
+    readout = DiagonalGatedReadout(4)
+    sequence = torch.rand(5, 3, 4)
+    valid_steps = torch.tensor([2, 5, 3])
+
+    batched = readout(sequence, valid_steps)
+    individual = torch.cat(
+        [
+            readout(sequence[: int(steps.item()), index : index + 1])
+            for index, steps in enumerate(valid_steps)
+        ],
+        dim=0,
+    )
+
+    assert torch.allclose(batched, individual)
 
 
 def test_spiking_block_uses_direct_residual_additions():

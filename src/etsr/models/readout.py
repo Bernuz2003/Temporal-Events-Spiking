@@ -28,7 +28,13 @@ class DiagonalGatedReadout(nn.Module):
     def detach_state(state: torch.Tensor) -> torch.Tensor:
         return state.detach()
 
-    def step(self, current: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
+    def transition(
+        self,
+        current: torch.Tensor,
+        state: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return the next state and update gate for one causal step."""
+
         if current.ndim != 2 or current.shape[-1] != self.channels:
             raise ValueError("Readout step input must have shape [B, C].")
         if state.shape != current.shape:
@@ -37,20 +43,40 @@ class DiagonalGatedReadout(nn.Module):
         candidate = torch.tanh(
             current * self.candidate_input + state * self.candidate_state + self.candidate_bias
         )
-        return state + gate * (candidate - state)
+        return state + gate * (candidate - state), gate
+
+    def step(self, current: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
+        return self.transition(current, state)[0]
 
     def forward_sequence(
         self,
         sequence: torch.Tensor,
         state: torch.Tensor | None = None,
+        valid_steps: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if sequence.ndim != 3 or sequence.shape[-1] != self.channels or sequence.shape[0] == 0:
             raise ValueError("Expected non-empty time-major input [T, B, C].")
         if state is None:
             state = self.reset_state(sequence[0])
-        for current in sequence.unbind(0):
-            state = self.step(current, state)
+        if valid_steps is not None:
+            if valid_steps.shape != (sequence.shape[1],):
+                raise ValueError("valid_steps must contain one length per batch sample.")
+            if valid_steps.dtype not in (torch.int32, torch.int64):
+                raise ValueError("valid_steps must use an integer dtype.")
+            if bool(((valid_steps < 1) | (valid_steps > sequence.shape[0])).any().item()):
+                raise ValueError("valid_steps must fit the readout time axis.")
+        for index, current in enumerate(sequence.unbind(0)):
+            next_state = self.step(current, state)
+            if valid_steps is None:
+                state = next_state
+            else:
+                active = (index < valid_steps).unsqueeze(1)
+                state = torch.where(active, next_state, state)
         return state
 
-    def forward(self, sequence: torch.Tensor) -> torch.Tensor:
-        return self.forward_sequence(sequence)
+    def forward(
+        self,
+        sequence: torch.Tensor,
+        valid_steps: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.forward_sequence(sequence, valid_steps=valid_steps)

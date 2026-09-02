@@ -1,5 +1,8 @@
 # Roadmap
 
+> **Frozen transition snapshot.** Phase status and executable next work live in
+> [`PROJECT_STATUS.md`](PROJECT_STATUS.md); the `P0` labels below are not current.
+
 **Active phase:** P0
 **Core thesis:** P0–P5
 **Stretch:** P6 only after the core thesis is complete

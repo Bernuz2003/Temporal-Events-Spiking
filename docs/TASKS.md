@@ -1,5 +1,8 @@
 # Task register
 
+> **Frozen transition snapshot.** Current completion state and next work live in
+> [`PROJECT_STATUS.md`](PROJECT_STATUS.md); the `P0 — active` label below is historical.
+
 **Status vocabulary:** `DONE`, `IN PROGRESS`, `PARTIAL`, `PENDING`, `BLOCKED`, `DEFERRED`
 **Rule:** status is evidence-based; an unavailable required check prevents `DONE`.
 

@@ -34,6 +34,7 @@ class MiniQKFormer(nn.Module):
         surrogate_alpha: float = 4.0,
         lif_cross_time: bool = True,
         readout: str = "mean",
+        readout_time: str = "fixed_window",
     ) -> None:
         super().__init__()
         if embed_dim % 4 != 0:
@@ -44,8 +45,11 @@ class MiniQKFormer(nn.Module):
             raise ValueError("lif_cross_time must be boolean")
         if readout not in {"mean", "last", "diagonal_gated"}:
             raise ValueError(f"Unsupported readout: {readout}")
+        if readout_time not in {"fixed_window", "last_event"}:
+            raise ValueError(f"Unsupported readout time: {readout_time}")
         self.num_classes = num_classes
         self.readout_name = readout
+        self.readout_time = readout_time
         half = embed_dim // 2
 
         self.patch_embed1 = InitialPatchEmbedding(in_channels, embed_dim, lif_tau, lif_threshold)
@@ -95,14 +99,40 @@ class MiniQKFormer(nn.Module):
 
     def forward(self, frames: torch.Tensor) -> torch.Tensor:
         x = self._encode(frames)
-        pooled = self._readout(x)
+        valid_steps = self._last_event_steps(frames) if self.readout_time == "last_event" else None
+        pooled = self._readout(x, valid_steps)
         return self.head(pooled)
 
-    def _readout(self, encoded: torch.Tensor) -> torch.Tensor:
+    @staticmethod
+    def _last_event_steps(frames: torch.Tensor) -> torch.Tensor:
+        """Return the one-based final occupied bin for each encoded sample."""
+
+        occupied = frames.flatten(2).ne(0).any(dim=2)
+        positions = torch.arange(
+            1,
+            occupied.shape[1] + 1,
+            device=frames.device,
+            dtype=torch.long,
+        )
+        # Valid dataset samples always contain events; clamping defines silent synthetic inputs.
+        return (occupied * positions.unsqueeze(0)).amax(dim=1).clamp_min(1)
+
+    def _readout(
+        self,
+        encoded: torch.Tensor,
+        valid_steps: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         spatial = encoded.mean(dim=(3, 4))
         if self.readout_name == "mean":
-            return spatial.mean(dim=0)
+            if valid_steps is None:
+                return spatial.mean(dim=0)
+            time = torch.arange(spatial.shape[0], device=spatial.device).unsqueeze(1)
+            mask = (time < valid_steps.unsqueeze(0)).unsqueeze(2)
+            return (spatial * mask).sum(dim=0) / valid_steps.unsqueeze(1)
         if self.readout_name == "last":
-            return spatial[-1]
+            if valid_steps is None:
+                return spatial[-1]
+            batch = torch.arange(spatial.shape[1], device=spatial.device)
+            return spatial[valid_steps - 1, batch]
         assert self.gated_readout is not None
-        return self.gated_readout(spatial)
+        return self.gated_readout(spatial, valid_steps)

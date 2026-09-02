@@ -14,11 +14,13 @@
   identity is unavailable, so validation is explicitly not speaker-disjoint.
 - E0 uses 40 two-polarity count frames over a fixed 2 s physical-time window. The exhaustive scan
   preserves every event and observes maximum voxel count 17; the official test remains embargoed.
-- The clean 128-epoch run `dvslip_e0__20260824_114511__seed42` freezes the 500,708-parameter E0
+- The recovered clean run `dvslip_e0__20260825_211710__seed42` at `9393b3c` is the canonical
+  500,708-parameter E0
   development baseline at its Macro-F1-selected epoch 112: 44.81% validation accuracy, 44.15%
   Macro-F1, paper-semantic development Acc1 37.07% and Acc2 52.54%. Validation loss reaches its
   minimum at epoch 126 and the final window is flat, so extending the exhausted cosine schedule is
-  not justified. This remains single-seed development evidence; the official test is untouched.
+  not justified. This is single-seed, sample-stratified and non-speaker-disjoint development
+  evidence, not a literature-comparable official-test score; the official test is untouched.
 - The global-statistic shortcut reaches only 2.64% validation accuracy. Best-checkpoint correctness
   nevertheless correlates weakly with duration (0.111) and active-bin count (0.109), so physical
   duration is not the main explanation for 44.81% but remains a controlled P2 caveat.
@@ -51,14 +53,26 @@
   improving the 500k baseline by 4.77/5.22 points while more than doubling potential operations.
   Its larger train/validation gap is a real generalization limitation, not evidence that longer
   training is needed. The predeclared 1,967,972-parameter point is running and remains the final
-  capacity observation before width selection.
+  capacity observation; it does not delay the already selected 500k development track.
+- D026 selects the 500,708-parameter model as the P2/P3 development scale because compactness and
+  experiment throughput are thesis objectives. The 1M/2M results remain capacity controls; only
+  final or shortlisted improvements are transferred to the larger scale.
+- Compactness is not represented by parameters alone: the unquantized 500k profile has 16.02 Mbit
+  of parameters but 35.19 Mbit of persistent LIF membrane state (1,099,776 elements, 2.20x parameter
+  bits). State and traffic must therefore accompany parameters in later Pareto comparisons.
 - P2 uses the same model and training path rather than parallel experiment code. `NoCrossTime`
   resets LIF state at every bin; readout is selectable among temporal mean, last state and a
   six-parameter-per-channel diagonal gated recurrence. The profiler distinguishes LIF and gated
-  state and counts the gated inference operations. No P2 result is claimed until its run exists.
+  state, counts gated inference operations and reports observed update gates. Readout time is now
+  explicit: `fixed_window` processes the complete causal horizon, while `last_event` returns the
+  latest occupied-bin snapshot so trailing silence cannot confound the first readout comparison.
 - The P2-01 shortcut command compares aligned and order-invariant views of exactly the same
   per-bin OFF/ON counts. The experimental control is deliberately separate from the ordinary data
-  gate. The same resolved-config path can vary only E0 bin width for the later coarse/fine 2x2.
+  gate. Its first clean artifact reaches 6.34% aligned versus 4.97% order-invariant validation
+  accuracy: bin position adds a small shortcut floor, but neither control approaches the 44.81%
+  neural baseline. Both temporal fits reached their 100-iteration limit, so schema v2 records the
+  final gradient norm and permits 300 iterations before the result is closed. The same
+  resolved-config path can vary only E0 bin width for the later coarse/fine 2x2.
   Training-only temporal masking and time-consistent spatial erasing are available for a later
   bounded generalization check; both are disabled by default and never applied to validation.
 - Ruff, bytecode compilation, shell syntax and diff checks pass locally. The complete test suite
@@ -66,16 +80,17 @@
 
 ## Open gate
 
-1. Pass the complete test suite for the new P2 controls in the clean server/container gate.
-2. Interpret the running 2M result with parameter, state, operation and temporal metrics; freeze the
-   smallest adequate width without extending the capacity scan.
-3. Run the CPU-only aligned/order-invariant control, then the selected-width `NoCrossTime`, last and
-   diagonal-gated conditions under the otherwise frozen recipe.
+1. Pass the complete test suite after the compact convergence-report change and regenerate the
+   P2-01 temporal control as schema v2.
+2. Interpret the running 2M result as capacity evidence without extending the scan or delaying P2.
+3. Run 500k `NoCrossTime` at fixed-window mean, then compare mean/last/gated at `last_event`. Gate
+   the diagonal-gated full diagnostic on its bounded same-subset overfit check; test fixed-window
+   gated only if the diagnostic shortlists it.
 4. Treat generalization as validation improvement, not gap minimization. After P2 selects the
    temporal/readout baseline, screen temporal masking and spatial erasing one variable at a time;
    retain them only when validation Macro-F1 improves without degrading physical-time pAUC.
 
 ## Next task
 
-Verify the P2 implementation in the project container and run the CPU-only temporal shortcut
-control while the final capacity result is pending.
+Regenerate the compact P2-01 artifact and launch the independent 500k fixed-window `NoCrossTime` and
+`mean@last_event` controls while the final capacity result is pending.

@@ -52,6 +52,7 @@ def test_hardware_profile_rejects_an_empty_sample_budget():
 
 def test_hardware_profile_distinguishes_no_cross_time_from_gated_readout_state():
     frames = torch.zeros(1, 3, 2, 16, 16)
+    frames[0, 1, 0, 0, 0] = 1
     loader = DataLoader(TensorDataset(frames, torch.tensor([0]), torch.arange(1)))
 
     independent = MiniQKFormer(
@@ -80,6 +81,7 @@ def test_hardware_profile_distinguishes_no_cross_time_from_gated_readout_state()
         num_heads=4,
         lif_cross_time=False,
         readout="diagonal_gated",
+        readout_time="last_event",
     )
     gated_profile = profile_model(gated, loader, torch.device("cpu"), max_samples=1)
     assert gated_profile["state"]["persistent_state_elements"] == 16
@@ -87,3 +89,9 @@ def test_hardware_profile_distinguishes_no_cross_time_from_gated_readout_state()
     assert gated_profile["inference_non_linearities"]["tanh_per_sample"] == 3 * 16
     assert gated_profile["execution"]["causal_sequence_equations"] is True
     assert gated_profile["layers"]["gated_readout"]["persistent_state_elements"] == 16
+    gate = gated_profile["layers"]["gated_readout"]["observed_update_gate"]
+    assert 0.0 <= gate["minimum_channel_mean"] <= gate["maximum_channel_mean"] <= 1.0
+    assert len(gate["mean_by_channel"]) == 16
+    assert gated_profile["layers"]["gated_readout"]["active_state_update_fraction"] == pytest.approx(
+        2 / 3
+    )

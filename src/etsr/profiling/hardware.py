@@ -29,6 +29,8 @@ class _HardwareProfiler:
         self.totals: dict[str, float] = defaultdict(float)
         self.layers: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
         self.state_shapes: dict[str, tuple[int, int]] = {}
+        self.gate_channel_sums: dict[str, torch.Tensor] = {}
+        self.gate_step_counts: dict[str, int] = defaultdict(int)
         self.handles: list[Any] = []
         for name, module in model.named_modules():
             if isinstance(  # noqa: UP038 - removed by modern Ruff; tuple form is intentional.
@@ -113,12 +115,16 @@ class _HardwareProfiler:
 
     def _gated_readout_hook(self, name: str):
         def record(
-            _module: DiagonalGatedReadout,
+            module: DiagonalGatedReadout,
             inputs: tuple[torch.Tensor],
             output: torch.Tensor,
         ) -> None:
             sequence = inputs[0]
             time_steps, batch_size, channels = sequence.shape
+            valid_steps = inputs[1] if len(inputs) > 1 else None
+            active_steps = (
+                int(valid_steps.sum().item()) if valid_steps is not None else time_steps * batch_size
+            )
             elements = time_steps * batch_size * channels
             # Gate and candidate each use one input and one recurrent channelwise weight.
             affine_macs = 4 * elements
@@ -136,6 +142,24 @@ class _HardwareProfiler:
             self.totals["recurrent_state_updates"] += elements
             self.totals["state_reads"] += (time_steps - 1) * batch_size * channels
             self.state_shapes[name] = (channels, output.element_size() * 8)
+            layer["active_state_updates"] += active_steps * channels
+
+            state = module.reset_state(sequence[0])
+            gate_sum = torch.zeros(channels, device=sequence.device)
+            for index, current in enumerate(sequence.unbind(0)):
+                next_state, gate = module.transition(current, state)
+                if valid_steps is None:
+                    active = torch.ones(batch_size, dtype=torch.bool, device=sequence.device)
+                else:
+                    active = index < valid_steps
+                gate_sum += gate[active].sum(dim=0)
+                state = torch.where(active.unsqueeze(1), next_state, state)
+            previous = self.gate_channel_sums.get(name)
+            detached_sum = gate_sum.detach().cpu()
+            self.gate_channel_sums[name] = (
+                detached_sum if previous is None else previous + detached_sum
+            )
+            self.gate_step_counts[name] += active_steps
             self._activation(output)
 
         return record
@@ -222,6 +246,17 @@ class _HardwareProfiler:
                 layer["persistent_state_elements"] = self.state_shapes[name][0]
             elif values.get("spike_elements"):
                 layer["persistent_state_elements"] = 0
+            if name in self.gate_channel_sums:
+                channel_means = self.gate_channel_sums[name] / self.gate_step_counts[name]
+                layer["active_state_update_fraction"] = (
+                    values["active_state_updates"] / values["sigmoid"]
+                )
+                layer["observed_update_gate"] = {
+                    "mean": float(channel_means.mean().item()),
+                    "minimum_channel_mean": float(channel_means.min().item()),
+                    "maximum_channel_mean": float(channel_means.max().item()),
+                    "mean_by_channel": channel_means.tolist(),
+                }
             layers[name] = layer
 
         parameter_dtypes: dict[str, int] = defaultdict(int)

@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from etsr.cli import build_parser
 from etsr.data.common import DatasetBundle, balanced_overfit_bundle
-from etsr.runner import _checkpoint_evaluation_contract
+from etsr.runner import _checkpoint_evaluation_contract, _readout_metadata
 from etsr.training.checkpointing import load_training_state, save_training_state
 from etsr.training.engine import evaluate, make_scheduler, train_one_epoch
 
@@ -55,6 +55,8 @@ def test_train_cli_accepts_generic_overfit_and_epoch_overrides():
             "last.pt",
             "--readout",
             "diagonal_gated",
+            "--readout-time",
+            "last_event",
             "--bin-width-us",
             "25000",
             "--no-cross-time",
@@ -71,10 +73,22 @@ def test_train_cli_accepts_generic_overfit_and_epoch_overrides():
     assert args.epochs == 50
     assert args.resume == "last.pt"
     assert args.readout == "diagonal_gated"
+    assert args.readout_time == "last_event"
     assert args.bin_width_us == 25_000
     assert args.no_cross_time is True
     assert args.temporal_mask == [6, 8]
     assert args.spatial_erasing == [4, 20]
+
+
+def test_readout_metadata_marks_last_event_as_a_causal_snapshot_policy():
+    config = {"model": {"readout": "last", "readout_time": "last_event"}}
+
+    assert _readout_metadata(config) == {
+        "name": "last",
+        "time": "last_event",
+        "endpoint_knowledge": "none",
+        "tail_policy": "latest_event_snapshot",
+    }
 
 
 def test_checkpoint_evaluation_cli_requires_explicit_inputs():

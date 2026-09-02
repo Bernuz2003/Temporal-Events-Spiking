@@ -22,4 +22,5 @@ def build_model(config: dict[str, Any], num_classes: int) -> nn.Module:
         surrogate_alpha=float(config.get("surrogate_alpha", 4.0)),
         lif_cross_time=config.get("lif_cross_time", True),
         readout=str(config.get("readout", "mean")),
+        readout_time=str(config.get("readout_time", "fixed_window")),
     )

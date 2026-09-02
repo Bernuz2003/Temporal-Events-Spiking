@@ -170,26 +170,36 @@ def _fit_logistic_control(
         return loss
 
     optimizer.step(closure)
+    optimizer.zero_grad(set_to_none=True)
+    train_logits = classifier(train_x)
+    objective = nn.functional.cross_entropy(train_logits, train_y)
+    objective = objective + 0.5 * l2_penalty * classifier.weight.square().sum()
+    objective.backward()
+    gradient_l2_norm = float(
+        torch.sqrt(
+            sum(parameter.grad.square().sum() for parameter in classifier.parameters())
+        ).item()
+    )
     with torch.no_grad():
-        train_logits = classifier(train_x)
-        final_loss = float(
-            (
-                nn.functional.cross_entropy(train_logits, train_y)
-                + 0.5 * l2_penalty * classifier.weight.square().sum()
-            ).item()
-        )
+        final_loss = float(objective.item())
         train_predictions = train_logits.argmax(dim=1).numpy()
         validation_predictions = classifier(validation_x).argmax(dim=1).numpy()
     state = optimizer.state[next(iter(classifier.parameters()))]
+    iterations = int(state.get("n_iter", 0))
+
+    def compact_metrics(targets: np.ndarray, predictions: np.ndarray) -> dict[str, Any]:
+        metrics = classification_metrics(targets, predictions, num_classes)
+        return {key: metrics[key] for key in ("samples", "accuracy", "macro_f1")}
+
     return {
-        "train": classification_metrics(train_targets, train_predictions, num_classes),
-        "validation": classification_metrics(
-            validation_targets, validation_predictions, num_classes
-        ),
+        "train": compact_metrics(train_targets, train_predictions),
+        "validation": compact_metrics(validation_targets, validation_predictions),
         "optimization": {
             "final_loss": final_loss,
+            "gradient_l2_norm": gradient_l2_norm,
             "function_evaluations": int(state.get("func_evals", 0)),
-            "iterations": int(state.get("n_iter", 0)),
+            "iterations": iterations,
+            "iteration_limit_reached": iterations >= max_iterations,
         },
     }
 
@@ -202,7 +212,7 @@ def run_dvslip_shortcut_control(
     bin_width_us: int,
     expectations: DvsLipExpectations | None = None,
     l2_penalty: float = 1e-4,
-    max_iterations: int = 100,
+    max_iterations: int = 300,
     time_steps: int | None = None,
 ) -> dict[str, Any]:
     """Fit fixed global controls and optional aligned/order-invariant temporal controls."""
@@ -266,11 +276,11 @@ def run_dvslip_shortcut_control(
                 ),
             }
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "control_id": (
-            "dvslip_temporal_shortcuts_v1"
+            "dvslip_temporal_shortcuts_v2"
             if time_steps is not None
-            else "dvslip_global_shortcuts_v1"
+            else "dvslip_global_shortcuts_v2"
         ),
         "official_source_split": "train",
         "official_test_used": False,

@@ -200,6 +200,8 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError("model.lif_cross_time must be boolean")
     if model.get("readout", "mean") not in {"mean", "last", "diagonal_gated"}:
         raise ConfigError("model.readout must be mean, last or diagonal_gated")
+    if model.get("readout_time", "fixed_window") not in {"fixed_window", "last_event"}:
+        raise ConfigError("model.readout_time must be fixed_window or last_event")
 
     augmentation = config.get("augmentation")
     if not isinstance(augmentation, dict):
