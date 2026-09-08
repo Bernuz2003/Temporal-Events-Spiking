@@ -16,7 +16,7 @@ from etsr.models.layers import (
 from etsr.models.mini_qkformer import MiniQKFormer
 from etsr.models.readout import DiagonalGatedReadout
 from etsr.models.spiking import MultiStepLIF
-from etsr.models.temporal import CausalTemporalFIR
+from etsr.models.temporal import CausalTemporalChannelMixer, CausalTemporalFIR
 
 
 def test_mini_qkformer_output_shape_and_backward():
@@ -62,6 +62,33 @@ def test_causal_temporal_fir_cannot_propagate_a_future_perturbation_backward_in_
     assert torch.equal(fir(original)[:4], fir(perturbed)[:4])
 
 
+def test_temporal_channel_mixer_is_identity_initialized_causal_and_streamable():
+    mixer = CausalTemporalChannelMixer(3, delays=(1, 2, 4))
+    sequence = torch.rand(7, 2, 3, 2, 2, requires_grad=True)
+    identity, _ = mixer.forward_sequence(sequence)
+    assert torch.equal(identity, sequence)
+    with torch.no_grad():
+        mixer.weight.copy_(torch.arange(27).reshape(3, 3, 3) / 50)
+    full, full_state = mixer.forward_sequence(sequence)
+    first, state = mixer.forward_sequence(sequence[:3])
+    second, state = mixer.forward_sequence(sequence[3:], state)
+    assert torch.allclose(torch.cat((first, second)), full)
+    assert torch.equal(state, full_state)
+    perturbed = sequence.detach().clone()
+    perturbed[5:] += 10
+    assert torch.equal(mixer(sequence)[:5], mixer(perturbed)[:5])
+    full.sum().backward()
+    assert sequence.grad is not None
+    assert mixer.weight.grad is not None and torch.count_nonzero(mixer.weight.grad) > 0
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+def test_temporal_channel_mixer_preserves_activation_dtype(dtype):
+    mixer = CausalTemporalChannelMixer(2)
+    sequence = torch.rand(5, 1, 2, 2, 2, dtype=dtype)
+    assert mixer(sequence).dtype == dtype
+
+
 def test_structural_candidates_preserve_shape_backward_and_expected_parameter_budget():
     expected = (("pyramidal", False, 431_076), ("pyramidal", True, 431_652))
     for frontend, temporal_fir, expected_parameters in expected:
@@ -99,6 +126,57 @@ def test_temporal_fir_keeps_the_initial_model_function_unchanged():
 
     with torch.no_grad():
         assert torch.equal(baseline(frames), temporal(frames))
+
+
+@pytest.mark.parametrize(
+    "model_kwargs",
+    [
+        {"temporal_channel_mixer": True, "temporal_channel_mixer_delays": (1, 2, 4)},
+        {"learnable_lif_tau": True},
+    ],
+)
+def test_temporal_probes_keep_initial_baseline_logits_exact(model_kwargs):
+    torch.manual_seed(17)
+    baseline = MiniQKFormer(2, 5, embed_dim=16, num_heads=4).eval()
+    torch.manual_seed(17)
+    probe = MiniQKFormer(2, 5, embed_dim=16, num_heads=4, **model_kwargs).eval()
+    common = set(baseline.state_dict()) & set(probe.state_dict())
+    assert all(torch.equal(baseline.state_dict()[key], probe.state_dict()[key]) for key in common)
+    frames = torch.rand(2, 6, 2, 16, 16)
+    with torch.no_grad():
+        assert torch.equal(baseline(frames), probe(frames))
+
+
+@pytest.mark.parametrize(
+    "model_kwargs,parameter_selector",
+    [
+        (
+            {"temporal_channel_mixer": True},
+            lambda module: isinstance(module, CausalTemporalChannelMixer),
+        ),
+        (
+            {"learnable_lif_tau": True},
+            lambda module: isinstance(module, MultiStepLIF) and module.learnable_tau,
+        ),
+    ],
+)
+def test_temporal_probe_parameters_receive_finite_nonzero_gradients(
+    model_kwargs, parameter_selector
+):
+    torch.manual_seed(2)
+    model = MiniQKFormer(2, 4, embed_dim=16, num_heads=4, **model_kwargs).train()
+    logits = model(torch.rand(2, 6, 2, 32, 32) * 5)
+    torch.nn.functional.cross_entropy(logits, torch.tensor([0, 1])).backward()
+    parameters = [
+        parameter
+        for module in model.modules()
+        if parameter_selector(module)
+        for parameter in module.parameters(recurse=False)
+    ]
+    assert parameters
+    assert all(parameter.grad is not None for parameter in parameters)
+    assert all(torch.isfinite(parameter.grad).all() for parameter in parameters)
+    assert sum(torch.count_nonzero(parameter.grad) for parameter in parameters) > 0
 
 
 def test_mini_qkformer_propagates_surrogate_alpha_to_every_lif():
@@ -190,8 +268,9 @@ def test_diagonal_gated_readout_initialization_preserves_long_range_gradient():
 
 
 def test_fir_backbone_prefix_is_causal_in_eval_mode():
-    model = MiniQKFormer(2, 3, embed_dim=16, num_heads=4,
-                        frontend="pyramidal", temporal_fir=True).eval()
+    model = MiniQKFormer(
+        2, 3, embed_dim=16, num_heads=4, frontend="pyramidal", temporal_fir=True
+    ).eval()
     for module in model.modules():
         if isinstance(module, CausalTemporalFIR):
             with torch.no_grad():
@@ -238,13 +317,18 @@ def test_fir_learned_taps_match_step_execution_and_gradients_without_dtype_promo
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires SMILIES CUDA runtime")
-@pytest.mark.parametrize("frontend,temporal,readout", [
-    ("pyramidal", False, "mean"), ("pyramidal", True, "mean"),
-    ("baseline", False, "diagonal_gated"),
-])
-def test_cuda_amp_candidate_backward_at_dvslip_shape(frontend, temporal, readout):
-    model = MiniQKFormer(2, 100, frontend=frontend, temporal_fir=temporal,
-                        readout=readout, gated_initial_memory_steps=20).cuda().train()
+@pytest.mark.parametrize(
+    "model_kwargs",
+    [
+        {"frontend": "pyramidal"},
+        {"frontend": "pyramidal", "temporal_fir": True},
+        {"readout": "diagonal_gated", "gated_initial_memory_steps": 20},
+        {"temporal_channel_mixer": True},
+        {"learnable_lif_tau": True},
+    ],
+)
+def test_cuda_amp_candidate_backward_at_dvslip_shape(model_kwargs):
+    model = MiniQKFormer(2, 100, **model_kwargs).cuda().train()
     frames = torch.rand(1, 40, 2, 128, 128, device="cuda")
     with torch.autocast("cuda", dtype=torch.float16):
         logits = model(frames)
@@ -351,9 +435,15 @@ def test_dvslip_candidate_configs_change_only_the_declared_architecture():
     baseline = load_config(root / "configs" / "dvslip_e0.yaml")
     candidates = {
         "dvslip_gated_v2.yaml": {
-            "readout": "diagonal_gated", "readout_time": "fixed_window",
+            "readout": "diagonal_gated",
+            "readout_time": "fixed_window",
             "gated_initial_memory_steps": 20.0,
         },
+        "dvslip_b_temporal_capacity.yaml": {
+            "temporal_channel_mixer": True,
+            "temporal_channel_mixer_delays": [1, 2, 4],
+        },
+        "dvslip_b_plif.yaml": {"learnable_lif_tau": True},
         "dvslip_f.yaml": {"frontend": "pyramidal"},
         "dvslip_f_t.yaml": {
             "frontend": "pyramidal",

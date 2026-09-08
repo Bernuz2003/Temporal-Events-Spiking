@@ -10,9 +10,13 @@ from etsr.profiling.selection import profile_indices
 
 def test_profile_binary_classification_is_independent_of_loader_batch_size():
     model = torch.nn.Linear(2, 2, bias=False)
-    dataset = TensorDataset(torch.tensor([[0., 1.], [2., 0.]]), torch.tensor([0, 1]), torch.arange(2))
-    profiles = [profile_model(model, DataLoader(dataset, batch_size=batch), torch.device("cpu"), 2)
-                for batch in (1, 2)]
+    dataset = TensorDataset(
+        torch.tensor([[0.0, 1.0], [2.0, 0.0]]), torch.tensor([0, 1]), torch.arange(2)
+    )
+    profiles = [
+        profile_model(model, DataLoader(dataset, batch_size=batch), torch.device("cpu"), 2)
+        for batch in (1, 2)
+    ]
     assert profiles[0] == profiles[1]
     assert profiles[0]["operations_per_sample"]["multivalued_mac_potential"] == 2
     assert profiles[0]["operations_per_sample"]["binary_ac_potential"] == 2
@@ -28,10 +32,17 @@ def test_profile_selection_covers_classes_instead_of_sorted_prefix():
 
 
 def test_horowitz_units_and_fir_not_double_counted():
-    ops = {"multivalued_mac_potential": 10, "binary_ac_potential": 20,
-           "binary_ac_activity_estimate": 5, "attention_sop_potential": 3,
-           "elementwise_add": 7, "elementwise_multiply": 4,
-           "attention_scale_multiply": 2, "temporal_fir_multiply": 4, "temporal_fir_add": 7}
+    ops = {
+        "multivalued_mac_potential": 10,
+        "binary_ac_potential": 20,
+        "binary_ac_activity_estimate": 5,
+        "attention_sop_potential": 3,
+        "elementwise_add": 7,
+        "elementwise_multiply": 4,
+        "attention_scale_multiply": 2,
+        "temporal_fir_multiply": 4,
+        "temporal_fir_add": 7,
+    }
     energy = horowitz_reference(ops)
     assert energy["covered_arithmetic_activity_proxy_uj_per_sample"] == pytest.approx(
         (4.6 * 10 + 0.9 * (5 + 3 + 7) + 3.7 * (4 + 2)) / 1e6
@@ -108,6 +119,42 @@ def test_hardware_profile_counts_pyramidal_pooling_and_temporal_fir_state():
     assert first["state_reads"] > first["state_writes"]
 
 
+def test_hardware_profile_counts_temporal_capacity_and_plif_separately():
+    frames = torch.rand(1, 4, 2, 32, 32)
+    loader = DataLoader(TensorDataset(frames, torch.tensor([0]), torch.arange(1)))
+    capacity = MiniQKFormer(
+        2,
+        4,
+        embed_dim=32,
+        num_heads=4,
+        temporal_channel_mixer=True,
+        temporal_channel_mixer_delays=(1, 2, 4),
+    )
+    capacity_profile = profile_model(capacity, loader, torch.device("cpu"), 1)
+    assert capacity_profile["operations_per_sample"]["temporal_channel_mixer_mac"] > 0
+    first = capacity_profile["layers"]["patch_embed1.main4.temporal_channel_mixer"]
+    second = capacity_profile["layers"]["patch_embed2.down.temporal_channel_mixer"]
+    assert first["delays"] == [1, 2, 4]
+    assert first["persistent_state_elements"] == 4 * 16 * 4 * 4
+    assert second["persistent_state_elements"] == 4 * 32 * 2 * 2
+    plif = MiniQKFormer(2, 4, embed_dim=32, num_heads=4, learnable_lif_tau=True)
+    plif_profile = profile_model(plif, loader, torch.device("cpu"), 1)
+    dynamics = plif_profile["neuron_dynamics"]
+    assert dynamics["type"] == "per_channel_plif"
+    assert dynamics["plif_parameter_elements"] > 0
+    assert all(
+        layer["effective_tau_mean"] == pytest.approx(2.0) for layer in dynamics["layers"].values()
+    )
+    assert (
+        plif_profile["state"]["persistent_state_elements"]
+        == (
+            profile_model(
+                MiniQKFormer(2, 4, embed_dim=32, num_heads=4), loader, torch.device("cpu"), 1
+            )["state"]["persistent_state_elements"]
+        )
+    )
+
+
 def test_hardware_profile_distinguishes_no_cross_time_from_gated_readout_state():
     frames = torch.zeros(1, 3, 2, 16, 16)
     frames[0, 1, 0, 0, 0] = 1
@@ -150,6 +197,6 @@ def test_hardware_profile_distinguishes_no_cross_time_from_gated_readout_state()
     gate = gated_profile["layers"]["gated_readout"]["observed_update_gate"]
     assert 0.0 <= gate["minimum_channel_mean"] <= gate["maximum_channel_mean"] <= 1.0
     assert len(gate["mean_by_channel"]) == 16
-    assert gated_profile["layers"]["gated_readout"]["active_state_update_fraction"] == pytest.approx(
-        2 / 3
-    )
+    assert gated_profile["layers"]["gated_readout"][
+        "active_state_update_fraction"
+    ] == pytest.approx(2 / 3)

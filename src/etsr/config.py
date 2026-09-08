@@ -157,7 +157,9 @@ def _validate_dvsgesture(config: dict[str, Any]) -> None:
     if (
         not isinstance(validation_subjects, list)
         or not validation_subjects
-        or any(type(subject) is not int or not 1 <= subject <= 23 for subject in validation_subjects)
+        or any(
+            type(subject) is not int or not 1 <= subject <= 23 for subject in validation_subjects
+        )
         or len(validation_subjects) != len(set(validation_subjects))
     ):
         raise ConfigError(
@@ -211,6 +213,12 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError("model.frontend=pyramidal requires embed_dim divisible by 16")
     if type(model.get("temporal_fir", False)) is not bool:
         raise ConfigError("model.temporal_fir must be boolean")
+    if type(model.get("temporal_channel_mixer", False)) is not bool:
+        raise ConfigError("model.temporal_channel_mixer must be boolean")
+    if type(model.get("learnable_lif_tau", False)) is not bool:
+        raise ConfigError("model.learnable_lif_tau must be boolean")
+    if model.get("temporal_fir", False) and model.get("temporal_channel_mixer", False):
+        raise ConfigError("temporal FIR and channel mixer are mutually exclusive")
     fir_kernel_size = model.get("temporal_fir_kernel_size", 3)
     if type(fir_kernel_size) is not int or fir_kernel_size < 2:
         raise ConfigError("model.temporal_fir_kernel_size must be an integer of at least two")
@@ -223,6 +231,18 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError("model.temporal_fir_dilations must contain two positive integers")
     if model.get("temporal_fir", False) and not model.get("lif_cross_time", True):
         raise ConfigError("no-cross-time control cannot include temporal FIR memory")
+    mixer_delays = model.get("temporal_channel_mixer_delays", [1, 2, 4])
+    if (
+        not isinstance(mixer_delays, list)
+        or not mixer_delays
+        or any(type(delay) is not int or delay <= 0 for delay in mixer_delays)
+        or sorted(set(mixer_delays)) != mixer_delays
+    ):
+        raise ConfigError(
+            "model.temporal_channel_mixer_delays must be increasing positive integers"
+        )
+    if model.get("temporal_channel_mixer", False) and not model.get("lif_cross_time", True):
+        raise ConfigError("no-cross-time control cannot include a temporal channel mixer")
     gated_memory = model.get("gated_initial_memory_steps")
     if gated_memory is not None and (
         type(gated_memory) not in (int, float)
@@ -257,9 +277,7 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         if type(count) is not int or type(extent) is not int or count < 0 or extent < 0:
             raise ConfigError(f"augmentation.{name} values must be non-negative integers")
         if (count == 0) != (extent == 0):
-            raise ConfigError(
-                f"augmentation.{name} count and maximum must be enabled together"
-            )
+            raise ConfigError(f"augmentation.{name} count and maximum must be enabled together")
     time_steps = int(representation["window_us"]) // int(representation["bin_width_us"])
     if int(augmentation.get("temporal_mask_max_steps", 0)) > time_steps:
         raise ConfigError("augmentation.temporal_mask_max_steps must fit the time axis")

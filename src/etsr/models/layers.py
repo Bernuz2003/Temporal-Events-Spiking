@@ -6,13 +6,22 @@ import torch
 from torch import nn
 
 from etsr.models.spiking import MultiStepLIF
-from etsr.models.temporal import CausalTemporalFIR
+from etsr.models.temporal import CausalTemporalChannelMixer, CausalTemporalFIR
 
 
 def _time_distributed(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
     time_steps, batch_size = x.shape[:2]
     output = module(x.flatten(0, 1))
     return output.reshape(time_steps, batch_size, *output.shape[1:])
+
+
+def _lif(channels: int, tau: float, threshold: float, learnable_tau: bool = False) -> MultiStepLIF:
+    return MultiStepLIF(
+        tau=tau,
+        threshold=threshold,
+        channels=channels if learnable_tau else None,
+        learnable_tau=learnable_tau,
+    )
 
 
 class ConvBNLIF2d(nn.Module):
@@ -27,6 +36,8 @@ class ConvBNLIF2d(nn.Module):
         threshold: float = 1.0,
         temporal_fir_kernel_size: int | None = None,
         temporal_fir_dilation: int = 1,
+        temporal_channel_mixer_delays: tuple[int, ...] | None = None,
+        learnable_tau: bool = False,
     ) -> None:
         super().__init__()
         self.conv = nn.Conv2d(
@@ -47,13 +58,22 @@ class ConvBNLIF2d(nn.Module):
             if temporal_fir_kernel_size is not None
             else None
         )
-        self.lif = MultiStepLIF(tau=tau, threshold=threshold)
+        self.temporal_channel_mixer = (
+            CausalTemporalChannelMixer(out_channels, temporal_channel_mixer_delays)
+            if temporal_channel_mixer_delays is not None
+            else None
+        )
+        if self.temporal_fir is not None and self.temporal_channel_mixer is not None:
+            raise ValueError("Select only one explicit temporal core per layer")
+        self.lif = _lif(out_channels, tau, threshold, learnable_tau)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = _time_distributed(self.conv, x)
         x = _time_distributed(self.bn, x)
         if self.temporal_fir is not None:
             x = self.temporal_fir(x)
+        if self.temporal_channel_mixer is not None:
+            x = self.temporal_channel_mixer(x)
         return self.lif(x)
 
 
@@ -68,6 +88,8 @@ class ConvBNMaxPoolLIF2d(nn.Module):
         threshold: float,
         temporal_fir_kernel_size: int | None = None,
         temporal_fir_dilation: int = 1,
+        temporal_channel_mixer_delays: tuple[int, ...] | None = None,
+        learnable_tau: bool = False,
     ) -> None:
         super().__init__()
         self.conv = nn.Conv2d(
@@ -84,7 +106,14 @@ class ConvBNMaxPoolLIF2d(nn.Module):
             if temporal_fir_kernel_size is not None
             else None
         )
-        self.lif = MultiStepLIF(tau=tau, threshold=threshold)
+        self.temporal_channel_mixer = (
+            CausalTemporalChannelMixer(out_channels, temporal_channel_mixer_delays)
+            if temporal_channel_mixer_delays is not None
+            else None
+        )
+        if self.temporal_fir is not None and self.temporal_channel_mixer is not None:
+            raise ValueError("Select only one explicit temporal core per layer")
+        self.lif = _lif(out_channels, tau, threshold, learnable_tau)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = _time_distributed(self.conv, x)
@@ -92,6 +121,8 @@ class ConvBNMaxPoolLIF2d(nn.Module):
         x = _time_distributed(self.pool, x)
         if self.temporal_fir is not None:
             x = self.temporal_fir(x)
+        if self.temporal_channel_mixer is not None:
+            x = self.temporal_channel_mixer(x)
         return self.lif(x)
 
 
@@ -106,17 +137,42 @@ class InitialPatchEmbedding(nn.Module):
         threshold: float,
         temporal_fir_kernel_size: int | None = None,
         temporal_fir_dilation: int = 1,
+        temporal_channel_mixer_delays: tuple[int, ...] | None = None,
+        learnable_tau: bool = False,
     ):
         super().__init__()
         quarter = embed_dim // 4
         half = embed_dim // 2
         self.main1 = ConvBNLIF2d(
-            in_channels, quarter, 3, stride=1, padding=1, tau=tau, threshold=threshold
+            in_channels,
+            quarter,
+            3,
+            stride=1,
+            padding=1,
+            tau=tau,
+            threshold=threshold,
+            learnable_tau=learnable_tau,
         )
         self.main2 = ConvBNLIF2d(
-            quarter, half, 3, stride=2, padding=1, tau=tau, threshold=threshold
+            quarter,
+            half,
+            3,
+            stride=2,
+            padding=1,
+            tau=tau,
+            threshold=threshold,
+            learnable_tau=learnable_tau,
         )
-        self.main3 = ConvBNLIF2d(half, half, 3, stride=2, padding=1, tau=tau, threshold=threshold)
+        self.main3 = ConvBNLIF2d(
+            half,
+            half,
+            3,
+            stride=2,
+            padding=1,
+            tau=tau,
+            threshold=threshold,
+            learnable_tau=learnable_tau,
+        )
         self.main4 = ConvBNLIF2d(
             half,
             half,
@@ -127,8 +183,12 @@ class InitialPatchEmbedding(nn.Module):
             threshold=threshold,
             temporal_fir_kernel_size=temporal_fir_kernel_size,
             temporal_fir_dilation=temporal_fir_dilation,
+            temporal_channel_mixer_delays=temporal_channel_mixer_delays,
+            learnable_tau=learnable_tau,
         )
-        self.shortcut = ConvBNLIF2d(quarter, half, 1, stride=8, tau=tau, threshold=threshold)
+        self.shortcut = ConvBNLIF2d(
+            quarter, half, 1, stride=8, tau=tau, threshold=threshold, learnable_tau=learnable_tau
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.main1(x)
@@ -151,6 +211,8 @@ class PyramidalPatchEmbedding(nn.Module):
         threshold: float,
         temporal_fir_kernel_size: int | None = None,
         temporal_fir_dilation: int = 1,
+        temporal_channel_mixer_delays: tuple[int, ...] | None = None,
+        learnable_tau: bool = False,
     ) -> None:
         super().__init__()
         if embed_dim % 16 != 0:
@@ -160,10 +222,20 @@ class PyramidalPatchEmbedding(nn.Module):
         third = embed_dim // 4
         output = embed_dim // 2
         self.main1 = ConvBNLIF2d(
-            in_channels, first, 3, padding=1, tau=tau, threshold=threshold
+            in_channels,
+            first,
+            3,
+            padding=1,
+            tau=tau,
+            threshold=threshold,
+            learnable_tau=learnable_tau,
         )
-        self.main2 = ConvBNMaxPoolLIF2d(first, second, tau=tau, threshold=threshold)
-        self.main3 = ConvBNMaxPoolLIF2d(second, third, tau=tau, threshold=threshold)
+        self.main2 = ConvBNMaxPoolLIF2d(
+            first, second, tau=tau, threshold=threshold, learnable_tau=learnable_tau
+        )
+        self.main3 = ConvBNMaxPoolLIF2d(
+            second, third, tau=tau, threshold=threshold, learnable_tau=learnable_tau
+        )
         self.main4 = ConvBNMaxPoolLIF2d(
             third,
             output,
@@ -171,9 +243,11 @@ class PyramidalPatchEmbedding(nn.Module):
             threshold=threshold,
             temporal_fir_kernel_size=temporal_fir_kernel_size,
             temporal_fir_dilation=temporal_fir_dilation,
+            temporal_channel_mixer_delays=temporal_channel_mixer_delays,
+            learnable_tau=learnable_tau,
         )
         self.shortcut = ConvBNLIF2d(
-            second, output, 1, stride=4, tau=tau, threshold=threshold
+            second, output, 1, stride=4, tau=tau, threshold=threshold, learnable_tau=learnable_tau
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -196,10 +270,19 @@ class PatchEmbeddingStage(nn.Module):
         threshold: float,
         temporal_fir_kernel_size: int | None = None,
         temporal_fir_dilation: int = 1,
+        temporal_channel_mixer_delays: tuple[int, ...] | None = None,
+        learnable_tau: bool = False,
     ):
         super().__init__()
         self.proj = ConvBNLIF2d(
-            in_channels, out_channels, 3, stride=1, padding=1, tau=tau, threshold=threshold
+            in_channels,
+            out_channels,
+            3,
+            stride=1,
+            padding=1,
+            tau=tau,
+            threshold=threshold,
+            learnable_tau=learnable_tau,
         )
         self.down = ConvBNLIF2d(
             out_channels,
@@ -211,9 +294,17 @@ class PatchEmbeddingStage(nn.Module):
             threshold=threshold,
             temporal_fir_kernel_size=temporal_fir_kernel_size,
             temporal_fir_dilation=temporal_fir_dilation,
+            temporal_channel_mixer_delays=temporal_channel_mixer_delays,
+            learnable_tau=learnable_tau,
         )
         self.shortcut = ConvBNLIF2d(
-            in_channels, out_channels, 1, stride=2, tau=tau, threshold=threshold
+            in_channels,
+            out_channels,
+            1,
+            stride=2,
+            tau=tau,
+            threshold=threshold,
+            learnable_tau=learnable_tau,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -223,7 +314,9 @@ class PatchEmbeddingStage(nn.Module):
 class TokenQKAttention(nn.Module):
     """Q-K token gating inspired by QKFormer, without an N x N attention map."""
 
-    def __init__(self, dim: int, num_heads: int, tau: float, threshold: float):
+    def __init__(
+        self, dim: int, num_heads: int, tau: float, threshold: float, learnable_tau: bool = False
+    ):
         super().__init__()
         if dim % num_heads != 0:
             raise ValueError("dim must be divisible by num_heads")
@@ -235,10 +328,10 @@ class TokenQKAttention(nn.Module):
         self.q_bn = nn.BatchNorm1d(dim)
         self.k_bn = nn.BatchNorm1d(dim)
         self.proj_bn = nn.BatchNorm1d(dim)
-        self.q_lif = MultiStepLIF(tau=tau, threshold=threshold)
-        self.k_lif = MultiStepLIF(tau=tau, threshold=threshold)
-        self.attn_lif = MultiStepLIF(tau=tau, threshold=0.5)
-        self.proj_lif = MultiStepLIF(tau=tau, threshold=threshold)
+        self.q_lif = _lif(dim, tau, threshold, learnable_tau)
+        self.k_lif = _lif(dim, tau, threshold, learnable_tau)
+        self.attn_lif = _lif(num_heads, tau, 0.5, learnable_tau)
+        self.proj_lif = _lif(dim, tau, threshold, learnable_tau)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         time_steps, batch_size, channels, height, width = x.shape
@@ -268,7 +361,9 @@ class SpikingSelfAttention(nn.Module):
     mixing in flattened tensors.
     """
 
-    def __init__(self, dim: int, num_heads: int, tau: float, threshold: float):
+    def __init__(
+        self, dim: int, num_heads: int, tau: float, threshold: float, learnable_tau: bool = False
+    ):
         super().__init__()
         if dim % num_heads != 0:
             raise ValueError("dim must be divisible by num_heads")
@@ -283,11 +378,11 @@ class SpikingSelfAttention(nn.Module):
         self.k_bn = nn.BatchNorm1d(dim)
         self.v_bn = nn.BatchNorm1d(dim)
         self.proj_bn = nn.BatchNorm1d(dim)
-        self.q_lif = MultiStepLIF(tau=tau, threshold=threshold)
-        self.k_lif = MultiStepLIF(tau=tau, threshold=threshold)
-        self.v_lif = MultiStepLIF(tau=tau, threshold=threshold)
-        self.attn_lif = MultiStepLIF(tau=tau, threshold=0.5)
-        self.proj_lif = MultiStepLIF(tau=tau, threshold=threshold)
+        self.q_lif = _lif(dim, tau, threshold, learnable_tau)
+        self.k_lif = _lif(dim, tau, threshold, learnable_tau)
+        self.v_lif = _lif(dim, tau, threshold, learnable_tau)
+        self.attn_lif = _lif(num_heads, tau, 0.5, learnable_tau)
+        self.proj_lif = _lif(dim, tau, threshold, learnable_tau)
 
     def _project(self, x: torch.Tensor, conv, bn, lif) -> torch.Tensor:
         projected = _time_distributed(bn, _time_distributed(conv, x))
@@ -324,11 +419,17 @@ class SpikingSelfAttention(nn.Module):
 
 
 class SpikingMLP(nn.Module):
-    def __init__(self, dim: int, ratio: float, tau: float, threshold: float):
+    def __init__(
+        self, dim: int, ratio: float, tau: float, threshold: float, learnable_tau: bool = False
+    ):
         super().__init__()
         hidden = int(dim * ratio)
-        self.fc1 = ConvBNLIF2d(dim, hidden, 1, tau=tau, threshold=threshold)
-        self.fc2 = ConvBNLIF2d(hidden, dim, 1, tau=tau, threshold=threshold)
+        self.fc1 = ConvBNLIF2d(
+            dim, hidden, 1, tau=tau, threshold=threshold, learnable_tau=learnable_tau
+        )
+        self.fc2 = ConvBNLIF2d(
+            hidden, dim, 1, tau=tau, threshold=threshold, learnable_tau=learnable_tau
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.fc2(self.fc1(x))
@@ -338,11 +439,17 @@ class SpikingBlock(nn.Module):
     """QKFormer block with identity-preserving residual additions outside the LIF nodes."""
 
     def __init__(
-        self, attention: nn.Module, dim: int, mlp_ratio: float, tau: float, threshold: float
+        self,
+        attention: nn.Module,
+        dim: int,
+        mlp_ratio: float,
+        tau: float,
+        threshold: float,
+        learnable_tau: bool = False,
     ):
         super().__init__()
         self.attention = attention
-        self.mlp = SpikingMLP(dim, mlp_ratio, tau, threshold)
+        self.mlp = SpikingMLP(dim, mlp_ratio, tau, threshold, learnable_tau)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attention(x)

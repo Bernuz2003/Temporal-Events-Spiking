@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import torch
 from torch import nn
 
@@ -42,6 +44,8 @@ class MultiStepLIF(nn.Module):
         detach_reset: bool = True,
         surrogate_alpha: float = 4.0,
         cross_time: bool = True,
+        channels: int | None = None,
+        learnable_tau: bool = False,
     ) -> None:
         super().__init__()
         if tau <= 1.0:
@@ -50,21 +54,51 @@ class MultiStepLIF(nn.Module):
             raise ValueError("surrogate_alpha must be positive.")
         if type(cross_time) is not bool:
             raise ValueError("cross_time must be boolean.")
+        if type(learnable_tau) is not bool:
+            raise ValueError("learnable_tau must be boolean.")
+        if learnable_tau and (channels is None or channels <= 0):
+            raise ValueError("learnable_tau requires a positive channel count.")
         self.tau = float(tau)
         self.threshold = float(threshold)
         self.detach_reset = detach_reset
         self.surrogate_alpha = float(surrogate_alpha)
         self.cross_time = cross_time
+        self.channels = int(channels) if channels is not None else None
+        self.learnable_tau = learnable_tau
+        if learnable_tau:
+            inverse_tau = 1.0 / self.tau
+            initial_logit = math.log(inverse_tau / (1.0 - inverse_tau))
+            self.inverse_tau_logit = nn.Parameter(torch.full((self.channels,), initial_logit))
+        else:
+            self.register_parameter("inverse_tau_logit", None)
+
+    def inverse_tau(self, reference: torch.Tensor | None = None) -> torch.Tensor | float:
+        if self.inverse_tau_logit is None:
+            return 1.0 / self.tau
+        value = torch.sigmoid(self.inverse_tau_logit)
+        if reference is not None:
+            if reference.ndim < 2 or reference.shape[1] != self.channels:
+                raise ValueError("PLIF input must have its configured feature channels on axis 1.")
+            value = value.to(dtype=reference.dtype).reshape(
+                1, self.channels, *((1,) * (reference.ndim - 2))
+            )
+        return value
+
+    def effective_tau(self) -> torch.Tensor:
+        if self.inverse_tau_logit is None:
+            return torch.tensor(self.tau)
+        return torch.sigmoid(self.inverse_tau_logit).reciprocal()
 
     def forward(self, current: torch.Tensor) -> torch.Tensor:
         if current.ndim < 2:
             raise ValueError("MultiStepLIF expects time-major input [T, ...].")
+        inverse_tau = self.inverse_tau(current[0])
         if not self.cross_time:
-            return spike_function(current / self.tau - self.threshold, self.surrogate_alpha)
+            return spike_function(current * inverse_tau - self.threshold, self.surrogate_alpha)
         membrane = torch.zeros_like(current[0])
         spikes = []
         for current_t in current.unbind(0):
-            membrane = membrane + (current_t - membrane) / self.tau
+            membrane = membrane + (current_t - membrane) * inverse_tau
             spike = spike_function(membrane - self.threshold, self.surrogate_alpha)
             reset_spike = spike.detach() if self.detach_reset else spike
             membrane = membrane - reset_spike * self.threshold

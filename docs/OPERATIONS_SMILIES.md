@@ -20,46 +20,37 @@ non sono ancora preparati, usare il workflow `make smilies-build` e
 `make smilies-gate DATASET=dvslip`; il gate dati completo include hash e shortcut e non va ripetuto
 per ogni candidato. Non avviare le campagne se il check fallisce.
 
-## Prima ondata: due training indipendenti, un recupero profili
+## Run già avviati
 
-Gli ID sotto presuppongono tre GPU assegnate sullo stesso nodo. Sostituirli con ID/UUID effettivamente
-assegnati; su nodi distinti usare la GPU assegnata a ciascun nodo. Ogni processo vede una sola GPU
-e usa internamente `cuda:0`. La maschera viene propagata oltre `--cleanenv`; il launcher rifiuta
-una selezione con più GPU visibili. Non modificare la maschera assegnata dallo scheduler includendo
-GPU non assegnate.
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f42 -- candidate --config configs/dvslip_f.yaml
-CUDA_VISIBLE_DEVICES=1 bash scripts/smilies/run_command.sh dvslip-gated-v2-42 -- candidate --config configs/dvslip_gated_v2.yaml
-CUDA_VISIBLE_DEVICES=2 bash scripts/smilies/run_command.sh profiles-v4 -- profile-runs
-```
-
-Ogni `candidate` esegue il bounded overfit (16×4 campioni, massimo 500 epoche, stop al gate),
-poi solo se passa avvia 128 epoche da zero con la ricetta base, valutazione finale e profilo v4 del
-best su 64 validation. Il gate usa FP32, nessuna augmentation e zero data-loader worker; il full
-ripristina esattamente la config originale. Sono due run lunghi, non sei.
+F ha superato il bounded overfit ed è entrato nel full training. Gated-v2 ha raggiunto accuracy
+1.0 ma ha fallito il vincolo preregistrato `validation_loss < 1.5`; il workflow ha correttamente
+evitato il full. Non rilanciarli mentre F è in corso.
 
 `profile-runs` scorre i full run completati, usa le loro config risolte e i loro best, rigenera anche
 i due profili v1 e conserva i vecchi file. Include DVS-Gesture. Richiede checkpoint/dataset sul
 server; segnala gli assenti in `artifacts/profile_backfill.json` e termina con errore se incompleto,
-continuando comunque sugli altri run. Nessun training viene avviato. Il quarto slot resta libero.
+continuando comunque sugli altri run. Nessun training viene avviato.
 
-## Seconda ondata: un solo ramo dopo il risultato di F
+## Due nuovi rami indipendenti sui server liberi
 
-Se F soddisfa uno dei criteri preregistrati in `ROADMAP.md`:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-ft42 -- candidate --config configs/dvslip_f_t.yaml
-```
-
-Altrimenti, **in alternativa**:
+Su due macchine fisiche diverse ogni processo usa la GPU locale `0`. Dopo aver sincronizzato lo
+stesso commit pulito ed eseguito il check su ciascuna macchina, avviare:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-bt42 -- candidate --config configs/dvslip_b_t.yaml
+# Server fisico A
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-b-tcap42 -- candidate --config configs/dvslip_b_temporal_capacity.yaml
 ```
 
-Non eseguire entrambi per riempire gli slot. Nessun rilancio gated con last-event o augmentation
-in questa fase. La vittoria iniziale su seed 42 richiede poi conferma con seed comuni.
+```bash
+# Server fisico B
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-b-plif42 -- candidate --config configs/dvslip_b_plif.yaml
+```
+
+Ogni `candidate` esegue il bounded overfit (16×4 campioni, massimo 500 epoche, stop al gate), poi
+solo se passa avvia 128 epoche da zero con la ricetta baseline, valutazione finale e profilo v4 del
+best su 64 validation. Il gate usa FP32, nessuna augmentation e zero data-loader worker; il full
+ripristina esattamente la config originale. Il gate resta quello preregistrato e non viene adattato
+al candidato. TCAP e PLIF testano ipotesi diverse e possono procedere in parallelo a F.
 
 ## Monitoraggio, ripresa e recupero della sola profilazione
 

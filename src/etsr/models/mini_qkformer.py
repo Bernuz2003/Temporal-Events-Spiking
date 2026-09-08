@@ -40,6 +40,9 @@ class MiniQKFormer(nn.Module):
         temporal_fir: bool = False,
         temporal_fir_kernel_size: int = 3,
         temporal_fir_dilations: tuple[int, int] = (1, 2),
+        temporal_channel_mixer: bool = False,
+        temporal_channel_mixer_delays: tuple[int, ...] = (1, 2, 4),
+        learnable_lif_tau: bool = False,
         gated_initial_memory_steps: float | None = None,
     ) -> None:
         super().__init__()
@@ -59,15 +62,28 @@ class MiniQKFormer(nn.Module):
             raise ValueError("pyramidal front-end requires embed_dim divisible by 16")
         if type(temporal_fir) is not bool:
             raise ValueError("temporal_fir must be boolean")
+        if type(temporal_channel_mixer) is not bool:
+            raise ValueError("temporal_channel_mixer must be boolean")
+        if type(learnable_lif_tau) is not bool:
+            raise ValueError("learnable_lif_tau must be boolean")
+        if temporal_fir and temporal_channel_mixer:
+            raise ValueError("temporal FIR and channel mixer are mutually exclusive")
         if temporal_fir_kernel_size < 2:
             raise ValueError("temporal_fir_kernel_size must be at least two")
-        if (
-            len(temporal_fir_dilations) != 2
-            or any(type(dilation) is not int or dilation <= 0 for dilation in temporal_fir_dilations)
+        if len(temporal_fir_dilations) != 2 or any(
+            type(dilation) is not int or dilation <= 0 for dilation in temporal_fir_dilations
         ):
             raise ValueError("temporal_fir_dilations must contain two positive integers")
         if temporal_fir and not lif_cross_time:
             raise ValueError("no-cross-time control cannot include temporal FIR memory")
+        if temporal_channel_mixer and not lif_cross_time:
+            raise ValueError("no-cross-time control cannot include a temporal channel mixer")
+        if (
+            not temporal_channel_mixer_delays
+            or any(type(delay) is not int or delay <= 0 for delay in temporal_channel_mixer_delays)
+            or tuple(sorted(set(temporal_channel_mixer_delays))) != temporal_channel_mixer_delays
+        ):
+            raise ValueError("temporal channel mixer delays must be increasing positive integers")
         if gated_initial_memory_steps is not None and gated_initial_memory_steps <= 1.0:
             raise ValueError("gated_initial_memory_steps must be greater than one")
         self.num_classes = num_classes
@@ -75,9 +91,12 @@ class MiniQKFormer(nn.Module):
         self.readout_time = readout_time
         self.frontend_name = frontend
         self.temporal_fir_enabled = temporal_fir
+        self.temporal_channel_mixer_enabled = temporal_channel_mixer
+        self.learnable_lif_tau_enabled = learnable_lif_tau
         half = embed_dim // 2
 
         first_fir = temporal_fir_kernel_size if temporal_fir else None
+        channel_mixer_delays = temporal_channel_mixer_delays if temporal_channel_mixer else None
         frontend_class = (
             PyramidalPatchEmbedding if frontend == "pyramidal" else InitialPatchEmbedding
         )
@@ -88,13 +107,16 @@ class MiniQKFormer(nn.Module):
             lif_threshold,
             temporal_fir_kernel_size=first_fir,
             temporal_fir_dilation=temporal_fir_dilations[0],
+            temporal_channel_mixer_delays=channel_mixer_delays,
+            learnable_tau=learnable_lif_tau,
         )
         self.stage1 = SpikingBlock(
-            attention=TokenQKAttention(half, num_heads, lif_tau, lif_threshold),
+            attention=TokenQKAttention(half, num_heads, lif_tau, lif_threshold, learnable_lif_tau),
             dim=half,
             mlp_ratio=mlp_ratio,
             tau=lif_tau,
             threshold=lif_threshold,
+            learnable_tau=learnable_lif_tau,
         )
         self.patch_embed2 = PatchEmbeddingStage(
             half,
@@ -103,13 +125,18 @@ class MiniQKFormer(nn.Module):
             lif_threshold,
             temporal_fir_kernel_size=first_fir,
             temporal_fir_dilation=temporal_fir_dilations[1],
+            temporal_channel_mixer_delays=channel_mixer_delays,
+            learnable_tau=learnable_lif_tau,
         )
         self.stage2 = SpikingBlock(
-            attention=SpikingSelfAttention(embed_dim, num_heads, lif_tau, lif_threshold),
+            attention=SpikingSelfAttention(
+                embed_dim, num_heads, lif_tau, lif_threshold, learnable_lif_tau
+            ),
             dim=embed_dim,
             mlp_ratio=mlp_ratio,
             tau=lif_tau,
             threshold=lif_threshold,
+            learnable_tau=learnable_lif_tau,
         )
         self.head = nn.Linear(embed_dim, num_classes)
         self.gated_readout = (

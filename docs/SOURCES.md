@@ -1,6 +1,6 @@
 # Fonti e selezione delle famiglie architetturali
 
-**Aggiornato:** 2026-09-07
+**Aggiornato:** 2026-09-08
 
 I punteggi pubblicati non sono direttamente confrontabili con la development validation locale:
 molti lavori selezionano sul test ufficiale, usano crop/binning/augmentation diversi o modelli molto
@@ -22,21 +22,33 @@ più grandi. Le fonti motivano i meccanismi da testare; non forniscono una sogli
   resta fuori dal primo test; tre tap fissi nella geometria e apprendibili nei pesi sono più facili
   da attribuire e profilare.
 
+Il FIR depthwise T da 576 coefficienti resta una candidata di compressione, ma è troppo vincolato
+per rigettare da solo l'utilità di una memoria esplicita: ogni canale può soltanto filtrare la
+propria storia. Il proof-of-usefulness usa quindi un **MIMO multi-delay causale** nei medesimi due
+punti a bassa risoluzione. Per ogni ritardo `d ∈ {1,2,4}`, una matrice `C×C` proietta esclusivamente
+`x[t-d]`; il percorso corrente resta identità. È una sonda locale ispirata al principio multi-delay,
+non una riproduzione di MD-Mixer o chwPSN. L'inizializzazione nulla delle matrici garantisce
+equivalenza iniziale con la baseline e impedisce capacità statica aggiuntiva.
+
+[Fang et al., ICCV 2021](https://openaccess.thecvf.com/content/ICCV2021/html/Fang_Incorporating_Learnable_Membrane_Time_Constant_To_Enhance_Learning_of_Spiking_ICCV_2021_paper.html)
+motiva PLIF e parametrizza `1/τ = sigmoid(w)`. La variante locale usa un `w` per feature channel
+(per head nei tensori interni dell'attenzione), in tutti i LIF. Parte da `τ=2`, conserva soglia,
+reset e surrogate della baseline, non aggiunge stato e rende profilabile la distribuzione di τ.
+
 ## Triage PLIF/PMSN/PSN/LMU/Mamba/GRU
 
 | Famiglia | Evidenza utile | Rischio nel nostro protocollo | Decisione e trigger |
 |---|---|---|---|
-| **PSN channel-wise** | evidenza diretta DVS-Lip; memoria temporale di ordine basso | il risultato pubblicato confonde neuron model, Conv3d iniziale, backbone e readout | **Già coperto da T**. Nessun run PSN separato finché T non mostra un segnale positivo |
-| **PLIF** | [Fang et al. 2021](https://arxiv.org/abs/2007.05785): costante di tempo apprendibile e minore sensibilità all'inizializzazione su benchmark neuromorfici | può produrre un guadagno piccolo e diffuso senza risolvere l'embedding | **Primo fallback**, un solo run per-channel se F/T indicano memoria insufficiente ma training stabile |
+| **PSN channel-wise** | evidenza diretta DVS-Lip; memoria temporale di ordine basso | il risultato pubblicato confonde neuron model, Conv3d iniziale, backbone e readout | T copre la versione compressa; TCAP verifica prima se capacità cross-channel ritardata è utile |
+| **PLIF** | [Fang et al. 2021](https://arxiv.org/abs/2007.05785): costante di tempo apprendibile e minore sensibilità all'inizializzazione su benchmark neuromorfici | può produrre un guadagno piccolo e diffuso senza risolvere l'embedding | **Run indipendente:** un τ per feature channel/head su tutti i LIF |
 | **PMSN** | confronto DVS-Lip favorevole in [Neuromorphic Sequential Arena](https://arxiv.org/abs/2505.22035) | modello pubblicato circa 9.5M, readout/dense head e protocollo diversi; dinamica parallelizzata meno naturale per streaming stateful | nessun run ora; rivalutare solo se T aiuta molto e serve una memoria temporale più lunga |
 | **GRU / SpikGRU** | [SpikGRU2+](https://openaccess.thecvf.com/content/CVPR2024W/EVW/html/Dampfhoffer_Neuromorphic_Lip-Reading_With_Signed_Spiking_Gated_Recurrent_Units_CVPRW_2024_paper.html) mostra che la ricorrenza gated è forte su DVS-Lip | sistema bidirezionale da decine di milioni di parametri, 90 bin e augmentation forte; il nostro gated globale storico è invalido | prima recuperare il piccolo readout causale con init verificata; GRU compatta solo se quel gate conserva memoria e migliora l'overfit |
 | **LMU** | [LMUFormer](https://arxiv.org/abs/2402.04882) mostra memoria compatta, training parallelo e inferenza streaming su task di sequenza e speech | nessuna evidenza diretta DVS-Lip; ordine e finestra di memoria aprirebbero nuove scelte e l'integrazione richiederebbe una nuova architettura | fuori dal budget corrente; considerare soltanto se emerge una dipendenza lunga che FIR/PLIF non catturano |
 | **Mamba** | modelli state-space efficaci su sequenze; [TVTA 2026](https://arxiv.org/abs/2607.08236) usa un modulo Mamba su DVS-Lip | il risultato DVS-Lip usa Mamba bidirezionale, supervisione visemica e un sistema più ampio; costo e causalità cambiano | rinviato; non è un'ablazione minima del modello corrente |
 
-Questa graduatoria evita sei training comparativi senza eliminare le idee: PSN è testato tramite T;
-Il gated corretto viene rilanciato nella prima coppia con F; PLIF conserva un trigger condizionale.
-PMSN, LMU, Mamba e GRU richiedono un'evidenza locale che renda
-plausibile il loro costo prima di ricevere budget.
+Questa graduatoria evita una matrice di neuron model: TCAP testa il mixing ritardato, T resta il
+target di compressione, PLIF testa l'adattività della memoria neuronale e gated-v2 il readout.
+PMSN, LMU, Mamba e GRU richiedono ancora evidenza locale prima di ricevere budget.
 
 ## Riferimenti DVS-Lip e protocollo
 

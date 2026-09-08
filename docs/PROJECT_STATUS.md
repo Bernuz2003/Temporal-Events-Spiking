@@ -2,7 +2,7 @@
 
 **Aggiornato:** 2026-09-08
 
-**Fase:** implementazione verificata su CPU; F e gated-v2 pronti per gate CUDA e bounded overfit
+**Fase:** discovery strutturale; F in full training, gated-v2 fermato dal gate, TCAP e PLIF pronti
 
 ## Evidenza consolidata
 
@@ -56,10 +56,42 @@ con dilatazioni 1 e 2. Su F aggiunge 576 coefficienti, 65,536 elementi di buffer
 moltiplicazioni e 1.97 milioni di addizioni per campione. F+T totalizza quindi 431,652 parametri e
 542,720 elementi di stato. È la versione minima e controllabile dell'idea PSN/multi-delay.
 
+**TCAP — prova di capacità temporale cross-channel.** Nei medesimi due punti a bassa risoluzione
+del backbone baseline applica
+`y[t] = x[t] + W1 x[t-1] + W2 x[t-2] + W4 x[t-4]`, con una matrice completa per ritardo.
+Le matrici partono da zero: il modello iniziale è funzione per funzione la baseline e l'unica
+capacità aggiunta collega tempi diversi. A forma DVS-Lip aggiunge 61,440 parametri (+12.27%),
+98,304 elementi di buffer (+8.94%) e 251,658,240 MAC multivalore per campione. Le operazioni affini
+potenziali crescono del 3.55%; la proxy aritmetica FP32 Horowitz densa cresce del 14.86%. È un
+upper-bound diagnostico: se produce segnale, il passo successivo è comprimerlo, non adottarlo
+automaticamente come soluzione finale.
+
+**PLIF per canale.** Ogni LIF apprende `1/tau = sigmoid(w)` per feature channel; nei moduli di
+attenzione il parametro segue gli head dove quella è la dimensione semantica. `w=0` inizializza
+esattamente `tau=2`, quindi il modello coincide con la baseline al primo forward. Aggiunge 1,968
+parametri (+0.393%), nessuno stato temporale e nessuna nuova operazione per timestep nel grafo
+profilato, assumendo il decadimento precomputato in inference. Il profilo del checkpoint registra
+distribuzione e range dei tau appresi.
+
+## Run del 2026-09-08
+
+F ha superato il gate alla epoca 368; il full è partito da pesi nuovi. Lo snapshot locale arriva
+alla epoca 7 e non è ancora interpretabile come risultato finale.
+
+Gated-v2 ha raggiunto accuracy 1.0 sul subset, con traiettoria finita e senza overflow, ma non ha
+superato il criterio preregistrato: nelle ultime cinque epoche la validation loss è rimasta circa
+1.77 contro il vincolo stretto `<1.5` (minimo osservato 1.7643). Il full non è partito. Il gate non
+viene abbassato dopo aver visto il risultato: il run dimostra separabilità del subset, ma è
+compatibile con margini logit deboli e un'ottimizzazione più difficile del readout limitato da
+`tanh` e dalla ricorrenza diagonale. Il solo gate non identifica causalmente quale dei due fattori
+domini. Gated-v2 non riceve un secondo full durante questa fase.
+
 ## Prossimo gate
 
-I test CPU coprono forma, causalità FIR, equivalenza step/sequence anche con coefficienti appresi,
-backward, init gated storica/corretta, profilazione e workflow con fallimento del gate.
-I test CUDA/AMP richiedono SMILIES. Eseguire quindi F e gated-v2 tramite `candidate`; ogni comando
-gestisce overfit, full training da zero e profilazione. Nessun nuovo risultato addestrato è ancora
-disponibile. FIR usa ora una sola concatenazione per sequenza e mantiene il dtype delle attivazioni.
+I test CPU coprono forma, causalità ed equivalenza step/sequence dei moduli temporali, backward,
+equivalenza iniziale con la baseline, PLIF, init gated storica/corretta, profilazione e workflow con
+fallimento del gate. I test CUDA/AMP a forma DVS-Lip richiedono SMILIES. Dopo il check dello stesso
+commit sui due server liberi, avviare TCAP e PLIF tramite `candidate`: ciascun comando gestisce
+bounded overfit, eventuale full da zero e profilo v4 del best. I due risultati vanno letti insieme
+a parametri, stato, SOP/firing rate e proxy Horowitz; un gate superato non costituisce evidenza di
+generalizzazione.

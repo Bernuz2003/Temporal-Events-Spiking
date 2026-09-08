@@ -21,7 +21,7 @@ from etsr.models.layers import (
 )
 from etsr.models.readout import DiagonalGatedReadout
 from etsr.models.spiking import MultiStepLIF
-from etsr.models.temporal import CausalTemporalFIR
+from etsr.models.temporal import CausalTemporalChannelMixer, CausalTemporalFIR
 from etsr.profiling.energy import horowitz_reference
 
 
@@ -46,6 +46,8 @@ class _HardwareProfiler:
                 hook = self._lif_hook(name)
             elif isinstance(module, CausalTemporalFIR):
                 hook = self._temporal_fir_hook(name)
+            elif isinstance(module, CausalTemporalChannelMixer):
+                hook = self._temporal_channel_mixer_hook(name)
             elif isinstance(module, nn.MaxPool2d):
                 hook = self._maxpool_hook(name)
             elif isinstance(module, DiagonalGatedReadout):
@@ -64,7 +66,9 @@ class _HardwareProfiler:
             self.handles.append(module.register_forward_hook(hook))
 
     def _maxpool_hook(self, name: str):
-        def record(module: nn.MaxPool2d, _inputs: tuple[torch.Tensor], output: torch.Tensor) -> None:
+        def record(
+            module: nn.MaxPool2d, _inputs: tuple[torch.Tensor], output: torch.Tensor
+        ) -> None:
             kernel_size = module.kernel_size
             if isinstance(kernel_size, int):
                 kernel_elements = kernel_size**2
@@ -137,6 +141,29 @@ class _HardwareProfiler:
 
         return record
 
+    def _temporal_channel_mixer_hook(self, name: str):
+        def record(
+            module: CausalTemporalChannelMixer,
+            _inputs: tuple[torch.Tensor],
+            output: torch.Tensor,
+        ) -> None:
+            macs = output.numel() * module.channels * len(module.delays)
+            history_reads = output.numel() * len(module.delays)
+            layer = self.layers[name]
+            layer["temporal_channel_mixer_mac"] += macs
+            layer["state_reads"] += history_reads
+            layer["state_writes"] += output.numel()
+            layer["delays"] = module.delays
+            self.totals["temporal_channel_mixer_mac"] += macs
+            self.totals["multivalued_mac_potential"] += macs
+            self.totals["state_reads"] += history_reads
+            self.totals["recurrent_state_updates"] += output.numel()
+            state_elements = module.max_delay * output[0].numel() // output.shape[1]
+            self.state_shapes[name] = (state_elements, output.element_size() * 8)
+            self._activation(output)
+
+        return record
+
     def _lif_hook(self, name: str):
         def record(
             module: MultiStepLIF,
@@ -174,7 +201,9 @@ class _HardwareProfiler:
             time_steps, batch_size, channels = sequence.shape
             valid_steps = inputs[1] if len(inputs) > 1 else None
             active_steps = (
-                int(valid_steps.sum().item()) if valid_steps is not None else time_steps * batch_size
+                int(valid_steps.sum().item())
+                if valid_steps is not None
+                else time_steps * batch_size
             )
             elements = time_steps * batch_size * channels
             # Gate and candidate each use one input and one recurrent channelwise weight.
@@ -229,12 +258,7 @@ class _HardwareProfiler:
                 self.totals["elementwise_add"] += reduction_adds
             else:
                 attention_sops = (
-                    2
-                    * time_steps
-                    * batch_size
-                    * module.num_heads
-                    * tokens
-                    * head_dim**2
+                    2 * time_steps * batch_size * module.num_heads * tokens * head_dim**2
                 )
                 scale_ops = time_steps * batch_size * channels * tokens
                 self.layers[name]["scale_multiply"] += scale_ops
@@ -272,6 +296,7 @@ class _HardwareProfiler:
                 "attention_scale_multiply",
                 "temporal_fir_multiply",
                 "temporal_fir_add",
+                "temporal_channel_mixer_mac",
                 "maxpool_comparison",
                 "elementwise_add",
                 "elementwise_multiply",
@@ -288,8 +313,15 @@ class _HardwareProfiler:
                 key: value / samples
                 for key, value in values.items()
                 if key
-                not in {"calls", "input_elements", "input_nonzero", "binary_calls", "spikes", "spike_elements"}
-                and key not in {"cross_time_state", "persistent_state_elements"}
+                not in {
+                    "calls",
+                    "input_elements",
+                    "input_nonzero",
+                    "binary_calls",
+                    "spikes",
+                    "spike_elements",
+                }
+                and key not in {"cross_time_state", "persistent_state_elements", "delays"}
             }
             if values.get("input_elements"):
                 layer["input_nonzero_rate"] = values["input_nonzero"] / values["input_elements"]
@@ -312,6 +344,8 @@ class _HardwareProfiler:
                     "maximum_channel_mean": float(channel_means.max().item()),
                     "mean_by_channel": channel_means.tolist(),
                 }
+            if "delays" in values:
+                layer["delays"] = list(values["delays"])
             layers[name] = layer
 
         parameter_dtypes: dict[str, int] = defaultdict(int)
@@ -319,6 +353,18 @@ class _HardwareProfiler:
             parameter_dtypes[str(parameter.dtype)] += parameter.numel()
         state_elements = sum(elements for elements, _bits in self.state_shapes.values())
         state_bits = sum(elements * bits for elements, bits in self.state_shapes.values())
+        plif_layers = {}
+        for name, module in self.model.named_modules():
+            if isinstance(module, MultiStepLIF) and module.learnable_tau:
+                effective_tau = module.effective_tau().detach().cpu()
+                plif_layers[name] = {
+                    "parameter_elements": effective_tau.numel(),
+                    "initial_tau": module.tau,
+                    "effective_tau_mean": float(effective_tau.mean().item()),
+                    "effective_tau_min": float(effective_tau.min().item()),
+                    "effective_tau_max": float(effective_tau.max().item()),
+                    "granularity": "feature_channel_or_attention_head",
+                }
         return {
             "schema_version": 4,
             "samples_profiled": samples,
@@ -339,8 +385,7 @@ class _HardwareProfiler:
                 **per_sample,
                 "lif_comparison": lif_evaluations,
                 "lif_decay": lif_evaluations,
-                "lif_reset_gate_potential": self.totals["lif_recurrent_evaluations"]
-                / samples,
+                "lif_reset_gate_potential": self.totals["lif_recurrent_evaluations"] / samples,
                 "lif_reset_gate_activity": self.totals["lif_reset_spikes"] / samples,
                 "elementwise_multiply": self.totals["elementwise_multiply"] / samples,
             },
@@ -348,6 +393,18 @@ class _HardwareProfiler:
                 "global_firing_rate": self.totals["spikes"]
                 / max(1.0, self.totals["spike_elements"]),
                 "zero_skip_assumption": "observed input density with ideal fanout skipping",
+            },
+            "neuron_dynamics": {
+                "type": "per_channel_plif" if plif_layers else "fixed_lif",
+                "plif_parameter_elements": sum(
+                    values["parameter_elements"] for values in plif_layers.values()
+                ),
+                "layers": plif_layers,
+                "deployment_note": (
+                    "sigmoid-derived inverse tau can be precomputed after training"
+                    if plif_layers
+                    else None
+                ),
             },
             "energy_reference": horowitz_reference(per_sample),
             "state": {
@@ -372,7 +429,7 @@ class _HardwareProfiler:
                 "causal_sequence_equations": bool(self.state_shapes),
                 "streaming_state_api": False,
                 "feedback_path": (
-                    "local LIF membrane, FIR delay buffer and/or diagonal readout state"
+                    "local LIF membrane, temporal delay buffer and/or diagonal readout state"
                     if self.state_shapes
                     else None
                 ),
@@ -396,6 +453,7 @@ class _HardwareProfiler:
                 "Memory movement, routing, control, clocking and softmax are excluded.",
                 "Energy reference covers only specified arithmetic, not total hardware energy.",
                 "FIR traffic assumes a ring-buffer hardware schedule, not PyTorch copy traffic.",
+                "Channel-mixer traffic also assumes a ring-buffer schedule; MACs are dense potential.",
                 "Max-pool comparisons include padded positions (potential upper bound).",
                 "Causality holds in eval mode; training BatchNorm aggregates time and batch.",
                 "Scheduled buffers, BRAM/DSP mapping and feedback timing remain unresolved.",

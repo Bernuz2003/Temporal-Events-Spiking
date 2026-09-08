@@ -16,8 +16,10 @@
 - stima aritmetica parziale Horowitz FP32, con termini inclusi/esclusi espliciti.
 
 Per F il profiler deve contare anche confronti dei max-pooling. Per T deve esporre moltiplicazioni,
-addizioni e buffer FIR separatamente. L'identità iniziale di T non autorizza a dichiarare costo
-zero: il confronto Pareto usa il costo potenziale della struttura addestrata.
+addizioni e buffer FIR separatamente. Per TCAP registra MAC MIMO e buffer per i ritardi; per PLIF
+registra numero di parametri e distribuzione dei tau appresi per layer. Un'identità iniziale non
+autorizza a dichiarare costo zero: il confronto Pareto usa il costo potenziale della struttura
+addestrata.
 
 ## Baseline osservata
 
@@ -31,6 +33,15 @@ potenziali per la baseline e 4,152,373,760 per F. F usa 477,184 elementi di stat
 542,720 e aggiunge 2,949,120 moltiplicazioni FIR, 1,966,080 addizioni FIR e 36,700,160 confronti
 di pooling. Questi valori non includono un firing rate addestrato e non sostituiscono il profilo del
 checkpoint.
+
+Lo stesso preflight strutturale misura per **B+TCAP** 562,148 parametri, 1,198,080 elementi di
+stato e 7,340,044,800 operazioni affini potenziali. Rispetto alla baseline sono +61,440 parametri,
++98,304 elementi di stato e +251,658,240 MAC multivalore per campione. La proxy aritmetica FP32
+Horowitz densa coperta passa da 7,790.66 a 8,948.29 µJ/campione (+14.86%): l'aumento è maggiore
+del +3.55% delle operazioni affini perché il nuovo termine è interamente multivalore. Per
+**B+PLIF** il preflight misura 502,676 parametri (+1,968), lo stesso stato e gli stessi contatori
+di operazioni della baseline. Questi valori derivano da input sintetici non addestrati: non si usa
+il firing rate risultante per confronti scientifici.
 
 ## Completezza richiesta
 
@@ -57,10 +68,13 @@ FP32 0.9 pJ/add e 3.7 pJ/multiply: usiamo 4.6 pJ/MAC e 0.9 pJ/AC. Il campo
 `energy_reference` contiene una proxy con AC potenziali e una con AC pesati per densità osservata
 all'ingresso del singolo layer. Le SOP dell'attenzione restano potenziali; nessun firing rate globale
 viene applicato indiscriminatamente. FIR e state mixing sono già nei totali elementwise e vengono
-conteggiati una sola volta. I valori sono µJ/campione e **non energia totale del modello**.
+conteggiati una sola volta. I MAC del temporal channel mixer sono inclusi tra i multivalore. I
+valori sono µJ/campione e **non energia totale del modello**.
 
 Sono esclusi energia di integrazione/reset/confronto LIF, pooling, sigmoid/tanh, riduzioni del
-readout e accessi memoria/routing/leakage. I relativi contatori disponibili restano separati.
+readout, calcolo online del sigmoid PLIF e accessi memoria/routing/leakage. Il decadimento PLIF può
+essere precomputato dopo il training; in quel caso il costo per timestep coincide con il LIF
+fisso. I relativi contatori disponibili restano separati.
 Non inferire una vittoria energetica del gated ignorando le sue non linearità. Il traffico FIR
 assume un buffer circolare hardware; non misura le copie o gli accessi reali di PyTorch.
 
