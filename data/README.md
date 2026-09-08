@@ -13,9 +13,8 @@ data/dvsgc/events_np/train/
 data/matched_dvsgc_order2_v1/
 ```
 
-Le istruzioni complete sono archiviate in
-[`docs/archive/dvsgc/datasets.md`](../docs/archive/dvsgc/datasets.md). Il branch attivo non contiene
-più il relativo runtime; l'implementazione completa resta al tag `dvsgc-audit-complete-2026`.
+Il branch attivo non contiene più il relativo runtime o la documentazione duplicata;
+l'implementazione completa resta recuperabile al tag `dvsgc-audit-complete-2026`.
 
 ## DVS-Lip — verified raw train data
 

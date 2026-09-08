@@ -1,83 +1,43 @@
-# Training recipe
+# Ricetta di training congelata
 
-**Status:** DVS-Lip recipe not defined or frozen
-**Owner decision required to change freeze after P1-10:** yes
+**Aggiornata:** 2026-09-08
 
-## Purpose
+**Recipe ID base:** `dvslip_e0_128`
 
-Training is a controlled experimental variable. Architecture or representation conclusions are
-invalid while optimizer, schedule, augmentation and regularization are moving simultaneously.
+Durante la selezione architetturale si usano: AdamW, learning rate `3e-4`, minimo `1e-6`, cosine
+decay per 128 epoche, warmup di 4 epoche da fattore `0.01`, weight decay `5e-4`, label smoothing
+`0.1`, clipping globale `1.0`, accumulo di 2 batch e AMP su CUDA. Il best checkpoint è selezionato
+per Macro-F1. Batch size, rappresentazione e horizontal flip restano quelli di
+`configs/dvslip_e0.yaml`.
 
-## Legacy implemented recipe — not a DVS-Lip recipe
+## Gate prima di un full run
 
-The current YAML configs and engine implement:
+1. config valida e differenza dalla baseline limitata ai campi architetturali dichiarati;
+2. output `[B,100]`, loss e gradienti finiti;
+3. test di causalità per ogni nuovo operatore temporale;
+4. bounded overfit deterministico su 16 classi × 4 campioni, massimo 500 epoche / 1,000 optimizer
+   step, senza augmentation e AMP: cinque epoche consecutive con accuracy ≥95%, loss <1.5 e
+   gradienti finiti nell'intera storia; stop anticipato al superamento;
+5. stima strutturale di parametri, stato e operazioni disponibile.
 
-```text
-optimizer: AdamW
-learning rate: 1e-3
-weight decay: 5e-4
-schedule: cosine over all epochs, no warmup
-label smoothing: 0.1
-gradient clipping: 1.0
-AMP: enabled only on CUDA
-checkpoint selection: configured metric (Macro-F1 in canonical DVS-GC configs)
-augmentation: none in the engine
-```
+Lo smoke dimostra solo il funzionamento della pipeline. L'overfit individua errori di
+inizializzazione o di flusso del gradiente; non predice la generalizzazione.
 
-These are **FACTS about legacy code**, not a recommendation for DVS-Lip. The engine has no explicit
-recipe ID, warmup, event-coordinate augmentation, temporal masking or recipe artifact.
+`etsr candidate --config ...` applica questi controlli numerici, salva `overfit_gate.json` e gli
+indici del subset, blocca il full run in caso di fallimento e riparte da pesi nuovi dopo il successo.
+La decisione usa le ultime cinque epoche, non il best selezionato. Il full run conserva la ricetta
+base esatta e viene seguito automaticamente da `hardware_profile_v4.json` sul proprio best.
+`candidate_workflow.json` collega gate, full run e profilo. Test di forma/causalità/CUDA sono
+il controllo preliminare `dataset_workflow.sh dvslip check`, da eseguire una volta per commit.
 
-## P1 bounded stabilization protocol
+## Modifiche vietate nella discovery
 
-To be specified after S001/S003/S005/S006 and the raw dataset profile are verified. The plan must
-declare before the first tuning run:
+Non cambiare contemporaneamente optimizer, schedule, clipping, augmentation, binning o loss. Non
+estendere le epoche oltre il cosine già esaurito. Un'eccezione richiede una decisione documentata e
+un controllo capace di separarla dalla modifica architetturale.
 
-- baseline architecture/representation E0;
-- train/validation manifest hashes;
-- maximum number of configurations and seeds;
-- optimizer and learning-rate candidates;
-- warmup/scheduler candidates;
-- weight-decay and label-smoothing candidates;
-- augmentation candidates with probability/range and effects on time, count and geometry;
-- stopping rule and selection metric;
-- compute budget.
+## Fase post-freeze
 
-Do not copy a literature recipe blindly when event representation, batch semantics or model scale
-differ.
-
-## Recipe record template
-
-```text
-Recipe ID:
-Status: CANDIDATE | FROZEN | SUPERSEDED
-Date:
-Commit:
-Dataset/split hash:
-Representation:
-Architecture/capacity:
-Optimizer:
-Learning rate:
-Warmup:
-Scheduler:
-Epochs:
-Batch size / accumulation:
-Weight decay:
-Label smoothing:
-Gradient clipping:
-AMP/precision:
-Spatial augmentations:
-Temporal augmentations:
-Event-rate/count augmentations:
-Selection metric:
-Search budget used:
-Evidence/ledger runs:
-Freeze decision:
-Reversal condition:
-```
-
-## Freeze rules
-
-After P1-10, controlled representation/core comparisons reuse the exact recipe and manifest. A
-change requires a decision record and invalidates direct attribution unless all affected conditions
-are rerun. Validation/test receive no stochastic augmentation. The official test cannot influence
-the recipe.
+Dopo la conferma multi-seed si crea un nuovo `recipe_id`. La prima verifica ammessa confronta la
+stessa augmentation sulla baseline e sulla candidata congelata. Ulteriore tuning avviene in modo
+sequenziale e si arresta appena il risultato non cambia la conclusione.

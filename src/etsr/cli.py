@@ -12,6 +12,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Temporal Event Spiking Research")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    candidate = subparsers.add_parser("candidate", help="Bounded overfit, gated full run, then profile")
+    candidate.add_argument("--config", required=True)
+    backfill = subparsers.add_parser("profile-runs", help="Reprofile completed full runs, no training")
+    backfill.add_argument("--artifact-root", default="artifacts")
+    backfill.add_argument("--checkpoint-root", default="checkpoints")
+    backfill.add_argument("--samples", type=int, default=64)
+
     train = subparsers.add_parser("train", help="Train a configured model")
     train.add_argument("--config", required=True)
     train.add_argument("--seed", type=int)
@@ -150,7 +157,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    if args.command == "train":
+    if args.command == "candidate":
+        from etsr.config import load_config
+        from etsr.workflows import run_candidate
+
+        print(run_candidate(load_config(args.config)))
+    elif args.command == "profile-runs":
+        from etsr.workflows import profile_completed_runs
+
+        report = profile_completed_runs(args.artifact_root, args.checkpoint_root, args.samples)
+        print(report)
+        if not report["complete"]:
+            raise SystemExit(f"Profiling incomplete; see {args.artifact_root}/profile_backfill.json.")
+    elif args.command == "train":
         from etsr.config import load_config, validate_config
         from etsr.runner import train_experiment
 

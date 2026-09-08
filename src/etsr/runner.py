@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import csv
 import datetime as dt
 import json
 import logging
@@ -13,7 +14,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from etsr.config import save_config
-from etsr.data.common import DatasetBundle, balanced_overfit_bundle, build_loader
+from etsr.data.common import DatasetBundle, DatasetSubset, balanced_overfit_bundle, build_loader
 from etsr.data.factory import build_dataset_bundle
 from etsr.evaluation.metrics import (
     ClassificationResult,
@@ -42,12 +43,13 @@ from etsr.training.engine import (
     restore_best_model,
     train_one_epoch,
 )
+from etsr.training.gates import overfit_gate
 from etsr.utils.io import append_csv, ensure_dir, sha256_file, write_csv, write_json
 from etsr.utils.logging import configure_logging
 
 
 def _run_id(config: dict[str, Any], seed: int) -> str:
-    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     return f"{config['experiment']['name']}__{timestamp}__seed{seed}"
 
 
@@ -129,6 +131,9 @@ def _load_checkpoint_context(
     if int(checkpoint["num_classes"]) != num_classes:
         raise ValueError("Checkpoint class count differs from the configured dataset.")
     checkpoint_runtime = checkpoint["config"].get("runtime", {})
+    requested_run = config.get("runtime", {}).get("run_id")
+    if requested_run is not None and checkpoint_runtime.get("run_id") != requested_run:
+        raise ValueError("Resolved config and checkpoint belong to different runs.")
     if checkpoint_runtime.get("classes") != bundle.classes:
         raise ValueError("Checkpoint class order differs from the configured dataset.")
     dataset_metadata = getattr(bundle.validation, "runtime_metadata", {})
@@ -416,16 +421,19 @@ def profile_checkpoint(
     *,
     max_samples: int = 64,
 ) -> dict[str, Any]:
-    """Profile one selected checkpoint without assigning unverified energy costs."""
+    """Profile one selected checkpoint with explicitly bounded arithmetic energy proxies."""
 
     from etsr.profiling import profile_model
+    from etsr.profiling.selection import profile_indices
 
     config = copy.deepcopy(config)
     checkpoint_path, checkpoint, bundle, model, device, dataset_metadata = (
         _load_checkpoint_context(config, checkpoint_path)
     )
-    loader = build_loader(bundle.validation, config["dataset"], shuffle=False)
+    selected = profile_indices(bundle.validation.targets, max_samples)
+    loader = build_loader(DatasetSubset(bundle.validation, selected), config["dataset"], shuffle=False)
     profile = profile_model(model, loader, device, max_samples)
+    profile["sampling"]["policy"] = "class_round_robin_seed0_v1"
     profile.update(
         {
             "checkpoint": str(checkpoint_path.resolve()),
@@ -455,6 +463,8 @@ def train_experiment(
     config = copy.deepcopy(config)
     overfit = config["training"].get("overfit")
     if overfit is not None:
+        config["training"]["amp"] = False
+        config["training"]["select_metric"] = "accuracy"
         config["augmentation"]["horizontal_flip_probability"] = 0.0
         for field in (
             "temporal_mask_count",
@@ -540,6 +550,8 @@ def train_experiment(
         "official_test_used": False,
     }
     runtime.update(getattr(bundle.train, "runtime_metadata", {}))
+    if overfit is not None:
+        runtime["overfit_train_indices"] = list(bundle.train.indices)
     representation_metadata = getattr(bundle.train, "representation_metadata", None)
     if representation_metadata is not None:
         runtime["representation_metadata"] = representation_metadata
@@ -582,6 +594,10 @@ def train_experiment(
         raise ValueError(
             f"Checkpoint already reached epoch {start_epoch - 1}; configured total is {total_epochs}."
         )
+    gate_rows = []
+    if overfit is not None and resume is not None:
+        with (artifact_dir / "history.csv").open(newline="") as handle:
+            gate_rows = [row for row in csv.DictReader(handle) if int(row["epoch"]) < start_epoch]
     for epoch in range(start_epoch, total_epochs + 1):
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
@@ -657,6 +673,13 @@ def train_experiment(
             artifact_dir=artifact_dir,
             peak_cuda_memory_bytes=peak_cuda_memory_bytes,
         )
+        if overfit is not None:
+            gate_rows.append(row)
+            gate = overfit_gate(gate_rows)
+            write_json(gate, artifact_dir / "overfit_gate.json")
+            if overfit.get("stop_on_pass", False) and gate["passed"]:
+                logger.info("Bounded overfit passed for five consecutive epochs; stopping.")
+                break
 
     restore_best_model(checkpoint_path, model, device, logger)
     validation_payload, shortcut_correlations, prefix_evaluation = _write_final_evaluation(
@@ -674,6 +697,7 @@ def train_experiment(
         "run_id": run_id,
         "seed": seed,
         "best_epoch": best_epoch,
+        "completed_epochs": epoch,
         "best_validation_score": best_score,
         "selection_metric": select_metric,
         "readout": _readout_metadata(config),
@@ -690,6 +714,8 @@ def train_experiment(
         "environment_sha256": runtime["environment_sha256"],
         "peak_cuda_memory_bytes": (peak_cuda_memory_bytes if device.type == "cuda" else None),
     }
+    if overfit is not None:
+        summary["overfit_gate"] = overfit_gate(gate_rows)
     if shortcut_correlations is not None:
         summary["validation_shortcut_correlations"] = shortcut_correlations
     if prefix_evaluation is not None:

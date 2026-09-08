@@ -40,6 +40,18 @@ class _TimeStepRecorder(nn.Module):
         return torch.zeros(frames.shape[0], 2)
 
 
+def test_nonfinite_fp32_gradient_fails_before_optimizer_mutation():
+    model = nn.Linear(2, 2)
+    original = model.weight.detach().clone()
+    model.weight.register_hook(lambda grad: torch.full_like(grad, float("inf")))
+    loader = DataLoader(TensorDataset(torch.ones(2, 2), torch.tensor([0, 1]), torch.arange(2)))
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    with pytest.raises(FloatingPointError, match="Non-finite gradient"):
+        train_one_epoch(model, loader, optimizer, nn.CrossEntropyLoss(), torch.device("cpu"),
+                        _DisabledScaler(), False, 1.0, 1)
+    assert torch.equal(original, model.weight)
+
+
 def test_train_cli_accepts_generic_overfit_and_epoch_overrides():
     args = build_parser().parse_args(
         [

@@ -1,114 +1,57 @@
-# Roadmap
+# Roadmap decisiva
 
-> **Frozen transition snapshot.** Phase status and executable next work live in
-> [`PROJECT_STATUS.md`](PROJECT_STATUS.md); the `P0` labels below are not current.
+**Aggiornata:** 2026-09-08
 
-**Active phase:** P0
-**Core thesis:** P0–P5
-**Stretch:** P6 only after the core thesis is complete
+## Gate 0 — nessun training lungo
 
-This document is the phase-level view. Executable work and exact status live in
-[`TASKS.md`](TASKS.md); scientific details remain in sections 18–33 of
-[`PROJECT_CHARTER.md`](PROJECT_CHARTER.md).
+Per F e T sono obbligatori: test di forma e backward, causalità, equivalenza tra elaborazione
+sequenziale e step, conteggio parametri/stato/operazioni, e bounded overfit sullo stesso subset.
+Un candidato che fallisce viene riparato una volta; non riceve un full run finché il difetto resta.
 
-## Phase map
+## Selezione strutturale
 
-| Phase | Question / outcome | Entry gate | Exit gate | Status |
-|---|---|---|---|---|
-| P0 | Trustworthy repository transition | DVS-GC audit snapshot identified | tests, docs, smoke, state reset and environment verified | **ACTIVE** |
-| P1 | Reproducible raw DVS-Lip baseline, recipe and capacity sanity | P0 closed | loader/split/profile, Pareto, frozen recipe, 0.5/1/2M pilot | PENDING |
-| P2 | Benchmark validity and architecture sanity | stable E0 recipe | shortcut controls, temporal dependency, readout test and central 2×2 | PENDING |
-| P3 | Compact representation/core selection | interpretable P2 result | screened E0–E5 and replicated finalists with fair cost controls | PENDING |
-| P4 | Hardware-aware consolidation | final architecture selected | quantization, state/memory profile and streaming equivalence | PENDING |
-| P5 | DailyDVS-200 transfer | frozen DVS-Lip mechanism | rigid and single-`alpha` transfer reported | PENDING |
-| P6 | Predictive/change-driven stretch | core thesis complete | only evidence-backed optional result | DEFERRED |
+1. **Run F e gated-v2, seed 42**, indipendenti e parallelizzabili, ciascuno dopo il proprio overfit.
+   F isola il front-end; gated-v2 corregge l'inizializzazione sul backbone baseline, a fixed window.
+   Non aggiungere last-event, FIR o augmentation al rilancio gated.
+2. Se F raggiunge almeno 46.15 Macro-F1, eseguire **F+T, seed 42**. Anche un F entro −0.5 punti
+   dalla baseline, con almeno −25% operazioni affini potenziali e −25% stato, giustifica F+T come
+   tentativo di recuperare accuratezza a costo ridotto. Altrimenti eseguire **baseline+T, seed 42**.
+   Questo secondo criterio è un compromesso esplorativo, non una superiorità prestazionale.
+3. Usare un solo run aggiuntivo per l'ablazione mancante tra F, T e F+T, esclusivamente se può
+   cambiare l'attribuzione causale o la candidata.
+4. Conservare un solo run di riserva: PLIF per canale oppure temporal packing sul front-end F.
+   Il gated corretto fa già parte della prima coppia. La riserva si attiva sulla base del
+   collo di bottiglia osservato, non per completare una matrice.
 
-## P0 — repository transition and reproducibility
+Ogni punto include profiling v4 del best checkpoint sugli stessi 64 campioni validation, con
+campionamento per classe e seed fisso del profiler. Prima rigenerare anche i riferimenti storici.
+Il costo decide quale modifica replicare quando le metriche sono vicine. Il terzo slot può
+recuperare i profili storici; il quarto rimane libero finché manca un'ipotesi indipendente utile.
 
-Goal: make repository state and instructions trustworthy before adding DVS-Lip.
+## Conferma
 
-Completed in the documentation-transition iteration:
+Quando esiste una candidata:
 
-- tagged `806c0aa` as `dvsgc-audit-complete-2026`;
-- created `developer` from the tagged commit;
-- inspected code, scripts, configs, tests and legacy documents;
-- archived DVS-GC narrative documents and notebook without deleting provenance;
-- introduced active charter navigation, rules, decisions, task tracking and technical-state records.
+1. replicare baseline e candidata con due seed nuovi comuni;
+2. riportare media, deviazione e valori per seed di Macro-F1/accuracy;
+3. confrontare predizioni appaiate, Acc1/Acc2, confusioni e curve di latenza causale;
+4. completare il confronto Pareto con parametri, stato persistente, operazioni potenziali, firing
+   rate e traffico di stato.
 
-Implemented and verified locally in the supported project environment:
+Il nucleo è 3 run di discovery (F, gated-v2, un ramo T), poi 4 run di conferma.
+L'eventuale ablazione mancante e la riserva sono condizionali, non impegni a eseguire altri run.
+Non combinare automaticamente F+T+gated: richiede evidenza che distingua il contributo dei moduli.
 
-- bounded synthetic `etsr smoke` / `make smoke` path;
-- explicit repeated-call and batch-isolation tests for `MultiStepLIF`;
-- allow-listed `environment.json` capture for every training run;
-- frozen DVS-GC dependency/retirement policy.
+## Dopo il freeze
 
-The owner-run suite passed all 35 tests. The bounded CPU smoke passed at clean commit `0b7c552` and
-produced the required environment, checkpoint, profile and audit artifacts. Its chance-level result
-and zero profiled firing are expected to carry no scientific claim.
+Augmentation e convergenza si provano sulla candidata congelata con una baseline di controllo.
+La prima coppia ammessa è la ricetta già implementata di temporal masking più spatial erasing. Si
+prosegue solo se migliora la validation senza degradare la curva di latenza. Quantizzazione e
+teacher leggeri vengono dopo; pretraining, JEPA, predictive coding e grandi teacher restano fuori
+dal budget principale.
 
-Still required before P0 may close:
+## Stop rule
 
-- run one historical sanity benchmark with available data/checkpoint and record it;
-- verify the Singularity build, CUDA and environment capture on SMILIES;
-- reconcile the charter's SMILIES GitLab workflow with the currently configured GitHub-only remote;
-- verify the new `environment.json` artifact on GPU when SMILIES is available.
-
-Go/no-go: **NO-GO for DVS-Lip implementation until the remaining P0 items are complete or explicitly
-waived in `DECISIONS.md`. Primary-source review may proceed under D009 because it changes no runtime
-contract and reduces uncertainty before implementation.**
-
-## P1 — DVS-Lip foundation
-
-Ordered outcomes:
-
-1. verified official dataset/protocol and speaker-disjoint manifest;
-2. raw-event sample contract and deterministic loader;
-3. `dataset_profile.json` used to select physical temporal scales;
-4. primary-source review, novelty matrix and Pareto table;
-5. bounded E0 recipe stabilization and freeze;
-6. one-seed capacity scan near 0.5M, 1M and 2M.
-
-The official test remains embargoed. Parameter-cap revision requires owner approval and a decision
-record. S001, S003 and S006 are now source-verified; all three public implementations use the
-official test during model development, and none supplies the sample-to-speaker mapping needed for
-the project's 24/6 train/validation manifest. Dataset implementation therefore remains blocked by
-the acceptance gate in [`DVSLIP_PROTOCOL.md`](DVSLIP_PROTOCOL.md), while the remaining source
-review is deferred until an active implementation task requires it under D010. The train-only
-preflight, semantic class manifest and six regressions are implemented; the next step is running
-that tooling against the real archive and supplied protocol metadata.
-
-## P2 — validity and interaction
-
-Run cheap time-resolved versus order-invariant baselines, a minimal NoCrossTime control, and
-mean/last/compact-causal-readout comparison. Then confirm the declared 2×2:
-
-```text
-coarse vs fine representation × current LIF vs explicit compact temporal core
-```
-
-The interaction result determines whether P3 emphasizes representation, temporal state, their
-co-design, or a baseline/capacity correction.
-
-## P3 — compact selection
-
-Screen E0–E5 under the frozen recipe and validated core. Report native parameters, operations,
-state, temporal steps and compute. Replicate finalists across three seeds and add approximately
-iso-parametric plus relevant iso-state/energy controls. Learned delays are conditional, not an
-automatic candidate.
-
-## P4 — consolidation
-
-Quantize weights and temporal state, verify offline/chunked/step equivalence, extend profiling to
-state traffic/buffers and complete hardware cards. Change-driven gating is optional only after the
-base architecture is stable.
-
-## P5 — transfer
-
-Freeze topology, representation/core family, state components, precision and compression. Evaluate
-DailyDVS-200 with `alpha=1` and one validation-selected global temporal calibration `alpha*`; do not
-retune each time constant independently.
-
-## P6 — stretch
-
-Future prediction begins with trivial predictors and is abandoned if they are not beaten. A full
-JEPA/predictive-coding direction is outside the core thesis and must not delay P0–P5.
+Si congela la migliore soluzione confermata quando un nuovo run non può più distinguere tra le due
+ipotesi finaliste o quando il guadagno atteso non giustifica una replica multi-seed. Non si spendono
+run per scegliere valori fini di clipping o learning rate prima del freeze.

@@ -11,7 +11,7 @@ DVSGESTURE_SOURCE_ROOT="${DVSGESTURE_SOURCE_ROOT:-data/DvsGesture/DvsGesture}"
 DVSGESTURE_TRAIN_ROOT="${DVSGESTURE_TRAIN_ROOT:-data/DvsGesture/events/train}"
 
 usage() {
-  echo "Uso: $0 {dvslip|dvsgesture} {prepare|gate|control}" >&2
+  echo "Uso: $0 {dvslip|dvsgesture} {prepare|gate|check|control}" >&2
 }
 
 require_runtime() {
@@ -44,12 +44,17 @@ container() {
   local use_gpu="$1"
   shift
   local options=(exec --cleanenv)
+  local runtime_env=(env CUBLAS_WORKSPACE_CONFIG=:4096:8
+    "OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}" "MKL_NUM_THREADS=${MKL_NUM_THREADS:-4}")
   if [[ "$use_gpu" == "gpu" ]]; then
     options+=(--nv)
+    if [[ -v CUDA_VISIBLE_DEVICES ]]; then
+      runtime_env+=("CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES")
+    fi
   fi
   "$SINGULARITY" "${options[@]}" \
     --bind "$REPO:/workspace" \
-    --pwd /workspace "$IMAGE" "$@"
+    --pwd /workspace "$IMAGE" "${runtime_env[@]}" "$@"
 }
 
 common_gate() {
@@ -155,6 +160,7 @@ print("Artifact gate DVS-Gesture verificato: train-only")
 DATASET="${1:-}"
 ACTION="${2:-}"
 case "$DATASET:$ACTION" in
+  dvslip:check|dvsgesture:check) common_gate ;;
   dvslip:prepare) prepare_dvslip ;;
   dvslip:gate) gate_dvslip ;;
   dvslip:control) control_dvslip ;;

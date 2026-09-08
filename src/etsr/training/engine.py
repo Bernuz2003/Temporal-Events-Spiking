@@ -124,6 +124,10 @@ def train_one_epoch(
                     clipped_steps += int(gradient_norm > gradient_clip_norm)
                 else:
                     nonfinite_gradient_steps += 1
+            if not gradient_is_finite and not amp_enabled:
+                raise FloatingPointError(
+                    f"Non-finite gradient at optimizer step {optimizer_steps + 1}."
+                )
             scale_before = float(scaler.get_scale()) if amp_enabled else None
             scaler.step(optimizer)
             scaler.update()

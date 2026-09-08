@@ -4,6 +4,39 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from etsr.models.mini_qkformer import MiniQKFormer
 from etsr.profiling import profile_model
+from etsr.profiling.energy import horowitz_reference
+from etsr.profiling.selection import profile_indices
+
+
+def test_profile_binary_classification_is_independent_of_loader_batch_size():
+    model = torch.nn.Linear(2, 2, bias=False)
+    dataset = TensorDataset(torch.tensor([[0., 1.], [2., 0.]]), torch.tensor([0, 1]), torch.arange(2))
+    profiles = [profile_model(model, DataLoader(dataset, batch_size=batch), torch.device("cpu"), 2)
+                for batch in (1, 2)]
+    assert profiles[0] == profiles[1]
+    assert profiles[0]["operations_per_sample"]["multivalued_mac_potential"] == 2
+    assert profiles[0]["operations_per_sample"]["binary_ac_potential"] == 2
+
+
+def test_profile_selection_covers_classes_instead_of_sorted_prefix():
+    targets = [label for label in range(100) for _ in range(10)]
+    selected = profile_indices(targets, 64)
+    assert len(selected) == len(set(selected)) == 64
+    assert len({targets[index] for index in selected}) == 64
+    assert selected == profile_indices(targets, 64)
+    assert len(profile_indices(targets, 2000)) == len(targets)
+
+
+def test_horowitz_units_and_fir_not_double_counted():
+    ops = {"multivalued_mac_potential": 10, "binary_ac_potential": 20,
+           "binary_ac_activity_estimate": 5, "attention_sop_potential": 3,
+           "elementwise_add": 7, "elementwise_multiply": 4,
+           "attention_scale_multiply": 2, "temporal_fir_multiply": 4, "temporal_fir_add": 7}
+    energy = horowitz_reference(ops)
+    assert energy["covered_arithmetic_activity_proxy_uj_per_sample"] == pytest.approx(
+        (4.6 * 10 + 0.9 * (5 + 3 + 7) + 3.7 * (4 + 2)) / 1e6
+    )
+    assert energy["total_hardware_energy_uj_per_sample"] is None
 
 
 def test_hardware_profile_separates_multivalued_mac_spike_ac_and_state():
@@ -48,6 +81,31 @@ def test_hardware_profile_rejects_an_empty_sample_budget():
 
     with pytest.raises(ValueError, match="positive"):
         profile_model(model, loader, torch.device("cpu"), max_samples=0)
+
+
+def test_hardware_profile_counts_pyramidal_pooling_and_temporal_fir_state():
+    model = MiniQKFormer(
+        in_channels=2,
+        num_classes=4,
+        embed_dim=32,
+        num_heads=4,
+        frontend="pyramidal",
+        temporal_fir=True,
+    )
+    frames = torch.rand(1, 4, 2, 32, 32)
+    loader = DataLoader(TensorDataset(frames, torch.tensor([0]), torch.arange(1)))
+
+    profile = profile_model(model, loader, torch.device("cpu"), max_samples=1)
+
+    assert profile["schema_version"] == 4
+    assert profile["operations_per_sample"]["maxpool_comparison"] > 0
+    assert profile["operations_per_sample"]["temporal_fir_multiply"] > 0
+    assert profile["operations_per_sample"]["temporal_fir_add"] > 0
+    first = profile["layers"]["patch_embed1.main4.temporal_fir"]
+    second = profile["layers"]["patch_embed2.down.temporal_fir"]
+    assert first["persistent_state_elements"] == 2 * 16 * 4 * 4
+    assert second["persistent_state_elements"] == 4 * 32 * 2 * 2
+    assert first["state_reads"] > first["state_writes"]
 
 
 def test_hardware_profile_distinguishes_no_cross_time_from_gated_readout_state():

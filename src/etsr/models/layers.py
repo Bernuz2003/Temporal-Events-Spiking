@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from etsr.models.spiking import MultiStepLIF
+from etsr.models.temporal import CausalTemporalFIR
 
 
 def _time_distributed(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
@@ -24,6 +25,8 @@ class ConvBNLIF2d(nn.Module):
         padding: int = 0,
         tau: float = 2.0,
         threshold: float = 1.0,
+        temporal_fir_kernel_size: int | None = None,
+        temporal_fir_dilation: int = 1,
     ) -> None:
         super().__init__()
         self.conv = nn.Conv2d(
@@ -35,18 +38,75 @@ class ConvBNLIF2d(nn.Module):
             bias=False,
         )
         self.bn = nn.BatchNorm2d(out_channels)
+        self.temporal_fir = (
+            CausalTemporalFIR(
+                out_channels,
+                kernel_size=temporal_fir_kernel_size,
+                dilation=temporal_fir_dilation,
+            )
+            if temporal_fir_kernel_size is not None
+            else None
+        )
         self.lif = MultiStepLIF(tau=tau, threshold=threshold)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = _time_distributed(self.conv, x)
         x = _time_distributed(self.bn, x)
+        if self.temporal_fir is not None:
+            x = self.temporal_fir(x)
+        return self.lif(x)
+
+
+class ConvBNMaxPoolLIF2d(nn.Module):
+    """Time-distributed convolution and pooling with one LIF after spatial reduction."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        tau: float,
+        threshold: float,
+        temporal_fir_kernel_size: int | None = None,
+        temporal_fir_dilation: int = 1,
+    ) -> None:
+        super().__init__()
+        self.conv = nn.Conv2d(
+            in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False
+        )
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.temporal_fir = (
+            CausalTemporalFIR(
+                out_channels,
+                kernel_size=temporal_fir_kernel_size,
+                dilation=temporal_fir_dilation,
+            )
+            if temporal_fir_kernel_size is not None
+            else None
+        )
+        self.lif = MultiStepLIF(tau=tau, threshold=threshold)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = _time_distributed(self.conv, x)
+        x = _time_distributed(self.bn, x)
+        x = _time_distributed(self.pool, x)
+        if self.temporal_fir is not None:
+            x = self.temporal_fir(x)
         return self.lif(x)
 
 
 class InitialPatchEmbedding(nn.Module):
     """Compact SPEDS-like front-end whose spiking branches are added directly."""
 
-    def __init__(self, in_channels: int, embed_dim: int, tau: float, threshold: float):
+    def __init__(
+        self,
+        in_channels: int,
+        embed_dim: int,
+        tau: float,
+        threshold: float,
+        temporal_fir_kernel_size: int | None = None,
+        temporal_fir_dilation: int = 1,
+    ):
         super().__init__()
         quarter = embed_dim // 4
         half = embed_dim // 2
@@ -57,7 +117,17 @@ class InitialPatchEmbedding(nn.Module):
             quarter, half, 3, stride=2, padding=1, tau=tau, threshold=threshold
         )
         self.main3 = ConvBNLIF2d(half, half, 3, stride=2, padding=1, tau=tau, threshold=threshold)
-        self.main4 = ConvBNLIF2d(half, half, 3, stride=2, padding=1, tau=tau, threshold=threshold)
+        self.main4 = ConvBNLIF2d(
+            half,
+            half,
+            3,
+            stride=2,
+            padding=1,
+            tau=tau,
+            threshold=threshold,
+            temporal_fir_kernel_size=temporal_fir_kernel_size,
+            temporal_fir_dilation=temporal_fir_dilation,
+        )
         self.shortcut = ConvBNLIF2d(quarter, half, 1, stride=8, tau=tau, threshold=threshold)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -70,10 +140,63 @@ class InitialPatchEmbedding(nn.Module):
         return x + shortcut
 
 
+class PyramidalPatchEmbedding(nn.Module):
+    """Low-state Conv-BN-MaxPool front-end with a direct spiking shortcut."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        embed_dim: int,
+        tau: float,
+        threshold: float,
+        temporal_fir_kernel_size: int | None = None,
+        temporal_fir_dilation: int = 1,
+    ) -> None:
+        super().__init__()
+        if embed_dim % 16 != 0:
+            raise ValueError("pyramidal front-end requires embed_dim divisible by 16")
+        first = embed_dim // 16
+        second = embed_dim // 8
+        third = embed_dim // 4
+        output = embed_dim // 2
+        self.main1 = ConvBNLIF2d(
+            in_channels, first, 3, padding=1, tau=tau, threshold=threshold
+        )
+        self.main2 = ConvBNMaxPoolLIF2d(first, second, tau=tau, threshold=threshold)
+        self.main3 = ConvBNMaxPoolLIF2d(second, third, tau=tau, threshold=threshold)
+        self.main4 = ConvBNMaxPoolLIF2d(
+            third,
+            output,
+            tau=tau,
+            threshold=threshold,
+            temporal_fir_kernel_size=temporal_fir_kernel_size,
+            temporal_fir_dilation=temporal_fir_dilation,
+        )
+        self.shortcut = ConvBNLIF2d(
+            second, output, 1, stride=4, tau=tau, threshold=threshold
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.main1(x)
+        x = self.main2(x)
+        shortcut_source = x
+        x = self.main3(x)
+        x = self.main4(x)
+        return x + self.shortcut(shortcut_source)
+
+
 class PatchEmbeddingStage(nn.Module):
     """Downsample two spiking branches and add them without another threshold."""
 
-    def __init__(self, in_channels: int, out_channels: int, tau: float, threshold: float):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        tau: float,
+        threshold: float,
+        temporal_fir_kernel_size: int | None = None,
+        temporal_fir_dilation: int = 1,
+    ):
         super().__init__()
         self.proj = ConvBNLIF2d(
             in_channels, out_channels, 3, stride=1, padding=1, tau=tau, threshold=threshold
@@ -86,6 +209,8 @@ class PatchEmbeddingStage(nn.Module):
             padding=1,
             tau=tau,
             threshold=threshold,
+            temporal_fir_kernel_size=temporal_fir_kernel_size,
+            temporal_fir_dilation=temporal_fir_dilation,
         )
         self.shortcut = ConvBNLIF2d(
             in_channels, out_channels, 1, stride=2, tau=tau, threshold=threshold

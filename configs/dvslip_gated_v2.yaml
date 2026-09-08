@@ -1,0 +1,57 @@
+experiment:
+  name: dvslip_gated_v2
+  seed: 42
+  artifact_root: artifacts
+  checkpoint_root: checkpoints
+  deterministic: true
+
+dataset:
+  name: dvslip
+  root: data/DVS-Lip/DVS-Lip/train
+  split_manifest: data/DVS-Lip/dvslip_development_split.json
+  batch_size: 16
+  num_workers: 4
+  pin_memory: true
+
+representation:
+  name: count_frames_e0
+  window_us: 2000000
+  bin_width_us: 50000
+  count_cap: 255
+
+augmentation:
+  horizontal_flip_probability: 0.5
+
+evaluation:
+  absolute_prefix_times_us: [250000, 500000, 1000000, 1500000, 2000000]
+  relative_prefix_fractions: [0.1, 0.25, 0.5, 0.75, 1.0]
+  class_groups_manifest: configs/dvslip_class_groups.json
+
+model:
+  name: mini_qkformer
+  in_channels: 2
+  embed_dim: 128
+  num_heads: 8
+  mlp_ratio: 2.0
+  lif_tau: 2.0
+  lif_threshold: 1.0
+  surrogate_alpha: 4.0
+  readout: diagonal_gated
+  readout_time: fixed_window
+  gated_initial_memory_steps: 20.0
+
+training:
+  recipe_id: dvslip_e0_128
+  epochs: 128
+  optimizer: adamw
+  learning_rate: 0.0003
+  min_learning_rate: 0.000001
+  scheduler: cosine
+  warmup_epochs: 4
+  warmup_start_factor: 0.01
+  weight_decay: 0.0005
+  label_smoothing: 0.1
+  gradient_clip_norm: 1.0
+  gradient_accumulation_steps: 2
+  amp: true
+  select_metric: macro_f1

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import torch
 from torch import nn
 
@@ -7,14 +9,24 @@ from torch import nn
 class DiagonalGatedReadout(nn.Module):
     """Single-gate causal readout with caller-owned channelwise recurrent state."""
 
-    def __init__(self, channels: int) -> None:
+    def __init__(self, channels: int, initial_memory_steps: float | None = None) -> None:
         super().__init__()
         if channels <= 0:
             raise ValueError("channels must be positive")
+        if initial_memory_steps is not None and (
+            not math.isfinite(initial_memory_steps) or initial_memory_steps <= 1.0
+        ):
+            raise ValueError("initial_memory_steps must be greater than one")
         self.channels = int(channels)
-        self.gate_input = nn.Parameter(torch.ones(channels))
+        self.initial_memory_steps = initial_memory_steps
+        # Missing config field reproduces the historical run, including its initialization.
+        initial_gate_bias = 0.0
+        if initial_memory_steps is not None:
+            initial_update_rate = 1.0 / initial_memory_steps
+            initial_gate_bias = math.log(initial_update_rate / (1.0 - initial_update_rate))
+        self.gate_input = nn.Parameter(torch.full((channels,), float(initial_memory_steps is None)))
         self.gate_state = nn.Parameter(torch.zeros(channels))
-        self.gate_bias = nn.Parameter(torch.zeros(channels))
+        self.gate_bias = nn.Parameter(torch.full((channels,), initial_gate_bias))
         self.candidate_input = nn.Parameter(torch.ones(channels))
         self.candidate_state = nn.Parameter(torch.zeros(channels))
         self.candidate_bias = nn.Parameter(torch.zeros(channels))

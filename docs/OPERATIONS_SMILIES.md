@@ -1,145 +1,94 @@
-# SMILIES operations
+# Operazioni riproducibili su SMILIES
 
-**Status:** Singularity image and CUDA execution verified on `daredevil` (RTX A4000,
-PyTorch 2.2.2+cu121). Dataset preparation and gates use one dataset-driven workflow.
+**Aggiornate:** 2026-09-08
 
-## Filesystem model
+Dalla root del checkout sul server, sincronizzare un commit comprendente codice, config e script.
+I launcher richiedono un worktree pulito per registrare una versione riproducibile. I dati e i
+checkpoint devono restare nei path configurati; non rigenerare lo split development esistente.
+Il container monta `src/`: non serve ricostruirlo per queste modifiche se il precedente funziona.
 
-The current SMILIES installation no longer provides a separate `/home/users` area. The only project
-root is:
+## Verifica una volta per commit
 
-```text
-/home/ldapusers/z-tesisti/bernacchi/Temporal-Events-Spiking
-```
-
-The clone therefore contains code and all ignored runtime data:
-
-```text
-Temporal-Events-Spiking/
-├── .singularity/                         # build cache and temporary files
-├── artifacts/                            # metrics, logs and runtime pilot config
-├── checkpoints/                          # model weights
-├── containers/temporal-event-spiking.sif # immutable image
-└── data/
-    ├── DVS-Lip/
-    │   ├── DVS-Lip/train/
-    │   └── dvslip_development_split.json
-    └── DvsGesture/
-        ├── DvsGesture.tar.gz              # verified source archive
-        ├── DvsGesture/                    # temporary extracted source
-        └── events/train/                  # generated train-only samples
-```
-
-`screen` runs on the host. Singularity mounts the entire repository at `/workspace`, so relative
-paths in YAML retain exactly the same meaning inside and outside the container. No writable
-sandbox, instance, second bind or runtime `pip install` is needed.
-
-## Synchronize and build
-
-The server clone must contain the clean commit intended for the run:
+Con dati/split già validati:
 
 ```bash
-cd /home/ldapusers/z-tesisti/bernacchi/Temporal-Events-Spiking
-git switch developer
-git pull --ff-only origin developer
-git status --short --branch
-
-make smilies-build
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/dataset_workflow.sh dvslip check
 ```
 
-The image contains dependencies only; repository code is mounted at runtime. Code/config changes do
-not require a rebuild unless `temporal_event_spiking.def` or its dependencies changed.
+Esegue suite, test CUDA/AMP a forma DVS-Lip, lint, shell syntax e compilazione. Se container o dati
+non sono ancora preparati, usare il workflow `make smilies-build` e
+`make smilies-gate DATASET=dvslip`; il gate dati completo include hash e shortcut e non va ripetuto
+per ogni candidato. Non avviare le campagne se il check fallisce.
 
-The build script uses `containers/temporal_event_spiking.def`, stores cache and temporary files in
-`.singularity/`, builds `containers/temporal-event-spiking.sif` and runs `singularity test`. It
-refuses to overwrite an existing image; rebuild deliberately with:
+## Prima ondata: due training indipendenti, un recupero profili
+
+Gli ID sotto presuppongono tre GPU assegnate sullo stesso nodo. Sostituirli con ID/UUID effettivamente
+assegnati; su nodi distinti usare la GPU assegnata a ciascun nodo. Ogni processo vede una sola GPU
+e usa internamente `cuda:0`. La maschera viene propagata oltre `--cleanenv`; il launcher rifiuta
+una selezione con più GPU visibili. Non modificare la maschera assegnata dallo scheduler includendo
+GPU non assegnate.
 
 ```bash
-REBUILD=1 make smilies-build
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f42 -- candidate --config configs/dvslip_f.yaml
+CUDA_VISIBLE_DEVICES=1 bash scripts/smilies/run_command.sh dvslip-gated-v2-42 -- candidate --config configs/dvslip_gated_v2.yaml
+CUDA_VISIBLE_DEVICES=2 bash scripts/smilies/run_command.sh profiles-v4 -- profile-runs
 ```
 
-## DVS-Lip sequence
+Ogni `candidate` esegue il bounded overfit (16×4 campioni, massimo 500 epoche, stop al gate),
+poi solo se passa avvia 128 epoche da zero con la ricetta base, valutazione finale e profilo v4 del
+best su 64 validation. Il gate usa FP32, nessuna augmentation e zero data-loader worker; il full
+ripristina esattamente la config originale. Sono due run lunghi, non sei.
 
-Only the official `train/` directory is needed. Once it is present under
-`data/DVS-Lip/DVS-Lip/train`, run:
+`profile-runs` scorre i full run completati, usa le loro config risolte e i loro best, rigenera anche
+i due profili v1 e conserva i vecchi file. Include DVS-Gesture. Richiede checkpoint/dataset sul
+server; segnala gli assenti in `artifacts/profile_backfill.json` e termina con errore se incompleto,
+continuando comunque sugli altri run. Nessun training viene avviato. Il quarto slot resta libero.
+
+## Seconda ondata: un solo ramo dopo il risultato di F
+
+Se F soddisfa uno dei criteri preregistrati in `ROADMAP.md`:
 
 ```bash
-make smilies-prepare DATASET=dvslip
-make smilies-gate DATASET=dvslip
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-ft42 -- candidate --config configs/dvslip_f_t.yaml
 ```
 
-`gate` verifies a clean worktree, host and container CUDA, pytest, Ruff, shell syntax, bytecode
-compilation, the full hash preflight and the D016 shortcut control.
-
-The 64-epoch stabilization run was still improving at its boundary. The canonical E0 recipe now
-uses one 128-epoch cosine schedule from scratch:
+Altrimenti, **in alternativa**:
 
 ```bash
-make smilies-train \
-  SMILIES_CONFIG=configs/dvslip_e0.yaml \
-  SMILIES_SESSION=dvslip_e0_128
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-bt42 -- candidate --config configs/dvslip_b_t.yaml
 ```
 
-Every epoch atomically updates `last.pt` with model, optimizer, scheduler and AMP scaler state. If
-the process is interrupted, do not pull a new commit or change the YAML; resume the same run with:
+Non eseguire entrambi per riempire gli slot. Nessun rilancio gated con last-event o augmentation
+in questa fase. La vittoria iniziale su seed 42 richiede poi conferma con seed comuni.
 
-```bash
-make smilies-train \
-  SMILIES_CONFIG=configs/dvslip_e0.yaml \
-  SMILIES_SESSION=dvslip_e0_resume \
-  SMILIES_TRAIN_ARGS='--resume checkpoints/<run-id>/last.pt'
-```
-
-`best.pt` remains the validation-selected model and is not a resumable training checkpoint.
-
-## DVS-Gesture preparation
-
-The verified archive and extracted directory are expected at
-`data/DvsGesture/DvsGesture.tar.gz` and `data/DvsGesture/DvsGesture/`. The active workflow reads
-only the official train list:
-
-```bash
-make smilies-prepare DATASET=dvsgesture
-make smilies-gate DATASET=dvsgesture
-```
-
-The first command writes derived raw-event segments under `data/DvsGesture/events/train`; the gate
-exhaustively validates them and writes `artifacts/dvsgesture_dataset_profile.json`. If the extracted
-directory differs, pass `DVSGESTURE_SOURCE_ROOT=path/inside/repository`.
-
-Keep both source forms until this gate passes. Afterwards the extracted 5 GB directory is redundant
-for normal training: the verified compressed archive is sufficient for recovery, while the model
-uses only `events/train`. No source file is removed automatically.
-
-The profiled E0 candidate is `configs/dvsgesture_e0.yaml`. Before full training, exhaustively verify
-its 20 s / 200 ms count encoding, then run the ordinary bounded overfit gate. Do not run either while
-another training job needs the same host resources.
-
-## Screen controls
+## Monitoraggio, ripresa e recupero della sola profilazione
 
 ```bash
 screen -ls
-screen -r dvslip_e0_128
-tail -f artifacts/screen/dvslip_e0_128.log
+tail -f artifacts/screen/dvslip-f42.log
+screen -r dvslip-f42
 ```
 
-Detach with `Ctrl-a`, then `d`. A session terminates automatically when its training process exits.
-
-## Generic future-dataset launcher
-
-The SMILIES launcher does not encode a dataset name. Any configuration supported by the Python
-pipeline can be started with:
+`overfit_gate.json` contiene l'esito numerico; `candidate_workflow.json` collega gate/full/profilo.
+I run ID nei log identificano le directory. Se il full training viene interrotto, usare la sua
+config risolta e il suo `last.pt` con lo stesso commit pulito; non usare il last dell'overfit:
 
 ```bash
-make smilies-train \
-  SMILIES_CONFIG=configs/<dataset-and-recipe>.yaml \
-  SMILIES_SESSION=<descriptive-name> \
-  SMILIES_TRAIN_ARGS='<optional train overrides>'
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_training.sh artifacts/<run-id>/config_resolved.yaml dvslip-resume -- --resume checkpoints/<run-id>/last.pt
 ```
 
-The DVS-Gesture adapter now uses this path. DailyDVS-200 and CIFAR10-DVS remain unimplemented until
-each becomes an active, source-verified task.
+Dopo una ripresa con `train`, oppure se fallisce solo il profiling, recuperare il profilo senza
+ripetere il training:
 
-Historical DVS-GC helpers are no longer part of the active runtime. Their documentation remains in
-[`archive/dvsgc/smilies_setup.md`](archive/dvsgc/smilies_setup.md) as provenance, not as the current
-server procedure; the executable implementation is recoverable from Git history.
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh profile-recovery -- profile-checkpoint --config artifacts/<run-id>/config_resolved.yaml --checkpoint checkpoints/<run-id>/best.pt --output artifacts/<run-id>/hardware_profile_v4.json --samples 64
+```
+
+Il wrapper `train` rimane disponibile per riprese e diagnosi; i nuovi full candidati vanno avviati
+tramite `candidate`. Per una ripresa dell'overfit usare la sua config risolta; verificare poi il
+gate e non interpretare il suo punteggio come validation indipendente. Una campagna `candidate`
+rilanciata da capo crea un nuovo gate e un nuovo full, quindi non è il comando di ripresa.
+
+La tabella finale confronta profili dello stesso schema/campionamento, parametri, MAC/AC potenziali,
+attività per layer, membrane/buffer/traffico e proxy aritmetica Horowitz; nessuna misura di joule
+GPU/FPGA viene dedotta dai contatori. Per i finalisti estendere il profilo a 200 campioni.

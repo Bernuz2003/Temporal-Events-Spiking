@@ -23,4 +23,9 @@ def build_model(config: dict[str, Any], num_classes: int) -> nn.Module:
         lif_cross_time=config.get("lif_cross_time", True),
         readout=str(config.get("readout", "mean")),
         readout_time=str(config.get("readout_time", "fixed_window")),
+        frontend=str(config.get("frontend", "baseline")),
+        temporal_fir=config.get("temporal_fir", False),
+        temporal_fir_kernel_size=int(config.get("temporal_fir_kernel_size", 3)),
+        temporal_fir_dilations=tuple(config.get("temporal_fir_dilations", (1, 2))),
+        gated_initial_memory_steps=config.get("gated_initial_memory_steps"),
     )

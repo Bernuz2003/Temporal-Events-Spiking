@@ -1,54 +1,29 @@
-# Experiment ledger
+# Registro esperimenti
 
-This ledger contains only runs that influence a scientific or engineering decision. It is not a copy
-of `history.csv` and does not invent missing run metadata.
+**Aggiornato:** 2026-09-08
 
-## Active DVS-Lip runs
+Tutti i valori sono development validation e usano soltanto l'official-train DVS-Lip. I profili
+sono validi solo quando derivano dal best checkpoint dello stesso run. Le due celle «sì» indicano
+profili storici v1 senza energia Horowitz: nessun profilo v4 è ancora disponibile localmente.
+La riga DVS-Gesture usa la development validation del suo official-train, separata da DVS-Lip.
 
-None. No DVS-Lip loader, representation or training recipe is implemented at the current P0 state.
+| Run artifact | Seed | Parametri | Best epoch | Accuracy % | Macro-F1 % | Profilo | Esito |
+|---|---:|---:|---:|---:|---:|---|---|
+| `dvslip_e0__20260825_211710__seed42` | 42 | 500,708 | 112 | 44.81 | 44.15 | sì | baseline canonica |
+| `dvslip_e0_capacity_1m__20260826_100031__seed42` | 42 | 1,113,508 | 116 | 49.58 | 49.38 | sì | controllo capacità |
+| `dvslip_e0_capacity_2m__20260902_120335__seed42` | 42 | 1,967,972 | 114 | 51.79 | 51.81 | no | controllo capacità |
+| `dvslip_e0_no_cross_time__20260902_143346__seed42` | 42 | 500,708 | 126 | 15.13 | 13.01 | no | dipendenza temporale necessaria |
+| `dvslip_e0_readout_time_last_event__20260902_143353__seed42` | 42 | 500,708 | 106 | 42.50 | 42.02 | no | mean, ultimo bin occupato |
+| `dvslip_e0_readout_last_readout_time_last_event__20260902_143408__seed42` | 42 | 500,708 | 116 | 32.32 | 31.83 | no | last, ultimo bin occupato |
+| `dvslip_e0_readout_diagonal_gated__20260903_030141__seed42` | 42 | 501,476 | 125 | 19.80 | 17.60 | no | non conclusivo: init memoria errata |
+| `dvsgesture_e0__20260825_213021__seed42` | 42 | 489,227 | 117 | 84.47 | 83.62 | no | baseline transfer, speaker-disjoint |
 
-## Engineering validation runs
+## Regole per nuovi record
 
-| Run ID | Commit | Config | Seed | Question | Result | Interpretation | Decision consequence | Artifact |
-|---|---|---|---:|---|---|---|---|---|
-| SMOKE-P0-20260821-193155 | `0b7c552` clean | `configs/smoke.yaml` | 7 | Does the bounded synthetic path complete train, checkpoint, holdout, profile, audit and provenance capture without official test data? | PASS on CPU; 35-test suite also PASS | Integration evidence only; accuracy 0.25/macro-F1 0.10 and zero firing in the profiled batch provide no convergence or scientific evidence | closes local P0-06/07/08/09/12/14; does not close historical or SMILIES gates | `artifacts/smoke_synthetic__20260821_193155__seed7/smoke_summary.json`; environment SHA-256 `8e024dd862d253affa0ec88071f3426d72fefc38a8b0ca03a90ca8c0ce33f4cc` |
+Un full run entra nella tabella solo se contiene `summary.json`, config risolta, ambiente, curve e
+predizioni. Se shortlisted, deve contenere anche `hardware_profile_v4.json`. Overfit, smoke e profili
+senza training restano nei rispettivi artifact di gate e non vengono presentati come risultati.
 
-The run used `official_test_used: false`, Python 3.10.20, Torch 2.12.1+cu130 and CPU. Its artifact
-directory is intentionally unversioned; the row records the immutable commit/config/seed and hash
-needed to distinguish it from a scientific experiment.
-
-## Imported historical evidence
-
-| Run ID | Commit | Config | Seed | Question | Result | Interpretation | Decision consequence | Artifact |
-|---|---|---|---:|---|---|---|---|---|
-| LEGACY-DVSGC-EXPLORATORY | unknown | legacy order-2 baseline, exact resolved config unavailable here | unknown | Does the diagnostic model distinguish content and order? | Numerical observations are preserved in the archived protocol | Historical, single-checkpoint evidence; not a new verified run | informed D002/D003, but cannot select DVS-Lip architecture | [`archive/dvsgc/mechanistic_temporal_audit.md`](archive/dvsgc/mechanistic_temporal_audit.md) |
-
-The row above deliberately records `unknown` rather than reconstructing provenance from prose. It
-must not be promoted to a replicated result unless the original artifact and checkpoint are located
-and hashed.
-
-## Entry template
-
-```text
-Run ID:
-Date:
-Commit:
-Dirty state:
-Config:
-Recipe ID:
-Seed(s):
-Dataset manifest hash:
-Split manifest hash:
-Question:
-Predeclared interpretation:
-Result:
-Uncertainty:
-Cost/state profile:
-Interpretation:
-Decision consequence:
-Artifact:
-Limitations:
-```
-
-Screening rows must be labeled `SCREENING`; only replicated confirmation may be labeled
-`CONFIRMATORY`.
+Per i nuovi candidati aggiungere: variante (`F`, `T`, `F+T`, `gated-v2`), stato del bounded overfit, hash del
+checkpoint profilato, numero di campioni del profilo e delta rispetto alla baseline su Macro-F1,
+stato e operazioni.

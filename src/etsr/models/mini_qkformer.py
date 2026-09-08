@@ -6,6 +6,7 @@ from torch import nn
 from etsr.models.layers import (
     InitialPatchEmbedding,
     PatchEmbeddingStage,
+    PyramidalPatchEmbedding,
     SpikingBlock,
     SpikingSelfAttention,
     TokenQKAttention,
@@ -35,6 +36,11 @@ class MiniQKFormer(nn.Module):
         lif_cross_time: bool = True,
         readout: str = "mean",
         readout_time: str = "fixed_window",
+        frontend: str = "baseline",
+        temporal_fir: bool = False,
+        temporal_fir_kernel_size: int = 3,
+        temporal_fir_dilations: tuple[int, int] = (1, 2),
+        gated_initial_memory_steps: float | None = None,
     ) -> None:
         super().__init__()
         if embed_dim % 4 != 0:
@@ -47,12 +53,42 @@ class MiniQKFormer(nn.Module):
             raise ValueError(f"Unsupported readout: {readout}")
         if readout_time not in {"fixed_window", "last_event"}:
             raise ValueError(f"Unsupported readout time: {readout_time}")
+        if frontend not in {"baseline", "pyramidal"}:
+            raise ValueError(f"Unsupported front-end: {frontend}")
+        if frontend == "pyramidal" and embed_dim % 16 != 0:
+            raise ValueError("pyramidal front-end requires embed_dim divisible by 16")
+        if type(temporal_fir) is not bool:
+            raise ValueError("temporal_fir must be boolean")
+        if temporal_fir_kernel_size < 2:
+            raise ValueError("temporal_fir_kernel_size must be at least two")
+        if (
+            len(temporal_fir_dilations) != 2
+            or any(type(dilation) is not int or dilation <= 0 for dilation in temporal_fir_dilations)
+        ):
+            raise ValueError("temporal_fir_dilations must contain two positive integers")
+        if temporal_fir and not lif_cross_time:
+            raise ValueError("no-cross-time control cannot include temporal FIR memory")
+        if gated_initial_memory_steps is not None and gated_initial_memory_steps <= 1.0:
+            raise ValueError("gated_initial_memory_steps must be greater than one")
         self.num_classes = num_classes
         self.readout_name = readout
         self.readout_time = readout_time
+        self.frontend_name = frontend
+        self.temporal_fir_enabled = temporal_fir
         half = embed_dim // 2
 
-        self.patch_embed1 = InitialPatchEmbedding(in_channels, embed_dim, lif_tau, lif_threshold)
+        first_fir = temporal_fir_kernel_size if temporal_fir else None
+        frontend_class = (
+            PyramidalPatchEmbedding if frontend == "pyramidal" else InitialPatchEmbedding
+        )
+        self.patch_embed1 = frontend_class(
+            in_channels,
+            embed_dim,
+            lif_tau,
+            lif_threshold,
+            temporal_fir_kernel_size=first_fir,
+            temporal_fir_dilation=temporal_fir_dilations[0],
+        )
         self.stage1 = SpikingBlock(
             attention=TokenQKAttention(half, num_heads, lif_tau, lif_threshold),
             dim=half,
@@ -60,7 +96,14 @@ class MiniQKFormer(nn.Module):
             tau=lif_tau,
             threshold=lif_threshold,
         )
-        self.patch_embed2 = PatchEmbeddingStage(half, embed_dim, lif_tau, lif_threshold)
+        self.patch_embed2 = PatchEmbeddingStage(
+            half,
+            embed_dim,
+            lif_tau,
+            lif_threshold,
+            temporal_fir_kernel_size=first_fir,
+            temporal_fir_dilation=temporal_fir_dilations[1],
+        )
         self.stage2 = SpikingBlock(
             attention=SpikingSelfAttention(embed_dim, num_heads, lif_tau, lif_threshold),
             dim=embed_dim,
@@ -70,7 +113,9 @@ class MiniQKFormer(nn.Module):
         )
         self.head = nn.Linear(embed_dim, num_classes)
         self.gated_readout = (
-            DiagonalGatedReadout(embed_dim) if readout == "diagonal_gated" else None
+            DiagonalGatedReadout(embed_dim, gated_initial_memory_steps)
+            if readout == "diagonal_gated"
+            else None
         )
 
         for module in self.modules():

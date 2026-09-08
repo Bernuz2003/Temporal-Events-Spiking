@@ -1,86 +1,74 @@
-# Hardware notes
+# Profilazione hardware proxy
 
-**Status:** checkpoint profiler implemented; container acceptance pending; no FPGA target or
-synthesis result yet
+**Aggiornata:** 2026-09-08
 
-## Current verified capabilities
+## Cosa viene misurato
 
-`profile-checkpoint` is designed to report from a compatible `best.pt` and a deterministic
-validation subset:
+`profile-checkpoint` elabora gli stessi campioni validation e registra:
 
-- analytical Conv/Linear MAC and binary-AC potential;
-- binary-AC activity estimates from observed input density;
-- dense-potential SOP for QKTA/SSA attention;
-- LIF firing rates, FP32 runtime state size, and state accesses;
-- observed activation-buffer maxima and inference nonlinearities.
+- parametri e bit alla precisione osservata;
+- MAC multivalore potenziali di convoluzioni e layer lineari;
+- accumuli potenzialmente binari dopo spike;
+- operazioni dell'attenzione e dei moduli temporali espliciti;
+- firing rate per layer;
+- elementi/bit di stato persistente e letture/scritture stimate;
+- metadati e hash del best checkpoint.
+- stima aritmetica parziale Horowitz FP32, con termini inclusi/esclusi espliciti.
 
-The profiler deliberately emits no Horowitz energy proxy. Numeric format and hardware target are not
-fixed, so such a scalar would add apparent precision without representing measured FPGA energy.
+Per F il profiler deve contare anche confronti dei max-pooling. Per T deve esporre moltiplicazioni,
+addizioni e buffer FIR separatamente. L'identità iniziale di T non autorizza a dichiarare costo
+zero: il confronto Pareto usa il costo potenziale della struttura addestrata.
 
-## Missing accounting required by the new phase
+## Baseline osservata
 
-- selected hardware precision for weights, state and activations;
-- scheduled buffer depth and memory traffic;
-- bit shifts and exact synthesized decay/reset arithmetic;
-- BRAM/DSP expectation;
-- feedback critical path;
-- zero-skip feasibility;
-- offline, chunked and step execution semantics.
+La baseline 500k usa 16.02 Mbit di pesi FP32 e 35.19 Mbit di membrane LIF. Il primo embedding
+contiene 884,736 dei 1,099,776 elementi LIF. I MAC multivalore potenziali totali sono
+1,530,933,760; `patch_embed2.proj` ne rappresenta 754,974,720. Il firing rate aggregato del profilo
+è circa 0.0539.
 
-Current state bits, reads/writes, decay/reset operations and activation-buffer maxima describe the
-executed FP32 model. They are profiling evidence, not a synthesized memory schedule.
+Il preflight strutturale su tensori della forma DVS-Lip misura 7,088,386,560 operazioni affini
+potenziali per la baseline e 4,152,373,760 per F. F usa 477,184 elementi di stato; F+T ne usa
+542,720 e aggiunge 2,949,120 moltiplicazioni FIR, 1,966,080 addizioni FIR e 36,700,160 confronti
+di pooling. Questi valori non includono un firing rate addestrato e non sostituiscono il profilo del
+checkpoint.
 
-No stateful temporal candidate may be called hardware-efficient from parameter count or spike rate
-alone.
+## Completezza richiesta
 
-## Hardware card template
+Ogni baseline/candidata deve essere profilata dal proprio best checkpoint con schema v4 e
+`--samples 64` durante discovery. La selezione round-robin per classe, con RNG locale seed 0,
+evita il prefix ordinato che sovrarappresentava poche classi. DVS-Lip copre 64 classi su 100:
+è uno screening, non una stima esaustiva. Per la tabella finale riprofilare baseline e candidata
+con `--samples 200` (due campioni per classe, se disponibili); non servono nuovi training.
+Si confrontano stesso dataset/split, campioni, ordine e `sampling.indices_targets_sha256`.
+Un profilo mancante resta una cella
+mancante: non si copia quello di un run con capacità o attività diversa.
 
-```text
-Module:
-Purpose:
-Implementation commit:
-Input/output/event rate:
-Trainable parameters:
-Weight precision:
-Persistent state elements:
-State bit width:
-Persistent state bits:
-Reads per event/query/sample:
-Writes per event/query/sample:
-Adds:
-Multiplies:
-Comparisons:
-Bit shifts:
-Sigmoid/tanh/exp/LUT:
-Maximum buffer depth/bits:
-DSP expectation:
-BRAM expectation:
-Feedback path / critical-path risk:
-Causal:
-Natural streaming:
-Offline-step equivalence:
-Zero-skip potential and assumption:
-Quantization status and accuracy delta:
-Known synthesis risk:
-Measurement vs estimate boundary:
-```
+Esistono soltanto i profili **v1** 500k e 1M: firing rate globale rispettivamente 0.053855 e
+0.051779; binary AC activity estimate 268.67M e 572.78M per campione. Mancano 2M, NoCrossTime,
+tre readout alternativi e DVS-Gesture. `profile-runs` recupera i best presenti sul server e scrive
+`hardware_profile_v4.json`, conservando i file storici. Non confrontare v1 e v4 direttamente:
+cambiano campioni e granularità della classificazione binario/multivalore, ora a batch unitario.
+La config usata è `config_resolved.yaml` dello stesso run, inclusi gli override storici.
 
-The card is mandatory before implementing state that scales as `O(C*H*W)`.
+## Riferimento energetico Horowitz
 
-## Quantization gate
+[Horowitz, ISSCC 2014, Fig. 1.1.9](https://doi.org/10.1109/ISSCC.2014.6757323) riporta per 45 nm
+FP32 0.9 pJ/add e 3.7 pJ/multiply: usiamo 4.6 pJ/MAC e 0.9 pJ/AC. Il campo
+`energy_reference` contiene una proxy con AC potenziali e una con AC pesati per densità osservata
+all'ingresso del singolo layer. Le SOP dell'attenzione restano potenziali; nessun firing rate globale
+viene applicato indiscriminatamente. FIR e state mixing sono già nei totali elementwise e vengono
+conteggiati una sola volta. I valori sono µJ/campione e **non energia totale del modello**.
 
-Minimum evaluation for a finalist:
+Sono esclusi energia di integrazione/reset/confronto LIF, pooling, sigmoid/tanh, riduzioni del
+readout e accessi memoria/routing/leakage. I relativi contatori disponibili restano separati.
+Non inferire una vittoria energetica del gated ignorando le sue non linearità. Il traffico FIR
+assume un buffer circolare hardware; non misura le copie o gli accessi reali di PyTorch.
 
-- 8-bit weights, then 4-bit where stable;
-- 8-bit temporal/membrane state, then lower where plausible;
-- PTQ first when appropriate, QAT if needed;
-- final accuracy, prefix-AUC, firing and temporal stability reported together;
-- accuracy loss around 1–1.5 percentage points is a guideline, not a hidden pass criterion.
+## Confine delle conclusioni
 
-## Open decisions
-
-- **OPEN QUESTION:** target FPGA family, clock and memory hierarchy.
-- **OPEN QUESTION:** numeric format for accumulator and temporal state.
-- **OPEN QUESTION:** whether zeros can actually suppress memory/arithmetic in the selected datapath.
-
-Memory-energy precision must remain unset until these questions are resolved.
+Il profiler non misura energia reale, latenza, area, costo del data movement reale, sparsity supportata
+dal backend o precisione quantizzata. Le tabelle devono usare termini come `proxy`, `potenziale` e
+`stato persistente`; le affermazioni su una piattaforma richiedono deployment e misura dedicati.
+La causalità delle equazioni è valutata in inference/eval: durante training, BatchNorm aggrega
+anche l'asse temporale. `epoch_seconds` nei log misura il training, escludendo validation/prefix
+evaluation; non è un benchmark di inferenza e risente della contesa tra run sul server.

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import defaultdict
 from typing import Any
 
@@ -12,12 +14,15 @@ from torch.utils.data import DataLoader
 from etsr.models.layers import (
     InitialPatchEmbedding,
     PatchEmbeddingStage,
+    PyramidalPatchEmbedding,
     SpikingBlock,
     SpikingSelfAttention,
     TokenQKAttention,
 )
 from etsr.models.readout import DiagonalGatedReadout
 from etsr.models.spiking import MultiStepLIF
+from etsr.models.temporal import CausalTemporalFIR
+from etsr.profiling.energy import horowitz_reference
 
 
 class _HardwareProfiler:
@@ -39,6 +44,10 @@ class _HardwareProfiler:
                 hook = self._dense_hook(name)
             elif isinstance(module, MultiStepLIF):
                 hook = self._lif_hook(name)
+            elif isinstance(module, CausalTemporalFIR):
+                hook = self._temporal_fir_hook(name)
+            elif isinstance(module, nn.MaxPool2d):
+                hook = self._maxpool_hook(name)
             elif isinstance(module, DiagonalGatedReadout):
                 hook = self._gated_readout_hook(name)
             elif isinstance(  # noqa: UP038 - removed by modern Ruff; tuple form is intentional.
@@ -46,12 +55,54 @@ class _HardwareProfiler:
             ):
                 hook = self._attention_hook(name)
             elif isinstance(  # noqa: UP038 - removed by modern Ruff; tuple form is intentional.
-                module, (InitialPatchEmbedding, PatchEmbeddingStage, SpikingBlock)
+                module,
+                (InitialPatchEmbedding, PyramidalPatchEmbedding, PatchEmbeddingStage, SpikingBlock),
             ):
                 hook = self._residual_hook(name)
             else:
                 continue
             self.handles.append(module.register_forward_hook(hook))
+
+    def _maxpool_hook(self, name: str):
+        def record(module: nn.MaxPool2d, _inputs: tuple[torch.Tensor], output: torch.Tensor) -> None:
+            kernel_size = module.kernel_size
+            if isinstance(kernel_size, int):
+                kernel_elements = kernel_size**2
+            else:
+                kernel_elements = kernel_size[0] * kernel_size[1]
+            comparisons = output.numel() * (kernel_elements - 1)
+            self.layers[name]["maxpool_comparison"] += comparisons
+            self.totals["maxpool_comparison"] += comparisons
+            self._activation(output)
+
+        return record
+
+    def _temporal_fir_hook(self, name: str):
+        def record(
+            module: CausalTemporalFIR,
+            _inputs: tuple[torch.Tensor],
+            output: torch.Tensor,
+        ) -> None:
+            elements = output.numel()
+            multiplies = elements * module.kernel_size
+            additions = elements * (module.kernel_size - 1)
+            history_reads = elements * (module.kernel_size - 1)
+            layer = self.layers[name]
+            layer["temporal_fir_multiply"] += multiplies
+            layer["temporal_fir_add"] += additions
+            layer["state_reads"] += history_reads
+            layer["state_writes"] += elements
+            self.totals["temporal_fir_multiply"] += multiplies
+            self.totals["temporal_fir_add"] += additions
+            self.totals["elementwise_multiply"] += multiplies
+            self.totals["elementwise_add"] += additions
+            self.totals["state_reads"] += history_reads
+            self.totals["recurrent_state_updates"] += elements
+            state_elements = module.max_delay * output[0].numel() // output.shape[1]
+            self.state_shapes[name] = (state_elements, output.element_size() * 8)
+            self._activation(output)
+
+        return record
 
     def _dense_hook(self, name: str):
         def record(module: nn.Module, inputs: tuple[torch.Tensor], output: torch.Tensor) -> None:
@@ -219,7 +270,11 @@ class _HardwareProfiler:
                 "binary_ac_activity_estimate",
                 "attention_sop_potential",
                 "attention_scale_multiply",
+                "temporal_fir_multiply",
+                "temporal_fir_add",
+                "maxpool_comparison",
                 "elementwise_add",
+                "elementwise_multiply",
             )
         }
         per_sample["sop_potential"] = (
@@ -265,7 +320,7 @@ class _HardwareProfiler:
         state_elements = sum(elements for elements, _bits in self.state_shapes.values())
         state_bits = sum(elements * bits for elements, bits in self.state_shapes.values())
         return {
-            "schema_version": 2,
+            "schema_version": 4,
             "samples_profiled": samples,
             "parameters": {
                 "trainable_elements": sum(
@@ -294,6 +349,7 @@ class _HardwareProfiler:
                 / max(1.0, self.totals["spike_elements"]),
                 "zero_skip_assumption": "observed input density with ideal fanout skipping",
             },
+            "energy_reference": horowitz_reference(per_sample),
             "state": {
                 "persistent_state_elements": state_elements,
                 "runtime_persistent_state_bits": state_bits,
@@ -316,7 +372,7 @@ class _HardwareProfiler:
                 "causal_sequence_equations": bool(self.state_shapes),
                 "streaming_state_api": False,
                 "feedback_path": (
-                    "local LIF membrane and/or diagonal readout state from t-1 to t"
+                    "local LIF membrane, FIR delay buffer and/or diagonal readout state"
                     if self.state_shapes
                     else None
                 ),
@@ -338,7 +394,10 @@ class _HardwareProfiler:
                 "Binary AC uses observed density; attention SOP is a dense potential count.",
                 "A single activity-weighted SOP total is omitted because attention sparsity is not observed.",
                 "Memory movement, routing, control, clocking and softmax are excluded.",
-                "Energy is omitted until numeric format and hardware target are fixed.",
+                "Energy reference covers only specified arithmetic, not total hardware energy.",
+                "FIR traffic assumes a ring-buffer hardware schedule, not PyTorch copy traffic.",
+                "Max-pool comparisons include padded positions (potential upper bound).",
+                "Causality holds in eval mode; training BatchNorm aggregates time and batch.",
                 "Scheduled buffers, BRAM/DSP mapping and feedback timing remain unresolved.",
             ],
         }
@@ -362,17 +421,33 @@ def profile_model(
     model.eval()
     profiler = _HardwareProfiler(model)
     samples = 0
+    sample_indices = []
+    sample_targets = []
     try:
-        for frames, _targets, _indices in loader:
+        for frames, targets, indices in loader:
             remaining = max_samples - samples
             if remaining <= 0:
                 break
             frames = frames[:remaining].to(device, non_blocking=True)
-            profiler.batch_size = int(frames.shape[0])
-            model(frames)
+            # Observational binary classification must not depend on loader batching.
+            profiler.batch_size = 1
+            for sample in frames:
+                model(sample.unsqueeze(0))
+            sample_indices.extend(int(index) for index in indices[:remaining])
+            sample_targets.extend(int(target) for target in targets[:remaining])
             samples += int(frames.shape[0])
     finally:
         profiler.close()
     if samples == 0:
         raise ValueError("Cannot profile an empty loader.")
-    return profiler.summary(samples)
+    result = profiler.summary(samples)
+    result["sampling"] = {
+        "indices": sample_indices,
+        "targets": sample_targets,
+        "classes_observed": len(set(sample_targets)),
+        "forward_batch_size": 1,
+        "indices_targets_sha256": hashlib.sha256(
+            json.dumps([sample_indices, sample_targets]).encode()
+        ).hexdigest(),
+    }
+    return result

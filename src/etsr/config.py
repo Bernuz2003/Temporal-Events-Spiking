@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -202,6 +203,34 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError("model.readout must be mean, last or diagonal_gated")
     if model.get("readout_time", "fixed_window") not in {"fixed_window", "last_event"}:
         raise ConfigError("model.readout_time must be fixed_window or last_event")
+    frontend = model.get("frontend", "baseline")
+    if frontend not in {"baseline", "pyramidal"}:
+        raise ConfigError("model.frontend must be baseline or pyramidal")
+    embed_dim = int(model.get("embed_dim", 128))
+    if frontend == "pyramidal" and embed_dim % 16:
+        raise ConfigError("model.frontend=pyramidal requires embed_dim divisible by 16")
+    if type(model.get("temporal_fir", False)) is not bool:
+        raise ConfigError("model.temporal_fir must be boolean")
+    fir_kernel_size = model.get("temporal_fir_kernel_size", 3)
+    if type(fir_kernel_size) is not int or fir_kernel_size < 2:
+        raise ConfigError("model.temporal_fir_kernel_size must be an integer of at least two")
+    fir_dilations = model.get("temporal_fir_dilations", [1, 2])
+    if (
+        not isinstance(fir_dilations, list)
+        or len(fir_dilations) != 2
+        or any(type(dilation) is not int or dilation <= 0 for dilation in fir_dilations)
+    ):
+        raise ConfigError("model.temporal_fir_dilations must contain two positive integers")
+    if model.get("temporal_fir", False) and not model.get("lif_cross_time", True):
+        raise ConfigError("no-cross-time control cannot include temporal FIR memory")
+    gated_memory = model.get("gated_initial_memory_steps")
+    if gated_memory is not None and (
+        type(gated_memory) not in (int, float)
+        or isinstance(gated_memory, bool)
+        or gated_memory <= 1.0
+        or not math.isfinite(gated_memory)
+    ):
+        raise ConfigError("model.gated_initial_memory_steps must be greater than one")
 
     augmentation = config.get("augmentation")
     if not isinstance(augmentation, dict):
