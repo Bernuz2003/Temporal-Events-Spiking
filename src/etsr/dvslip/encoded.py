@@ -29,7 +29,7 @@ def build_dvslip_bundle(
         "phase_count_frames_e1": PhaseCountFrameEncoder,
         "temporal_binary_frames_tbr": TemporalBinaryFrameEncoder,
         "spike_tbr_lif_paper_aligned": SpikeTemporalBinaryFrameEncoder,
-        "multigranular_count_frames_mg_lite": MultiGranularCountFrameEncoder,
+        "multigranular_count_frame": MultiGranularCountFrameEncoder,
     }
     if representation_name not in encoders:
         raise ValueError(f"Unsupported DVS-Lip representation: {representation_config.get('name')}")
@@ -46,7 +46,7 @@ def build_dvslip_bundle(
     )
     if representation_name in {"count_frames_e0", "phase_count_frames_e1"}:
         encoder_arguments["count_cap"] = int(representation_config["count_cap"])
-    elif representation_name == "multigranular_count_frames_mg_lite":
+    elif representation_name == "multigranular_count_frame":
         encoder_arguments.update(
             micro_bin_width_us=int(representation_config["micro_bin_width_us"]),
             fine_spatial_stride=int(representation_config["fine_spatial_stride"]),

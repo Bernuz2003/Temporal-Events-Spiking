@@ -43,14 +43,14 @@
     il 9,82% dei voxel macro non nulli di TBR sui 64 sample diagnostici; il reset ogni 50 ms spezza
     accumuli sub-soglia. Il full può terminare per completezza, ma non si lancia una variante di
     reset: il paper non specifica la continuità e un secondo run sarebbe tuning locale.
-14. MultiGranular-Lite è ora definito e implementato come singolo candidato: E0 full-spatial a 40
-    step più count ON/OFF a 320 step e 16×16, ramo spiking `2→16→64`, riduzione temporale causale
-    depthwise 8:1 e fusione additiva prima dello stage 1. Il backbone resta a 40 step, l'input cresce
-    del 12,5%, non c'è endpoint oracle e non sono aperti sweep. È autorizzato al bounded overfit.
-15. E1 phase-count, EST, HATS, TORE/TAF, Matrix-LSTM e replica MSTP completa restano sospesi.
-16. Le quattro macchine sono capacità massima, non un obbligo a riempire una griglia. Una macchina
-    libera può eseguire il gate MultiGranular-Lite; la seconda resta libera finché F+TCAP non
-    conclude. Non si crea un'altra rappresentazione per saturarla.
+14. MultiGranular viene valutato con un solo encoder e un solo ramo configurabile. La prova di
+    capacità usa fine input 320×32×32, downsampling spaziale appreso, mixing temporale MIMO 8:1 e
+    fusione residua appresa: 480.036 parametri, ancora 20.672 sotto B. La configurazione Lite usa
+    320×16×16, riduzione depthwise e somma diretta: 433.188 parametri. Un esito negativo di Lite da
+    solo non può rigettare l'ipotesi multi-granular; Capacity misura l'utilità, Lite il limite Pareto.
+15. Prima dei full, entrambe le configurazioni devono superare backward, gradienti finiti, causalità,
+    allineamento prefix 8:1 e CUDA/AMP alla geometria DVS-Lip, oltre al bounded overfit.
+16. E1 phase-count, EST, HATS, TORE/TAF, Matrix-LSTM e replica MSTP completa restano sospesi.
 17. Quando emerge una candidata finale, baseline e candidata vengono replicate su due nuovi seed
     comuni. Si riportano media/deviazione, confronto appaiato, Acc1/Acc2, PrefixAUC e profilo del
     best. Solo allora si passa a augmentation e ottimizzazione.

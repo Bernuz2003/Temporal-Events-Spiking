@@ -49,28 +49,45 @@ def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
             expected_representation.update({"lif_beta": 0.9, "lif_threshold": 1.1})
         if config["representation"] != expected_representation:
             raise ValueError("TBR discovery is fixed to the preregistered DVS-Lip paper settings")
-    elif representation_name == "multigranular_count_frames_mg_lite":
+    elif representation_name == "multigranular_count_frame":
         reference = load_config("configs/dvslip_f.yaml")
         for section in ("dataset", "augmentation", "training", "evaluation"):
             if config.get(section) != reference.get(section):
-                raise ValueError(f"MultiGranular-Lite discovery must preserve F {section}")
-        expected_representation = {
-            "name": representation_name,
+                raise ValueError(f"Multi-granular discovery must preserve F {section}")
+        common_representation = {
             "window_us": 2_000_000,
             "bin_width_us": 50_000,
             "micro_bin_width_us": 6_250,
-            "fine_spatial_stride": 8,
             "count_cap": 255,
             "fine_count_cap": 65_535,
         }
-        expected_model = {
-            **reference["model"],
-            "multigranular_lite": True,
-            "multigranular_fine_channels": 16,
-            "multigranular_micro_steps": 8,
-        }
-        if config["representation"] != expected_representation or config["model"] != expected_model:
-            raise ValueError("MultiGranular-Lite discovery is fixed to its preregistered design")
+        allowed_designs = (
+            (
+                {"name": representation_name, **common_representation, "fine_spatial_stride": 8},
+                {
+                    **reference["model"],
+                    "multigranular": True,
+                    "multigranular_fine_channels": 16,
+                    "multigranular_temporal_groups": 64,
+                    "multigranular_fusion": "add",
+                    "multigranular_micro_steps": 8,
+                },
+            ),
+            (
+                {"name": representation_name, **common_representation, "fine_spatial_stride": 4},
+                {
+                    **reference["model"],
+                    "multigranular": True,
+                    "multigranular_fine_channels": 16,
+                    "multigranular_fine_mid_channels": 32,
+                    "multigranular_temporal_groups": 1,
+                    "multigranular_fusion": "concat_residual",
+                    "multigranular_micro_steps": 8,
+                },
+            ),
+        )
+        if (config["representation"], config["model"]) not in allowed_designs:
+            raise ValueError("Multi-granular discovery is fixed to its preregistered design")
     else:
         for section in ("dataset", "representation", "augmentation", "training", "evaluation"):
             if config.get(section) != reference.get(section):

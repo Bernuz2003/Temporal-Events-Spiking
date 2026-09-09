@@ -16,29 +16,24 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/dataset_workflow.sh dvslip check
 Il check esegue suite, lint, bytecode, shell syntax e test CUDA/AMP. Non avviare un candidato se
 fallisce. Il dataset gate completo non va ripetuto a ogni run.
 
-## Allocazione corrente dei quattro server
+## Run MultiGranular
 
 - F+TCAP e F+Spike-TBR-LIF sono già in corso: non rilanciarli.
 - F+TBR ha fallito il gate: non avviare manualmente il full.
 - La diagnostica B/PLIF è completa in
   `artifacts/dvslip_temporal_diagnostic_b_plif__20260909_v2`.
-- Una macchina libera esegue MultiGranular-Lite; la seconda resta riserva.
 
-### F+MultiGranular-Lite — gate e full condizionale
-
-Dopo avere sincronizzato il commit contenente la nuova config ed eseguito il check statico:
+Dopo avere sincronizzato il commit ed eseguito il check, avviare i due workflow indipendenti:
 
 ```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-mg-capacity42 -- candidate --config configs/dvslip_f_multigranular_capacity.yaml
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-mg-lite42 -- candidate --config configs/dvslip_f_multigranular_lite.yaml
 ```
 
-Il workflow usa E0 coarse a 40×50 ms e un ramo fine ON/OFF a 320×6,25 ms già ridotto a 16×16.
-Solo il ramo economico vede 320 step; una convoluzione temporale depthwise causale riduce 8:1 prima
-del Transformer. Il full parte da pesi nuovi soltanto se il gate standard passa. Non cambiare
-larghezza del ramo, stride spaziale, clock ratio, loss o soglia del gate.
-
-Non avviare `B+T`, E1, una variante TBR o un secondo MultiGranular-Lite sulla macchina rimasta
-libera. Il prossimo uso di quella GPU dipende dal risultato finale di F+TCAP.
+Entrambi usano `multigranular_count_frame`: cambiano soltanto i parametri dichiarati nei due YAML.
+Capacity usa fine grid 32×32, riduzione MIMO e fusione appresa; Lite usa 16×16, riduzione depthwise
+e somma. Il full parte da pesi nuovi soltanto se il gate standard passa. Non cambiare stride,
+larghezza, gruppi temporali, fusione, loss o soglia del gate dopo avere osservato il risultato.
 
 ## Monitoraggio e ripresa
 

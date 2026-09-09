@@ -1,7 +1,7 @@
 import pytest
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 from etsr.cli import build_parser
 from etsr.data.common import DatasetBundle, balanced_overfit_bundle
@@ -38,6 +38,16 @@ class _TimeStepRecorder(nn.Module):
     def forward(self, frames):
         self.observed_steps.append(frames.shape[1])
         return torch.zeros(frames.shape[0], 2)
+
+
+class _TwoRateStepRecorder(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.observed_steps = []
+
+    def forward(self, frames):
+        self.observed_steps.append((frames["coarse"].shape[1], frames["fine"].shape[1]))
+        return torch.zeros(frames["coarse"].shape[0], 2)
 
 
 def test_nonfinite_fp32_gradient_fails_before_optimizer_mutation():
@@ -314,6 +324,31 @@ def test_evaluate_limits_input_to_the_requested_temporal_prefix():
 
     assert result.samples == 3
     assert model.observed_steps == [2, 2]
+
+
+def test_evaluate_slices_multigranular_prefixes_at_the_registered_clock_ratio():
+    class TwoRateDataset(Dataset):
+        def __len__(self):
+            return 3
+
+        def __getitem__(self, index):
+            return {
+                "coarse": torch.ones(5, 2, 4, 4),
+                "fine": torch.ones(40, 2, 2, 2),
+            }, index % 2, index
+
+    model = _TwoRateStepRecorder()
+    result, _ = evaluate(
+        model,
+        DataLoader(TwoRateDataset(), batch_size=2),
+        nn.CrossEntropyLoss(),
+        torch.device("cpu"),
+        num_classes=2,
+        prefix_steps=2,
+    )
+
+    assert result.samples == 3
+    assert model.observed_steps == [(2, 16), (2, 16)]
 
 
 def test_evaluate_groups_sample_specific_prefixes_without_reordering_outputs():

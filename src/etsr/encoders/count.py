@@ -424,7 +424,7 @@ class MultiGranularCountFrameEncoder:
     allocates temporal resolution where it is cheap without using endpoint-normalized time.
     """
 
-    name = "multigranular_count_frames_mg_lite"
+    name = "multigranular_count_frame"
 
     def __init__(
         self,

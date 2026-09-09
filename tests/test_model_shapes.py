@@ -8,6 +8,7 @@ from etsr.config import load_config
 from etsr.models.factory import build_model
 from etsr.models.layers import (
     ConvBNLIF2d,
+    FineTemporalBranch,
     InitialPatchEmbedding,
     PatchEmbeddingStage,
     PyramidalPatchEmbedding,
@@ -369,6 +370,53 @@ def test_cuda_amp_candidate_backward_at_dvslip_shape(model_kwargs):
     assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters())
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires SMILIES CUDA runtime")
+@pytest.mark.parametrize(
+    "model_kwargs,fine_size",
+    [
+        (
+            {
+                "multigranular": True,
+                "multigranular_fine_channels": 16,
+                "multigranular_temporal_groups": 64,
+                "multigranular_fusion": "add",
+                "multigranular_micro_steps": 8,
+            },
+            16,
+        ),
+        (
+            {
+                "multigranular": True,
+                "multigranular_fine_channels": 16,
+                "multigranular_fine_mid_channels": 32,
+                "multigranular_temporal_groups": 1,
+                "multigranular_fusion": "concat_residual",
+                "multigranular_micro_steps": 8,
+            },
+            32,
+        ),
+    ],
+)
+def test_cuda_amp_multigranular_backward_at_dvslip_shape(model_kwargs, fine_size):
+    model = MiniQKFormer(2, 100, frontend="pyramidal", **model_kwargs).cuda().train()
+    frames = {
+        "coarse": torch.rand(1, 40, 2, 128, 128, device="cuda"),
+        "fine": torch.rand(1, 320, 2, fine_size, fine_size, device="cuda"),
+    }
+    with torch.autocast("cuda", dtype=torch.float16):
+        logits = model(frames)
+        loss = torch.nn.functional.cross_entropy(logits, torch.tensor([3], device="cuda"))
+    loss.backward()
+
+    assert logits.shape == (1, 100)
+    assert torch.isfinite(loss)
+    fine_gradients = [
+        parameter.grad for parameter in model.fine_temporal_branch.parameters()
+    ]
+    assert all(gradient is not None and torch.isfinite(gradient).all() for gradient in fine_gradients)
+    assert sum(float(gradient.abs().sum()) for gradient in fine_gradients) > 0
+
+
 def test_mean_and_last_readouts_have_explicit_temporal_semantics():
     encoded = torch.arange(3 * 2 * 4, dtype=torch.float32).reshape(3, 2, 4, 1, 1)
     mean_model = MiniQKFormer(2, 2, embed_dim=4, num_heads=1, readout="mean")
@@ -556,17 +604,19 @@ def test_multigranular_lite_keeps_main_clock_and_accepts_aligned_two_rate_input(
         embed_dim=32,
         num_heads=4,
         frontend="pyramidal",
-        multigranular_lite=True,
+        multigranular=True,
         multigranular_fine_channels=4,
+        multigranular_temporal_groups=16,
+        multigranular_fusion="add",
         multigranular_micro_steps=8,
     )
     frames = {
         "coarse": torch.rand(2, 4, 2, 32, 32),
         "fine": torch.rand(2, 32, 2, 4, 4),
     }
-    with torch.no_grad():
-        encoded = model._encode(frames)
-        logits = model(frames)
+    encoded = model._encode(frames)
+    logits = model(frames)
+    logits.square().sum().backward()
 
     assert encoded.shape[:3] == (4, 2, 32)
     assert logits.shape == (2, 5)
@@ -576,6 +626,68 @@ def test_multigranular_lite_keeps_main_clock_and_accepts_aligned_two_rate_input(
         model.fine_temporal_branch.temporal_reduce.weight,
         torch.full_like(model.fine_temporal_branch.temporal_reduce.weight, 1 / 8),
     )
+    gradients = [parameter.grad for parameter in model.fine_temporal_branch.parameters()]
+    assert all(gradient is not None and torch.isfinite(gradient).all() for gradient in gradients)
+    assert sum(float(gradient.abs().sum()) for gradient in gradients) > 0
+
+
+def test_fine_temporal_branch_cannot_propagate_future_microsteps_to_past_macros():
+    branch = FineTemporalBranch(
+        in_channels=2,
+        hidden_channels=4,
+        mid_channels=8,
+        out_channels=16,
+        micro_steps_per_macro=8,
+        temporal_groups=1,
+        tau=2.0,
+        threshold=1.0,
+    ).eval()
+    original = torch.rand(1, 32, 2, 8, 8)
+    perturbed = original.clone()
+    perturbed[:, 16:] += 100
+
+    with torch.no_grad():
+        before = branch(original)
+        after = branch(perturbed)
+
+    assert torch.equal(before[:2], after[:2])
+
+
+def test_multigranular_capacity_uses_learned_spatial_temporal_and_fusion_paths():
+    model = MiniQKFormer(
+        2,
+        5,
+        embed_dim=32,
+        num_heads=4,
+        frontend="pyramidal",
+        multigranular=True,
+        multigranular_fine_channels=4,
+        multigranular_fine_mid_channels=8,
+        multigranular_temporal_groups=1,
+        multigranular_fusion="concat_residual",
+        multigranular_micro_steps=8,
+    )
+    frames = {
+        "coarse": torch.rand(2, 4, 2, 32, 32),
+        "fine": torch.rand(2, 32, 2, 8, 8),
+    }
+    logits = model(frames)
+    logits.square().sum().backward()
+
+    assert logits.shape == (2, 5)
+    assert model.fine_temporal_branch is not None
+    assert model.fine_temporal_branch.spatial_down is not None
+    assert model.fine_temporal_branch.temporal_reduce.groups == 1
+    assert model.multigranular_fusion is not None
+    expected_reducer = torch.zeros_like(model.fine_temporal_branch.temporal_reduce.weight)
+    diagonal = torch.arange(expected_reducer.shape[0])
+    expected_reducer[diagonal, diagonal] = 1 / 8
+    torch.testing.assert_close(
+        model.fine_temporal_branch.temporal_reduce.weight, expected_reducer
+    )
+    gradients = [parameter.grad for parameter in model.fine_temporal_branch.parameters()]
+    assert all(gradient is not None and torch.isfinite(gradient).all() for gradient in gradients)
+    assert sum(float(gradient.abs().sum()) for gradient in gradients) > 0
 
 
 def test_dvslip_multigranular_config_changes_only_preregistered_f_fields():
@@ -586,7 +698,7 @@ def test_dvslip_multigranular_config_changes_only_preregistered_f_fields():
     for section in ("dataset", "augmentation", "evaluation", "training"):
         assert candidate[section] == frontend[section]
     assert candidate["representation"] == {
-        "name": "multigranular_count_frames_mg_lite",
+        "name": "multigranular_count_frame",
         "window_us": 2_000_000,
         "bin_width_us": 50_000,
         "micro_bin_width_us": 6_250,
@@ -596,7 +708,30 @@ def test_dvslip_multigranular_config_changes_only_preregistered_f_fields():
     }
     assert candidate["model"] == {
         **frontend["model"],
-        "multigranular_lite": True,
+        "multigranular": True,
         "multigranular_fine_channels": 16,
+        "multigranular_temporal_groups": 64,
+        "multigranular_fusion": "add",
         "multigranular_micro_steps": 8,
     }
+
+
+def test_dvslip_multigranular_capacity_config_stays_below_baseline_parameter_budget():
+    root = Path(__file__).parents[1]
+    frontend = load_config(root / "configs" / "dvslip_f.yaml")
+    candidate = load_config(root / "configs" / "dvslip_f_multigranular_capacity.yaml")
+
+    for section in ("dataset", "augmentation", "evaluation", "training"):
+        assert candidate[section] == frontend[section]
+    assert candidate["representation"]["fine_spatial_stride"] == 4
+    assert candidate["model"] == {
+        **frontend["model"],
+        "multigranular": True,
+        "multigranular_fine_channels": 16,
+        "multigranular_fine_mid_channels": 32,
+        "multigranular_temporal_groups": 1,
+        "multigranular_fusion": "concat_residual",
+        "multigranular_micro_steps": 8,
+    }
+    model = build_model(candidate["model"], num_classes=100)
+    assert sum(parameter.numel() for parameter in model.parameters()) == 480_036

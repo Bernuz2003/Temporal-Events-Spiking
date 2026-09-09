@@ -283,8 +283,15 @@ Il Transformer vede sempre 40 step. La rappresentazione aumenta gli elementi di 
 12,5% rispetto a E0, conserva polarità e molteplicità e non usa endpoint oracle. Il modello ha
 433.188 parametri, soltanto 2.112 più di F. Prima dell'attività misurata, il ramo aggiunge circa
 23,59 M operazioni multivalore sul count fine e 89,13 M AC potenziali su feature spiking, oltre al
-buffer causale della riduzione temporale. La configurazione è unica e preregistrata; larghezza,
+buffer causale della riduzione temporale. Questa configurazione è preregistrata; larghezza,
 stride e clock ratio non ricevono sweep.
+
+**F+MultiGranular-Capacity.** Usa lo stesso `multigranular_count_frame`, configurato con fine grid
+`320×2×32×32`. Prima della fusione riduce lo spazio con un blocco residuo appreso `16→32`, proietta
+a 64 canali, comprime ogni gruppo di otto micro-step con Conv1d MIMO `64→64` e fonde tramite
+concat-conv residua. Ha 480.036 parametri: +48.960 su F e −20.672 rispetto a B. È la prova di
+utilità della famiglia; Lite resta il confronto di compressione. I costi dipendenti dall'attività
+saranno riportati soltanto dal profilo del best.
 
 ## Snapshot dei full ancora in corso
 

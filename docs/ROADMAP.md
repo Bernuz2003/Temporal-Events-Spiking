@@ -8,7 +8,7 @@ La prima ondata è conclusa. F e TCAP hanno superato B; PLIF non migliora il pun
 ma anticipa l'emergere dell'informazione; gated-v2 è chiuso. I risultati e i profili completi sono
 in `EXPERIMENT_LEDGER.md`.
 
-## Iterazione corrente: due full in corso, una diagnosi chiusa e un nuovo gate
+## Iterazione corrente
 
 1. **F+TCAP, seed 42 — candidato principale.** Verifica se front-end efficiente e mixing temporale
    ritardato sono compatibili. È il solo run che può superare direttamente il miglior 500k corrente
@@ -20,15 +20,17 @@ in `EXPERIMENT_LEDGER.md`.
    all'epoca 38 è debole; il run termina senza aprire varianti della ricostruzione.
 4. **Diagnostica B/PLIF — completata.** PLIF anticipa le decisioni tramite persistenza profonda,
    ma nessun cutoff supera B finale. Il ramo resta un risultato di latenza senza nuovo training.
-5. **F+MultiGranular-Lite, seed 42 — nuovo candidato.** Conserva E0 e aggiunge una branch causale
-   6,25 ms a 16×16. La riduzione temporale appresa avviene prima dello stage 1; il Transformer
-   continua a elaborare 40 step. Si esegue un solo workflow gate→full condizionale.
+5. **F+MultiGranular-Capacity, seed 42 — prova di utilità.** Conserva E0 e aggiunge una branch
+   causale a 6,25 ms e 32×32, poi downsampling appreso, mixing temporale MIMO e fusione residua.
+   Rimane sotto il numero di parametri di B e verifica l'ipotesi senza compressioni premature.
+6. **F+MultiGranular-Lite, seed 42 — controllo Pareto.** Usa lo stesso encoder parametrico con
+   griglia 16×16, mixing depthwise e somma diretta. Misura quanto del segnale sopravvive nella
+   configurazione economica; un suo fallimento isolato non chiude la famiglia.
 
 Ogni full usa `candidate`: test statici del commit, bounded overfit 16×4, nuovo training da zero
 soltanto se il gate passa, valutazione e profilo v4 del best. Nessuna modifica della ricetta è
 ammessa. I full sono indipendenti sulle GPU locali `0` delle macchine fisiche. `B+T` è rinviato
-perché è la compressione depthwise di TCAP; E1 phase-count è sospeso. Una macchina resta libera:
-la capacità parallela non giustifica un quinto candidato non preregistrato.
+perché è la compressione depthwise di TCAP; E1 phase-count è sospeso.
 
 ## Decisione alla ricezione degli artifact
 
@@ -39,8 +41,10 @@ la capacità parallela non giustifica un quinto candidato non preregistrato.
 | F+TBR fallisce il gate | nessun full e nessuna variazione di bit/Δt; ramo canonico chiuso |
 | F+Spike-TBR ≥ F +2 pp F1 | promuovere il filtro LIF e riportare stato e preprocessing |
 | Spike-TBR non supera F | chiudere TBR/Spike-TBR; nessuno sweep di β, soglia o reset |
-| MultiGranular-Lite ≥ F +2 pp F1 | ramo fine in shortlist; una sola combinazione col temporal core vincente |
-| MultiGranular-Lite fallisce il gate o resta sotto +2 pp | chiudere senza sweep di branch/stride/fusione |
+| MultiGranular-Capacity ≥ F +2 pp F1 | ipotesi confermata; confrontare Lite e poi combinare una sola configurazione col temporal core vincente |
+| Capacity migliora ma Lite no | ramo utile, compressione attuale troppo aggressiva; nessuno sweep prima del freeze |
+| Capacity e Lite non superano F | chiudere questa integrazione multi-granular senza sweep |
+| Lite migliora almeno quanto Capacity | preferire Lite per il rapporto prestazione/costo |
 | PLIF stabile prima ma non a 2 s | risultato latency/dynamics; rimandare prefix supervision/halting |
 | PLIF non stabile o vantaggio dovuto alla scala | chiudere il ramo senza training |
 
@@ -71,9 +75,8 @@ quantizzazione e mappatura hardware. JEPA, predictive coding, pretraining e gran
 fuori dal budget principale.
 
 La compressione `TCAP → T depthwise` appartiene a questa fase: T è un FIR causale per-canale da
-576 coefficienti che elimina il mixing cross-channel. MultiGranular-Lite entra prima del freeze
-soltanto con la topologia chiusa descritta sopra; non vengono provate traduzioni alternative di
-MSTP.
+576 coefficienti che elimina il mixing cross-channel. Le due configurazioni MultiGranular sono
+chiuse prima dei run; non vengono aperti sweep di stride, larghezza o fusione.
 
 ## Stop rule
 

@@ -1,5 +1,5 @@
 experiment:
-  name: dvslip_f_multigranular_lite
+  name: dvslip_f_multigranular_capacity
   seed: 42
   artifact_root: artifacts
   checkpoint_root: checkpoints
@@ -18,7 +18,7 @@ representation:
   window_us: 2000000
   bin_width_us: 50000
   micro_bin_width_us: 6250
-  fine_spatial_stride: 8
+  fine_spatial_stride: 4
   count_cap: 255
   fine_count_cap: 65535
 
@@ -42,8 +42,9 @@ model:
   frontend: pyramidal
   multigranular: true
   multigranular_fine_channels: 16
-  multigranular_temporal_groups: 64
-  multigranular_fusion: add
+  multigranular_fine_mid_channels: 32
+  multigranular_temporal_groups: 1
+  multigranular_fusion: concat_residual
   multigranular_micro_steps: 8
 
 training:

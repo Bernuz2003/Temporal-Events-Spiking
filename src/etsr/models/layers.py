@@ -260,11 +260,10 @@ class PyramidalPatchEmbedding(nn.Module):
 
 
 class FineTemporalBranch(nn.Module):
-    """Cheap high-rate branch compressed to the coarse clock before token processing.
+    """Configurable high-rate branch compressed to the coarse clock before token processing.
 
-    Fine frames are already spatially pooled by the representation.  Two spiking convolutions
-    process their 6.25 ms sequence, then a channel-wise causal strided temporal convolution maps
-    every eight completed micro-steps to one 50 ms feature map.
+    ``mid_channels`` optionally enables learned residual spatial reduction; ``temporal_groups``
+    selects full or depthwise temporal mixing. Both settings share the same forward path.
     """
 
     def __init__(
@@ -275,11 +274,14 @@ class FineTemporalBranch(nn.Module):
         micro_steps_per_macro: int,
         tau: float,
         threshold: float,
+        mid_channels: int | None = None,
+        temporal_groups: int | None = None,
     ) -> None:
         super().__init__()
         if micro_steps_per_macro <= 1:
             raise ValueError("micro_steps_per_macro must be greater than one")
         self.micro_steps_per_macro = micro_steps_per_macro
+        self.mid_channels = mid_channels
         self.spatial = ConvBNLIF2d(
             in_channels,
             hidden_channels,
@@ -288,26 +290,63 @@ class FineTemporalBranch(nn.Module):
             tau=tau,
             threshold=threshold,
         )
+        self.spatial_down = (
+            ConvBNLIF2d(
+                hidden_channels,
+                mid_channels,
+                3,
+                stride=2,
+                padding=1,
+                tau=tau,
+                threshold=threshold,
+            )
+            if mid_channels is not None
+            else None
+        )
+        self.spatial_shortcut = (
+            ConvBNLIF2d(
+                hidden_channels,
+                mid_channels,
+                1,
+                stride=2,
+                tau=tau,
+                threshold=threshold,
+            )
+            if mid_channels is not None
+            else None
+        )
+        project_input = mid_channels if mid_channels is not None else hidden_channels
         self.project = ConvBNLIF2d(
-            hidden_channels,
+            project_input,
             out_channels,
             1,
             tau=tau,
             threshold=threshold,
         )
+        groups = out_channels if temporal_groups is None else temporal_groups
+        if out_channels % groups:
+            raise ValueError("temporal_groups must divide out_channels")
         self.temporal_reduce = nn.Conv1d(
             out_channels,
             out_channels,
             kernel_size=micro_steps_per_macro,
             stride=micro_steps_per_macro,
-            groups=out_channels,
+            groups=groups,
             bias=False,
         )
         self.temporal_bn = nn.BatchNorm1d(out_channels)
         self.output_lif = _lif(out_channels, tau, threshold)
 
     def initialize_temporal_reducer(self) -> None:
-        nn.init.constant_(self.temporal_reduce.weight, 1.0 / self.micro_steps_per_macro)
+        with torch.no_grad():
+            self.temporal_reduce.weight.zero_()
+            diagonal = torch.arange(self.temporal_reduce.out_channels)
+            channels_per_group = (
+                self.temporal_reduce.out_channels // self.temporal_reduce.groups
+            )
+            self.temporal_reduce.weight[
+                diagonal, diagonal.remainder(channels_per_group)
+            ] = 1.0 / self.micro_steps_per_macro
 
     def forward(self, fine_frames: torch.Tensor) -> torch.Tensor:
         if fine_frames.ndim != 5:
@@ -315,7 +354,11 @@ class FineTemporalBranch(nn.Module):
         if fine_frames.shape[1] % self.micro_steps_per_macro:
             raise ValueError("Fine time axis must contain complete macro-windows.")
         x = fine_frames.permute(1, 0, 2, 3, 4).contiguous()
-        x = self.project(self.spatial(x))
+        x = self.spatial(x)
+        if self.spatial_down is not None:
+            assert self.spatial_shortcut is not None
+            x = self.spatial_down(x) + self.spatial_shortcut(x)
+        x = self.project(x)
         micro_steps, batch, channels, height, width = x.shape
         x = x.permute(1, 3, 4, 2, 0).reshape(batch * height * width, channels, micro_steps)
         x = self.temporal_bn(self.temporal_reduce(x))

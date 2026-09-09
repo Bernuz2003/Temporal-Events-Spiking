@@ -3,7 +3,7 @@
 **Aggiornato:** 2026-09-09
 
 **Fase:** selezione strutturale avanzata; F+TCAP in corso, TBR canonico chiuso al gate,
-MultiGranular-Lite pronto
+MultiGranular configurato per prova di capacità e controllo Pareto
 
 ## Verità sperimentale corrente
 
@@ -40,8 +40,10 @@ quindi l'allineamento event-aware resta spiegazione oracle e non diventa una pol
   da 50 ms;
 - `configs/dvslip_f_spike_tbr_lif.yaml`: stesso contratto con filtro LIF paper-aligned,
   `β=0,9` e soglia `1,1`;
-- `configs/dvslip_f_multigranular_lite.yaml`: E0 coarse a 40 step più ramo count ON/OFF
-  320×16×16, compressione temporale appresa 8:1 e fusione prima dello stage 1;
+- `configs/dvslip_f_multigranular_capacity.yaml`: E0 coarse più ramo 320×32×32, downsampling
+  appreso, mixing temporale MIMO 8:1 e fusione residua appresa;
+- `configs/dvslip_f_multigranular_lite.yaml`: lo stesso encoder e ramo parametrico a 320×16×16,
+  mixing depthwise e fusione additiva;
 - comando `temporal-diagnostic`: quattro CSV, summary, config e ambiente, nessun training;
 - workflow `candidate`: blocca TBR ai valori DVS-Lip pubblicati e conserva F, ricetta,
   augmentation, split ed evaluation.
@@ -59,9 +61,9 @@ nettamente promettente; all'epoca 38 Spike-TBR è a 8,76% e soffre un input sovr
 fallito il gate pur raggiungendo accuracy quasi perfetta, perché la loss validation non è scesa
 sotto 1,5. Non si aggira il gate e non si aprono variazioni TBR.
 
-Una macchina libera può ora eseguire `F+MultiGranular-Lite` col normale workflow `candidate`. La
-topologia è chiusa: high-time/low-space causale, input denso +12,5%, Transformer ancora a 40 step.
-La seconda macchina resta riserva fino all'esito di F+TCAP; B+T è rinviato alla compressione
+Le due configurazioni MultiGranular possono ora attraversare il normale workflow `candidate`.
+Capacity è la prova falsificabile dell'ipotesi; Lite è il controllo di compressione. Entrambe sono
+causali e lasciano il Transformer principale a 40 step. B+T resta rinviato alla compressione
 post-freeze e B+E1 resta sospeso.
 
 L'official test resta inutilizzato. Tutti i nuovi full sono seed 42 e servono alla selezione; la

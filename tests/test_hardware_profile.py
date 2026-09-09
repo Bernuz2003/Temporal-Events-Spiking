@@ -172,8 +172,10 @@ def test_hardware_profile_accepts_multigranular_batches_and_counts_reducer_state
         embed_dim=32,
         num_heads=4,
         frontend="pyramidal",
-        multigranular_lite=True,
+        multigranular=True,
         multigranular_fine_channels=4,
+        multigranular_temporal_groups=16,
+        multigranular_fusion="add",
         multigranular_micro_steps=8,
     )
     profile = profile_model(

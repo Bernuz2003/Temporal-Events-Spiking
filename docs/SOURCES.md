@@ -134,12 +134,13 @@ un ramo high-rate assottigliato nei canali e convoluzioni temporali strided che 
 feature al clock low-rate prima della fusione. Quel sistema usa però voxel endpoint-normalizzati,
 ResNet-18 e GRU bidirezionale; non viene copiato integralmente.
 
-La sola topologia locale autorizzata conserva E0 `[40,2,128,128]` e aggiunge count ON/OFF causali
-`[320,2,16,16]`. Il ramo fine `2→16→64` usa LIF continui e una riduzione depthwise con kernel e
-stride 8, quindi si fonde all'uscita di F prima dello stage 1. Il Transformer rimane a 40 step e
-l'input denso cresce del 12,5%, anziché 8×. Questa è un'estrazione esplicita del principio
-high-time/low-space del paper, con una specifica unica e profilabile; non si aprono varianti di
-larghezza, stride o punto di fusione.
+L'implementazione locale usa un solo encoder `multigranular_count_frame` e un solo ramo
+parametrico. La prova di capacità conserva E0 e aggiunge count ON/OFF causali
+`[320,2,32,32]`, poi applica downsampling spaziale appreso, riduzione temporale MIMO 8:1 e fusione
+residua appresa; ha 480.036 parametri e resta sotto B. Il controllo Lite configura lo stesso codice
+con `[320,2,16,16]`, riduzione depthwise e somma diretta, per 433.188 parametri. Questa coppia
+separa la verifica del principio dal suo limite di compressione senza introdurre due moduli o due
+rappresentazioni differenti.
 
 ### Alternative rinviate
 

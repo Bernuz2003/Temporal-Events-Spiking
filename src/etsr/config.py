@@ -183,7 +183,7 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
             "phase_count_frames_e1",
             "temporal_binary_frames_tbr",
             "spike_tbr_lif_paper_aligned",
-            "multigranular_count_frames_mg_lite",
+            "multigranular_count_frame",
         }
         if dataset_label == "DVS-Lip"
         else {"count_frames_e0"}
@@ -198,7 +198,7 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
     if representation_name in {
         "count_frames_e0",
         "phase_count_frames_e1",
-        "multigranular_count_frames_mg_lite",
+        "multigranular_count_frame",
     }:
         if type(representation.get("count_cap")) is not int or representation["count_cap"] <= 0:
             raise ConfigError(f"{dataset_label} representation.count_cap must be positive")
@@ -225,18 +225,18 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
             or threshold <= 0.0
         ):
             raise ConfigError("Spike-TBR representation.lif_threshold must be positive")
-    if representation_name == "multigranular_count_frames_mg_lite":
+    if representation_name == "multigranular_count_frame":
         micro_width = representation.get("micro_bin_width_us")
         spatial_stride = representation.get("fine_spatial_stride")
         if type(micro_width) is not int or micro_width <= 0:
-            raise ConfigError("MultiGranular-Lite requires positive micro_bin_width_us")
+            raise ConfigError("MultiGranular requires positive micro_bin_width_us")
         if representation["bin_width_us"] % micro_width:
-            raise ConfigError("MultiGranular-Lite micro bins must divide the coarse bin")
+            raise ConfigError("MultiGranular micro bins must divide the coarse bin")
         if type(spatial_stride) is not int or spatial_stride <= 1:
-            raise ConfigError("MultiGranular-Lite fine_spatial_stride must exceed one")
+            raise ConfigError("MultiGranular fine_spatial_stride must exceed one")
         fine_count_cap = representation.get("fine_count_cap")
         if type(fine_count_cap) is not int or not 0 < fine_count_cap <= 65_535:
-            raise ConfigError("MultiGranular-Lite fine_count_cap must fit uint16")
+            raise ConfigError("MultiGranular fine_count_cap must fit uint16")
     model = config["model"]
     if model["name"] != "mini_qkformer":
         raise ConfigError("The active baseline requires model.name=mini_qkformer")
@@ -245,7 +245,7 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         "phase_count_frames_e1": 4,
         "temporal_binary_frames_tbr": 1,
         "spike_tbr_lif_paper_aligned": 1,
-        "multigranular_count_frames_mg_lite": 2,
+        "multigranular_count_frame": 2,
     }[representation_name]
     if int(model.get("in_channels", 0)) != expected_channels:
         raise ConfigError(
@@ -270,12 +270,13 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
     embed_dim = int(model.get("embed_dim", 128))
     if frontend == "pyramidal" and embed_dim % 16:
         raise ConfigError("model.frontend=pyramidal requires embed_dim divisible by 16")
-    multigranular = model.get("multigranular_lite", False)
+    multigranular = model.get("multigranular", False)
     if type(multigranular) is not bool:
-        raise ConfigError("model.multigranular_lite must be boolean")
-    if multigranular != (representation_name == "multigranular_count_frames_mg_lite"):
-        raise ConfigError("MultiGranular-Lite representation and model must be enabled together")
-    if multigranular:
+        raise ConfigError("model.multigranular must be boolean")
+    is_multigranular = representation_name == "multigranular_count_frame"
+    if is_multigranular != multigranular:
+        raise ConfigError("Multi-granular representation and model configuration must match")
+    if is_multigranular:
         fine_channels = model.get("multigranular_fine_channels")
         micro_steps = model.get("multigranular_micro_steps")
         expected_micro_steps = representation["bin_width_us"] // representation["micro_bin_width_us"]
@@ -286,7 +287,19 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
                 "model.multigranular_micro_steps must match the representation clock ratio"
             )
         if frontend != "pyramidal":
-            raise ConfigError("MultiGranular-Lite requires model.frontend=pyramidal")
+            raise ConfigError("Multi-granular branches require model.frontend=pyramidal")
+        mid_channels = model.get("multigranular_fine_mid_channels")
+        if mid_channels is not None and (type(mid_channels) is not int or mid_channels <= 0):
+            raise ConfigError("model.multigranular_fine_mid_channels must be positive or null")
+        temporal_groups = model.get("multigranular_temporal_groups")
+        if (
+            type(temporal_groups) is not int
+            or temporal_groups <= 0
+            or (embed_dim // 2) % temporal_groups
+        ):
+            raise ConfigError("model.multigranular_temporal_groups must divide embed_dim/2")
+        if model.get("multigranular_fusion") not in {"add", "concat_residual"}:
+            raise ConfigError("model.multigranular_fusion must be add or concat_residual")
     if type(model.get("temporal_fir", False)) is not bool:
         raise ConfigError("model.temporal_fir must be boolean")
     if type(model.get("temporal_channel_mixer", False)) is not bool:

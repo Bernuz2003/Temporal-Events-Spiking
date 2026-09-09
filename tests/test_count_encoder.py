@@ -189,6 +189,24 @@ def test_multigranular_encoder_preserves_e0_and_adds_fine_low_resolution_counts(
     assert encoded.metadata["fine_encoded_event_count"] == encoded.metadata["source_event_count"]
 
 
+def test_multigranular_encoder_uses_the_same_count_contract_at_higher_resolution():
+    encoder = MultiGranularCountFrameEncoder(
+        height=4,
+        width=4,
+        window_us=2_000_000,
+        bin_width_us=50_000,
+        micro_bin_width_us=6_250,
+        fine_spatial_stride=1,
+        count_cap=255,
+        fine_count_cap=65_535,
+    )
+    encoded = encoder(_tbr_sample())
+
+    assert encoded.representation_name == "multigranular_count_frame"
+    assert encoded.tensor["fine"].shape == (320, 2, 4, 4)
+    assert int(encoded.tensor["fine"].sum()) == len(_tbr_sample().t_us)
+
+
 def test_encoded_dataset_adapts_to_the_shared_training_batch_contract():
     class RawFixture:
         height = 4

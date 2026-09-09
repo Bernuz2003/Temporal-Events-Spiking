@@ -87,13 +87,21 @@ class _HardwareProfiler:
         ) -> None:
             ratio = module.micro_steps_per_macro
             elements = output.numel()
+            additions = elements
+            if module.mid_channels is not None:
+                additions += (
+                    elements
+                    * ratio
+                    * module.mid_channels
+                    / module.temporal_reduce.out_channels
+                )
             history_reads = elements * ratio
             history_writes = elements * ratio
             layer = self.layers[name]
-            layer["elementwise_add"] += elements
+            layer["elementwise_add"] += additions
             layer["state_reads"] += history_reads
             layer["state_writes"] += history_writes
-            self.totals["elementwise_add"] += elements
+            self.totals["elementwise_add"] += additions
             self.totals["state_reads"] += history_reads
             self.totals["recurrent_state_updates"] += history_writes
             state_elements = (ratio - 1) * output[0].numel() // output.shape[1]

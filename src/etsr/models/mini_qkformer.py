@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from etsr.models.layers import (
+    ConvBNLIF2d,
     FineTemporalBranch,
     InitialPatchEmbedding,
     PatchEmbeddingStage,
@@ -45,8 +46,11 @@ class MiniQKFormer(nn.Module):
         temporal_channel_mixer_delays: tuple[int, ...] = (1, 2, 4),
         learnable_lif_tau: bool = False,
         gated_initial_memory_steps: float | None = None,
-        multigranular_lite: bool = False,
+        multigranular: bool = False,
         multigranular_fine_channels: int = 16,
+        multigranular_fine_mid_channels: int | None = None,
+        multigranular_temporal_groups: int | None = None,
+        multigranular_fusion: str = "add",
         multigranular_micro_steps: int = 8,
     ) -> None:
         super().__init__()
@@ -90,12 +94,23 @@ class MiniQKFormer(nn.Module):
             raise ValueError("temporal channel mixer delays must be increasing positive integers")
         if gated_initial_memory_steps is not None and gated_initial_memory_steps <= 1.0:
             raise ValueError("gated_initial_memory_steps must be greater than one")
-        if type(multigranular_lite) is not bool:
-            raise ValueError("multigranular_lite must be boolean")
-        if multigranular_lite and frontend != "pyramidal":
-            raise ValueError("multigranular_lite requires the pyramidal front-end")
+        if type(multigranular) is not bool:
+            raise ValueError("multigranular must be boolean")
+        if multigranular and frontend != "pyramidal":
+            raise ValueError("multi-granular branches require the pyramidal front-end")
         if multigranular_fine_channels <= 0:
             raise ValueError("multigranular_fine_channels must be positive")
+        if (
+            multigranular_fine_mid_channels is not None
+            and multigranular_fine_mid_channels <= 0
+        ):
+            raise ValueError("multigranular_fine_mid_channels must be positive or null")
+        if multigranular_temporal_groups is not None and multigranular_temporal_groups <= 0:
+            raise ValueError("multigranular_temporal_groups must be positive or null")
+        if multigranular_fusion not in {"add", "concat_residual"}:
+            raise ValueError("multigranular_fusion must be add or concat_residual")
+        if not multigranular and multigranular_fusion != "add":
+            raise ValueError("A learned multi-granular fusion requires multigranular=true")
         if multigranular_micro_steps <= 1:
             raise ValueError("multigranular_micro_steps must be greater than one")
         self.num_classes = num_classes
@@ -105,7 +120,8 @@ class MiniQKFormer(nn.Module):
         self.temporal_fir_enabled = temporal_fir
         self.temporal_channel_mixer_enabled = temporal_channel_mixer
         self.learnable_lif_tau_enabled = learnable_lif_tau
-        self.multigranular_lite_enabled = multigranular_lite
+        self.multigranular_enabled = multigranular
+        self.multigranular_fusion_name = multigranular_fusion
         half = embed_dim // 2
 
         first_fir = temporal_fir_kernel_size if temporal_fir else None
@@ -131,8 +147,21 @@ class MiniQKFormer(nn.Module):
                 micro_steps_per_macro=multigranular_micro_steps,
                 tau=lif_tau,
                 threshold=lif_threshold,
+                mid_channels=multigranular_fine_mid_channels,
+                temporal_groups=multigranular_temporal_groups,
             )
-            if multigranular_lite
+            if self.multigranular_enabled
+            else None
+        )
+        self.multigranular_fusion = (
+            ConvBNLIF2d(
+                embed_dim,
+                half,
+                1,
+                tau=lif_tau,
+                threshold=lif_threshold,
+            )
+            if multigranular and multigranular_fusion == "concat_residual"
             else None
         )
         self.stage1 = SpikingBlock(
@@ -189,13 +218,13 @@ class MiniQKFormer(nn.Module):
 
     def _encode(self, frames: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
         if isinstance(frames, dict):
-            if not self.multigranular_lite_enabled or set(frames) != {"coarse", "fine"}:
-                raise ValueError("A coarse/fine input requires multigranular_lite.")
+            if not self.multigranular_enabled or set(frames) != {"coarse", "fine"}:
+                raise ValueError("A coarse/fine input requires a multi-granular branch.")
             coarse_frames = frames["coarse"]
             fine_frames = frames["fine"]
         else:
-            if self.multigranular_lite_enabled:
-                raise ValueError("multigranular_lite requires coarse and fine input streams.")
+            if self.multigranular_enabled:
+                raise ValueError("A multi-granular branch requires coarse and fine input streams.")
             coarse_frames = frames
             fine_frames = None
         if coarse_frames.ndim != 5:
@@ -209,7 +238,11 @@ class MiniQKFormer(nn.Module):
                 raise ValueError(
                     f"Fine branch output {tuple(fine.shape)} does not match coarse {tuple(x.shape)}."
                 )
-            x = x + fine
+            if self.multigranular_fusion_name == "concat_residual":
+                assert self.multigranular_fusion is not None
+                x = x + self.multigranular_fusion(torch.cat((x, fine), dim=2))
+            else:
+                x = x + fine
         x = self.stage1(x)
         x = self.patch_embed2(x)
         return self.stage2(x)
