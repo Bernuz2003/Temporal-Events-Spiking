@@ -25,6 +25,23 @@ from etsr.utils.io import ensure_dir, sha256_file, write_csv, write_json
 READOUT_SCHEMES = ("prefix_mean", "fixed_horizon_denominator")
 
 
+def deterministic_prefix_sum(values: torch.Tensor) -> torch.Tensor:
+    """Build causal prefix sums without CUDA's nondeterministic ``cumsum`` kernel.
+
+    The diagnostic has only 40 steps. A fixed-order sequence of elementwise additions preserves
+    strict deterministic mode at negligible cost relative to the model forward.
+    """
+
+    if values.ndim == 0 or values.shape[0] == 0:
+        raise ValueError("values must have a non-empty time dimension")
+    running = torch.zeros_like(values[0])
+    prefixes = []
+    for current in values.unbind(0):
+        running = running + current
+        prefixes.append(running)
+    return torch.stack(prefixes, dim=0)
+
+
 def temporal_readout_logits(
     encoded: torch.Tensor, head: nn.Module
 ) -> dict[str, torch.Tensor]:
@@ -38,7 +55,7 @@ def temporal_readout_logits(
     if encoded.ndim != 5 or encoded.shape[0] == 0:
         raise ValueError("encoded must be a non-empty [T, B, C, H, W] tensor")
     spatial = encoded.mean(dim=(3, 4))
-    cumulative = spatial.cumsum(dim=0)
+    cumulative = deterministic_prefix_sum(spatial)
     prefix_denominators = torch.arange(
         1, encoded.shape[0] + 1, device=encoded.device, dtype=encoded.dtype
     ).view(-1, 1, 1)

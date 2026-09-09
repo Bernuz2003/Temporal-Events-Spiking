@@ -3,9 +3,20 @@ import torch
 from torch import nn
 
 from etsr.evaluation.temporal_diagnostic import (
+    deterministic_prefix_sum,
     gather_temporal_values,
     temporal_readout_logits,
 )
+
+
+def test_prefix_sum_uses_fixed_order_and_matches_reference():
+    values = torch.tensor([[1.0, 2.0], [3.0, -1.0], [0.5, 4.0]])
+
+    result = deterministic_prefix_sum(values)
+
+    assert torch.equal(result, torch.tensor([[1.0, 2.0], [4.0, 1.0], [4.5, 5.0]]))
+    with pytest.raises(ValueError, match="non-empty time"):
+        deterministic_prefix_sum(torch.empty(0, 2))
 
 
 def test_temporal_readout_decomposes_prefix_normalization_from_tail_activity():
