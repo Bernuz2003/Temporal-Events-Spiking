@@ -116,6 +116,36 @@ def test_structural_candidates_preserve_shape_backward_and_expected_parameter_bu
     logits.mean().backward()
     assert all(parameter.grad is not None for parameter in small.parameters())
 
+    combined = MiniQKFormer(
+        in_channels=2,
+        num_classes=100,
+        embed_dim=128,
+        num_heads=8,
+        frontend="pyramidal",
+        temporal_channel_mixer=True,
+    )
+    assert sum(parameter.numel() for parameter in combined.parameters()) == 492_516
+
+
+def test_f_tcap_starts_as_the_exact_pyramidal_frontend():
+    torch.manual_seed(23)
+    frontend = MiniQKFormer(
+        2, 5, embed_dim=16, num_heads=4, frontend="pyramidal"
+    ).eval()
+    torch.manual_seed(23)
+    combined = MiniQKFormer(
+        2,
+        5,
+        embed_dim=16,
+        num_heads=4,
+        frontend="pyramidal",
+        temporal_channel_mixer=True,
+    ).eval()
+    frames = torch.rand(2, 5, 2, 16, 16)
+
+    with torch.no_grad():
+        assert torch.equal(frontend(frames), combined(frames))
+
 
 def test_temporal_fir_keeps_the_initial_model_function_unchanged():
     torch.manual_seed(7)
@@ -451,6 +481,11 @@ def test_dvslip_candidate_configs_change_only_the_declared_architecture():
             "temporal_fir_kernel_size": 3,
             "temporal_fir_dilations": [1, 2],
         },
+        "dvslip_f_temporal_capacity.yaml": {
+            "frontend": "pyramidal",
+            "temporal_channel_mixer": True,
+            "temporal_channel_mixer_delays": [1, 2, 4],
+        },
         "dvslip_b_t.yaml": {
             "temporal_fir": True,
             "temporal_fir_kernel_size": 3,
@@ -463,3 +498,52 @@ def test_dvslip_candidate_configs_change_only_the_declared_architecture():
         for section in ("dataset", "representation", "augmentation", "evaluation", "training"):
             assert config[section] == baseline[section]
         assert config["model"] == {**baseline["model"], **model_delta}
+
+
+def test_dvslip_phase_representation_changes_only_input_measurement_and_channels():
+    root = Path(__file__).parents[1]
+    baseline = load_config(root / "configs" / "dvslip_e0.yaml")
+    phase = load_config(root / "configs" / "dvslip_b_phase_e1.yaml")
+
+    for section in ("dataset", "augmentation", "evaluation", "training"):
+        assert phase[section] == baseline[section]
+    assert phase["representation"] == {
+        **baseline["representation"],
+        "name": "phase_count_frames_e1",
+    }
+    assert phase["model"] == {**baseline["model"], "in_channels": 4}
+    model = build_model(phase["model"], num_classes=100)
+    assert sum(parameter.numel() for parameter in model.parameters()) == 501_284
+
+
+@pytest.mark.parametrize(
+    "filename,name,extra",
+    [
+        ("dvslip_f_tbr.yaml", "temporal_binary_frames_tbr", {}),
+        (
+            "dvslip_f_spike_tbr_lif.yaml",
+            "spike_tbr_lif_paper_aligned",
+            {"lif_beta": 0.9, "lif_threshold": 1.1},
+        ),
+    ],
+)
+def test_dvslip_tbr_candidates_change_only_f_representation_and_input_channels(
+    filename, name, extra
+):
+    root = Path(__file__).parents[1]
+    frontend = load_config(root / "configs" / "dvslip_f.yaml")
+    candidate = load_config(root / "configs" / filename)
+
+    for section in ("dataset", "augmentation", "evaluation", "training"):
+        assert candidate[section] == frontend[section]
+    assert candidate["representation"] == {
+        "name": name,
+        "window_us": 2_000_000,
+        "bin_width_us": 50_000,
+        "micro_bin_width_us": 6_250,
+        "bits": 8,
+        **extra,
+    }
+    assert candidate["model"] == {**frontend["model"], "in_channels": 1}
+    model = build_model(candidate["model"], num_classes=100)
+    assert sum(parameter.numel() for parameter in model.parameters()) == 431_004

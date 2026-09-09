@@ -1,68 +1,81 @@
 # Roadmap decisiva
 
-**Aggiornata:** 2026-09-08
+**Aggiornata:** 2026-09-09
 
-## Gate 0 — nessun training lungo
+## Stato del discovery
 
-Per ogni candidato sono obbligatori: test di forma e backward, causalità, equivalenza tra
-elaborazione sequenziale e step, conteggio parametri/stato/operazioni, e bounded overfit sullo
-stesso subset.
-Un candidato che fallisce viene riparato una volta; non riceve un full run finché il difetto resta.
+La prima ondata è conclusa. F e TCAP hanno superato B; PLIF non migliora il punto operativo finale
+ma anticipa l'emergere dell'informazione; gated-v2 è chiuso. I risultati e i profili completi sono
+in `EXPERIMENT_LEDGER.md`.
 
-## Selezione strutturale — prove indipendenti
+## Iterazione corrente: tre run ad alto ROI e una diagnostica
 
-1. **F e gated-v2, seed 42**, indipendenti e parallelizzabili, ciascuno dopo il proprio overfit.
-   F isola il front-end; gated-v2 corregge l'inizializzazione sul backbone baseline, a fixed window.
-   Non aggiungere last-event, FIR o augmentation al rilancio gated.
-2. **B+TCAP, seed 42:** MIMO FIR con ritardi 1/2/4 nei due punti a bassa risoluzione. È la prova di
-   capacità dell'interazione temporale esplicita, non la candidata hardware finale.
-3. **B+PLIF, seed 42:** τ apprendibile per feature channel/head in tutti i LIF. Isola l'adattività
-   della memoria neuronale senza aggiungere buffer o trasformazioni del backbone.
-4. I quattro rami rispondono a ipotesi distinte. Possono occupare quattro server fisici senza
-   attendere F; il parallelismo non autorizza altre combinazioni o sweep.
+1. **F+TCAP, seed 42 — candidato principale.** Verifica se front-end efficiente e mixing temporale
+   ritardato sono compatibili. È il solo run che può superare direttamente il miglior 500k corrente
+   combinando due segnali locali positivi.
+2. **F+TBR, seed 42 — rappresentazione canonica.** Usa 8 bit e micro-bin da 6,25 ms: ogni frame
+   copre gli stessi 50 ms di E0 e il backbone continua a elaborare 40 step. Il confronto con F
+   misura il valore dell'occupazione temporale intra-bin compressa.
+3. **F+Spike-TBR-LIF, seed 42 — filtro della rappresentazione.** Aggiunge al punto 2 un LIF
+   per-pixel con i valori DVS-Lip pubblicati `β=0,9` e soglia `1,1`. Il confronto TBR/Spike-TBR
+   misura il valore del filtro dinamico a parità di F e forma dell'input.
+4. **Diagnostica B/PLIF — zero training.** Valuta ogni bin e la coda event-aligned, separando
+   denominatore del mean e attività ricorrente. Non seleziona iperparametri e non compete per il
+   budget di full training dopo l'esecuzione.
 
-Ogni punto include profiling v4 del best checkpoint sugli stessi 64 campioni validation, con
-campionamento per classe e seed fisso del profiler. Prima rigenerare anche i riferimenti storici.
-Il costo decide quale modifica replicare quando le metriche sono vicine.
+Ogni full usa `candidate`: test statici del commit, bounded overfit 16×4, nuovo training da zero
+soltanto se il gate passa, valutazione e profilo v4 del best. Nessuna modifica della ricetta è
+ammessa. I tre full sono indipendenti e possono essere avviati sulle GPU locali `0` di tre
+macchine fisiche. La quarta esegue la diagnostica breve e rimane riserva. `B+T` è rinviato perché
+è la compressione depthwise di TCAP; E1 phase-count è sospeso perché è una variazione locale a ROI
+inferiore rispetto alle rappresentazioni con evidenza diretta DVS-Lip.
 
-## Decisione dopo i quattro rami
+## Decisione alla ricezione degli artifact
 
-- Se TCAP migliora di almeno +2 punti Macro-F1, comprimerlo: prima FIR depthwise T; un solo livello
-  intermedio cross-channel è ammesso soltanto se T perde il segnale.
-- Se PLIF migliora, trasferirlo su F soltanto se F resta Pareto-competitiva.
-- Se entrambi migliorano, confrontarli separatamente e combinarli soltanto se una replica o
-  un'analisi per layer indica complementarità; il primo seed non basta.
-- Se TCAP fallisce, non eseguire la scala di compressione. Se PLIF fallisce, non provare altri τ,
-  subset di layer o inizializzazioni durante discovery.
-- Se F raggiunge almeno 46.15 Macro-F1, trasferire il miglior meccanismo temporale su F. Anche un F
-  entro −0.5 punti dalla baseline, con almeno −25% operazioni affini e stato, può ricevere un solo
-  tentativo di recupero.
+| Evidenza | Decisione |
+|---|---|
+| F+TCAP > TCAP e > F | finalista prestazionale; confrontare costo misurato con B e F |
+| F+TCAP non supera TCAP | non assumere additività; TCAP resta finalista e F resta Pareto efficiente |
+| F+TBR ≥ F +2 pp F1 | TBR entra nella shortlist; una sola combinazione col temporal core vincente |
+| F+TBR < F +2 pp | nessuna variazione di bit/Δt; interpretare Spike-TBR prima di chiudere la famiglia |
+| F+Spike-TBR ≥ F+TBR +2 pp | promuovere il filtro LIF e riportare stato e preprocessing |
+| Spike-TBR non supera TBR | conservare TBR; nessuno sweep di β o soglia nella discovery |
+| PLIF stabile prima ma non a 2 s | risultato latency/dynamics; rimandare prefix supervision/halting |
+| PLIF non stabile o vantaggio dovuto alla scala | chiudere il ramo senza training |
 
-## Conferma
+La soglia di 2 pp serve a impedire combinazioni su rumore single-seed. Un candidato sotto soglia può
+restare scientificamente interessante senza ricevere un altro full.
 
-Quando esiste una candidata:
+## Conferma dell'architettura
 
-1. replicare baseline e candidata con due seed nuovi comuni;
-2. riportare media, deviazione e valori per seed di Macro-F1/accuracy;
-3. confrontare predizioni appaiate, Acc1/Acc2, confusioni e curve di latenza causale;
-4. completare il confronto Pareto con parametri, stato persistente, operazioni potenziali, firing
-   rate e traffico di stato.
+Dopo questa iterazione si selezionano al massimo due finalisti: uno prestazionale e, solo se diverso,
+uno Pareto per efficienza. Per ciascun confronto confermativo:
 
-Il nucleo aggiornato è 4 run indipendenti di discovery: F, gated-v2, B+TCAP e B+PLIF. La successiva
-compressione/trasferimento usa al massimo due run condizionali. Seguono le repliche comuni soltanto
-dei finalisti; l'eventuale ablazione mancante non è un impegno automatico.
-Non combinare automaticamente F+T+gated: richiede evidenza che distingua il contributo dei moduli.
+1. eseguire baseline e candidata con due seed nuovi comuni;
+2. riportare valori per seed, media e deviazione di Macro-F1/accuracy;
+3. confrontare predizioni appaiate, Acc1/Acc2, confusioni e curve temporali;
+4. profilare il best di ciascun seed o almeno dichiarare il piano di campionamento coerente;
+5. congelare front-end, temporal core, rappresentazione e readout.
+
+Quattro run comuni bastano per una candidata: B e candidata × due seed. Se rimangono due finalisti,
+si usa prima il seed di discovery e l'evidenza Pareto per eliminarne uno; non si raddoppia
+automaticamente la campagna.
 
 ## Dopo il freeze
 
-Augmentation e convergenza si provano sulla candidata congelata con una baseline di controllo.
-La prima coppia ammessa è la ricetta già implementata di temporal masking più spatial erasing. Si
-prosegue solo se migliora la validation senza degradare la curva di latenza. Quantizzazione e
-teacher leggeri vengono dopo; pretraining, JEPA, predictive coding e grandi teacher restano fuori
-dal budget principale.
+La prima ottimizzazione confronta la medesima augmentation su baseline congelata e candidata:
+temporal masking più spatial erasing già implementati. Poi, in ordine e con stop dopo il primo
+fallimento: regolarizzazione/convergenza mirata, eventuale distillazione da teacher leggero,
+quantizzazione e mappatura hardware. JEPA, predictive coding, pretraining e grandi teacher restano
+fuori dal budget principale.
+
+La compressione `TCAP → T depthwise` appartiene a questa fase: T è un FIR causale per-canale da
+576 coefficienti che elimina il mixing cross-channel. MultiGranular-Lite entra prima del freeze
+solo se TBR/Spike-TBR confermano il collo di bottiglia intra-bin e dopo una specifica chiusa di
+topologia, fusione, stato e operazioni; non si traduce il principio MSTP in un ramo arbitrario.
 
 ## Stop rule
 
-Si congela la migliore soluzione confermata quando un nuovo run non può più distinguere tra le due
-ipotesi finaliste o quando il guadagno atteso non giustifica una replica multi-seed. Non si spendono
-run per scegliere valori fini di clipping o learning rate prima del freeze.
+Si congela quando una modifica ulteriore non distingue un collo di bottiglia già osservato o quando
+richiede uno sweep per essere definita. Non si cercano valori fini di clipping, learning rate,
+numero di bin, τ, tap o soglie di early exit durante la discovery.

@@ -1,6 +1,6 @@
 # Fonti e selezione delle famiglie architetturali
 
-**Aggiornato:** 2026-09-08
+**Aggiornato:** 2026-09-09
 
 I punteggi pubblicati non sono direttamente confrontabili con la development validation locale:
 molti lavori selezionano sul test ufficiale, usano crop/binning/augmentation diversi o modelli molto
@@ -24,11 +24,12 @@ più grandi. Le fonti motivano i meccanismi da testare; non forniscono una sogli
 
 Il FIR depthwise T da 576 coefficienti resta una candidata di compressione, ma è troppo vincolato
 per rigettare da solo l'utilità di una memoria esplicita: ogni canale può soltanto filtrare la
-propria storia. Il proof-of-usefulness usa quindi un **MIMO multi-delay causale** nei medesimi due
+propria storia. Il proof-of-usefulness ha quindi usato un **MIMO multi-delay causale** nei medesimi due
 punti a bassa risoluzione. Per ogni ritardo `d ∈ {1,2,4}`, una matrice `C×C` proietta esclusivamente
 `x[t-d]`; il percorso corrente resta identità. È una sonda locale ispirata al principio multi-delay,
 non una riproduzione di MD-Mixer o chwPSN. L'inizializzazione nulla delle matrici garantisce
-equivalenza iniziale con la baseline e impedisce capacità statica aggiuntiva.
+equivalenza iniziale con la baseline e impedisce capacità statica aggiuntiva. TCAP ha prodotto
++3,97 pp F1; T resta la compressione post-freeze e non riceve budget nella selezione prestazionale.
 
 [Fang et al., ICCV 2021](https://openaccess.thecvf.com/content/ICCV2021/html/Fang_Incorporating_Learnable_Membrane_Time_Constant_To_Enhance_Learning_of_Spiking_ICCV_2021_paper.html)
 motiva PLIF e parametrizza `1/τ = sigmoid(w)`. La variante locale usa un `w` per feature channel
@@ -39,16 +40,16 @@ reset e surrogate della baseline, non aggiunge stato e rende profilabile la dist
 
 | Famiglia | Evidenza utile | Rischio nel nostro protocollo | Decisione e trigger |
 |---|---|---|---|
-| **PSN channel-wise** | evidenza diretta DVS-Lip; memoria temporale di ordine basso | il risultato pubblicato confonde neuron model, Conv3d iniziale, backbone e readout | T copre la versione compressa; TCAP verifica prima se capacità cross-channel ritardata è utile |
-| **PLIF** | [Fang et al. 2021](https://arxiv.org/abs/2007.05785): costante di tempo apprendibile e minore sensibilità all'inizializzazione su benchmark neuromorfici | può produrre un guadagno piccolo e diffuso senza risolvere l'embedding | **Run indipendente:** un τ per feature channel/head su tutti i LIF |
+| **PSN channel-wise** | evidenza diretta DVS-Lip; memoria temporale di ordine basso | il risultato pubblicato confonde neuron model, Conv3d iniziale, backbone e readout | TCAP è positivo; T viene rivalutato soltanto come compressione post-freeze |
+| **PLIF** | [Fang et al. 2021](https://arxiv.org/abs/2007.05785): costante di tempo apprendibile e minore sensibilità all'inizializzazione su benchmark neuromorfici | il run locale chiude a −0,47 pp F1 ma anticipa la performance ai prefissi | nessun nuovo training; sola diagnostica checkpoint-only B/PLIF |
 | **PMSN** | confronto DVS-Lip favorevole in [Neuromorphic Sequential Arena](https://arxiv.org/abs/2505.22035) | modello pubblicato circa 9.5M, readout/dense head e protocollo diversi; dinamica parallelizzata meno naturale per streaming stateful | nessun run ora; rivalutare solo se T aiuta molto e serve una memoria temporale più lunga |
-| **GRU / SpikGRU** | [SpikGRU2+](https://openaccess.thecvf.com/content/CVPR2024W/EVW/html/Dampfhoffer_Neuromorphic_Lip-Reading_With_Signed_Spiking_Gated_Recurrent_Units_CVPRW_2024_paper.html) mostra che la ricorrenza gated è forte su DVS-Lip | sistema bidirezionale da decine di milioni di parametri, 90 bin e augmentation forte; il nostro gated globale storico è invalido | prima recuperare il piccolo readout causale con init verificata; GRU compatta solo se quel gate conserva memoria e migliora l'overfit |
+| **GRU / SpikGRU** | [SpikGRU2+](https://openaccess.thecvf.com/content/CVPR2024W/EVW/html/Dampfhoffer_Neuromorphic_Lip-Reading_With_Signed_Spiking_Gated_Recurrent_Units_CVPRW_2024_paper.html) mostra che la ricorrenza gated è forte su DVS-Lip | sistema bidirezionale da decine di milioni di parametri, 90 bin e augmentation forte | gated-v2 corretto ha fallito il gate: nessun GRU run nella discovery corrente |
 | **LMU** | [LMUFormer](https://arxiv.org/abs/2402.04882) mostra memoria compatta, training parallelo e inferenza streaming su task di sequenza e speech | nessuna evidenza diretta DVS-Lip; ordine e finestra di memoria aprirebbero nuove scelte e l'integrazione richiederebbe una nuova architettura | fuori dal budget corrente; considerare soltanto se emerge una dipendenza lunga che FIR/PLIF non catturano |
 | **Mamba** | modelli state-space efficaci su sequenze; [TVTA 2026](https://arxiv.org/abs/2607.08236) usa un modulo Mamba su DVS-Lip | il risultato DVS-Lip usa Mamba bidirezionale, supervisione visemica e un sistema più ampio; costo e causalità cambiano | rinviato; non è un'ablazione minima del modello corrente |
 
-Questa graduatoria evita una matrice di neuron model: TCAP testa il mixing ritardato, T resta il
-target di compressione, PLIF testa l'adattività della memoria neuronale e gated-v2 il readout.
-PMSN, LMU, Mamba e GRU richiedono ancora evidenza locale prima di ricevere budget.
+Questa graduatoria evita una matrice di neuron model: TCAP ha stabilito l'utilità del mixing
+ritardato, T è rinviato e PLIF resta una diagnosi di dinamica. Gated-v2, PMSN, LMU, Mamba e GRU non
+ricevono altro budget nella discovery corrente.
 
 ## Riferimenti DVS-Lip e protocollo
 
@@ -69,3 +70,84 @@ precisioni, gerarchia di memoria e misure su una piattaforma dichiarata.
 
 [Horowitz, ISSCC 2014](https://doi.org/10.1109/ISSCC.2014.6757323), Fig. 1.1.9, fornisce il
 riferimento aritmetico FP32 usato dalla proxy energetica v4; formule e limiti in `HARDWARE_NOTES.md`.
+
+## Rappresentazione degli eventi: decisione del 2026-09-09
+
+La rappresentazione non viene più trattata come un dettaglio fisso. E0 somma ON/OFF in 40 finestre
+fisiche da 50 ms e perde l'ordine degli eventi dentro ogni finestra. L'aumento diretto di T non è
+una soluzione economica: nel modello corrente replica quasi tutte le dinamiche LIF, le operazioni e
+il traffico di stato per un numero maggiore di step.
+
+### Fact-check TBR e Spike-TBR
+
+Il [paper TBR originale, ICPR 2020/2021](https://fedebecat.github.io/assets/papers/innocenti2021temporal.pdf)
+definisce `N` mappe binarie di occupazione: un pixel vale uno se contiene almeno un evento nel
+micro-intervallo. Le `N` mappe vengono interpretate come una stringa binaria, col micro-intervallo
+più recente come bit più significativo, convertite in un valore e normalizzate per `2^N−1`. La
+compattazione è lossless soltanto rispetto alle mappe di occupazione alla risoluzione `Δt`; perde
+polarità e molteplicità degli eventi nello stesso pixel/micro-bin.
+
+Il [paper Spike-TBR, Pattern Recognition Letters 2025](https://flore.unifi.it/retrieve/01bfd173-dd09-4d1a-9950-bc884e6400db/2506.04817v2.pdf)
+conferma per DVS-Lip:
+
+- `N=8` in tutti gli esperimenti;
+- `Δt=6,25 ms` per DVS-Lip, scelto perché lo stream è più sparso;
+- quindi `ΔT=NΔt=50 ms`, coincidente esattamente con il macro-bin E0 locale;
+- accuracy TBR `70,00%` e Spike-TBR-LIF `75,91%` nello stesso classificatore I3D, delta `+5,91 pp`;
+- `β=0,9` selezionato su validation per DVS-Lip e soglia LIF `1,1`;
+- LIF `75,91%`, RecLIF `74,45%`, LRLIF `71,53%`, PLIF `74,45%` sul dato pulito.
+
+Il delta è accuracy del protocollo del paper, non Macro-F1 locale, e non è confrontabile coi nostri
+punteggi development. Il paper non fornisce un repository ufficiale e l'algoritmo lascia non
+completamente specificati `w(p)` e la continuità della membrana tra finestre `ΔT`. La variante
+locale Spike-TBR è pertanto registrata come **paper-aligned reconstruction**: ignora la polarità,
+usa i count per micro-bin come input, reset hard e reinizializza la membrana a ogni macro-finestra,
+coerentemente con l'inizializzazione per `ΔT` dell'algoritmo. Queste scelte sono salvate nella config
+e nei metadata e non saranno oggetto di sweep.
+
+I due run usano F come substrato. Entrambi producono `[40,1,H,W]`; il Transformer continua a
+elaborare 40 step. F+TBR misura il valore del timing intra-bin compresso; F+Spike-TBR misura il
+valore aggiunto dal filtro LIF a parità di shape e backbone. Non si usa una variante ON/OFF locale,
+perché non sarebbe la rappresentazione alla quale si riferisce l'evidenza pubblicata.
+
+### Multi-granularity
+
+[MSTP, CVPR 2022](https://openaccess.thecvf.com/content/CVPR2022/papers/Tan_Multi-Grained_Spatio-Temporal_Features_Perceived_Network_for_Event-Based_Lip-Reading_CVPR_2022_paper.pdf)
+fornisce evidenza diretta che DVS-Lip beneficia di rami a granularità diversa: il ramo a basso frame
+rate conserva struttura spaziale completa e quello ad alto frame rate privilegia dettaglio
+temporale con rappresentazione spaziale più economica, poi un message-flow integra le feature.
+Questo è diverso da TBR: TBR comprime deterministicamente otto occupazioni in un valore prima del
+modello; un ramo multi-granular elabora esplicitamente i micro-step e apprende la compressione.
+
+MultiGranular-Lite resta ad alto potenziale, ma non è ancora un run valido. Una versione locale
+richiede scelte nuove su larghezza, downsampling, condivisione dei pesi, operatore temporale e punto
+di fusione. Lanciarla ora trasformerebbe un principio pubblicato in una combinazione ad hoc e
+renderebbe un fallimento non interpretabile. Se TBR o Spike-TBR superano F di almeno 2 pp F1, si
+definisce una sola topologia Lite con budget e stato espliciti e la si confronta col vincitore.
+
+### Alternative rinviate
+
+[Gehrig et al., ICCV 2019](https://openaccess.thecvf.com/content_ICCV_2019/html/Gehrig_End-to-End_Learning_of_Representations_for_Asynchronous_Event-Based_Data_ICCV_2019_paper.html)
+formalizzano Event Spike Tensor/voxel grid come misura e kernel temporale differenziabili e mostrano
+che la rappresentazione appresa può migliorare recognition e optical flow. Questo sostiene l'uso di
+basi temporali più informative del conteggio, ma un MLP per evento e vari kernel aggiungerebbero
+una nuova famiglia da ottimizzare.
+
+[HATS, CVPR 2018](https://openaccess.thecvf.com/content_cvpr_2018/papers/Sironi_HATS_Histograms_of_CVPR_2018_paper.pdf)
+media time surfaces locali per ottenere una rappresentazione compatta e robusta con memoria.
+[TORE, TPAMI 2023](https://doi.org/10.1109/TPAMI.2022.3172212) conserva in FIFO i K timestamp più
+recenti per pixel/polarità, mentre
+[TAF](https://arxiv.org/abs/2208.11602) campiona le ultime K posizioni temporali non nulle e le fonde
+nei canali. Sono soluzioni efficienti quando la frequenza locale degli eventi varia, ma introducono
+K, decadimenti/log-clipping, stato per pixel e una semantica streaming nuova. Restano seconde
+candidate se un probe minimale dimostra che E0 comprime troppo.
+
+[Matrix-LSTM, ECCV 2020](https://www.ecva.net/papers/eccv_2020/papers_ECCV/papers/123650137.pdf)
+apprende una superficie ricorrente per pixel e ha migliorato classification e optical flow rispetto
+a rappresentazioni manuali. È più espressivo, ma richiede stato LSTM spaziale, kernel specializzati
+e un secondo sistema ricorrente davanti alla SNN; il rapporto informazione/run e il costo hardware
+sono peggiori per la fase corrente.
+
+E1 phase-count e duration-normalized restano implementazione/probe sospesi: il primo è una
+statistica locale non supportata direttamente su DVS-Lip, il secondo usa endpoint oracle. Nessuno
+dei due riceve un full mentre sono disponibili TBR e Spike-TBR.

@@ -71,6 +71,38 @@ def test_candidate_rejects_simultaneous_training_recipe_change():
         workflows.run_candidate(config)
 
 
+def test_candidate_accepts_only_the_registered_phase_representation_change(monkeypatch):
+    config = load_config("configs/dvslip_b_phase_e1.yaml")
+    monkeypatch.setattr(
+        workflows,
+        "train_experiment",
+        lambda _config: (_ for _ in ()).throw(RuntimeError("gate reached")),
+    )
+    with pytest.raises(RuntimeError, match="gate reached"):
+        workflows.run_candidate(config)
+
+    config["model"]["embed_dim"] = 192
+    with pytest.raises(ValueError, match="may change only phase encoding"):
+        workflows.run_candidate(config)
+
+
+@pytest.mark.parametrize("filename", ["dvslip_f_tbr.yaml", "dvslip_f_spike_tbr_lif.yaml"])
+def test_candidate_accepts_only_preregistered_tbr_settings(filename, monkeypatch):
+    config = load_config(f"configs/{filename}")
+    monkeypatch.setattr(
+        workflows,
+        "train_experiment",
+        lambda _config: (_ for _ in ()).throw(RuntimeError("gate reached")),
+    )
+    with pytest.raises(RuntimeError, match="gate reached"):
+        workflows.run_candidate(config)
+
+    config["representation"]["bits"] = 4
+    config["representation"]["micro_bin_width_us"] = 12_500
+    with pytest.raises(ValueError, match="fixed to the preregistered"):
+        workflows.run_candidate(config)
+
+
 def test_runner_overfit_early_stops_and_records_actual_subset(tmp_path, monkeypatch):
     frames = torch.tensor([[1., 0.], [1., 0.], [0., 1.], [0., 1.]])
     targets = torch.tensor([0, 0, 1, 1])

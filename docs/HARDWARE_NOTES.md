@@ -1,88 +1,73 @@
 # Profilazione hardware proxy
 
-**Aggiornata:** 2026-09-08
+**Aggiornata:** 2026-09-09
 
-## Cosa viene misurato
+## Contatori e semantica
 
-`profile-checkpoint` elabora gli stessi campioni validation e registra:
+`profile-checkpoint` elabora il best selezionato sullo stesso set round-robin di 64 sample validation
+ed emette schema v4. Registra parametri/bit a precisione runtime, MAC multivalore, AC binari
+potenziali e pesati per densità osservata, SOP di attention, firing per layer, confronti max-pool,
+operazioni dei core temporali, stato persistente e traffico stimato. Per PLIF registra inoltre
+numero di τ e range/medie per layer.
 
-- parametri e bit alla precisione osservata;
-- MAC multivalore potenziali di convoluzioni e layer lineari;
-- accumuli potenzialmente binari dopo spike;
-- operazioni dell'attenzione e dei moduli temporali espliciti;
-- firing rate per layer;
-- elementi/bit di stato persistente e letture/scritture stimate;
-- metadati e hash del best checkpoint.
-- stima aritmetica parziale Horowitz FP32, con termini inclusi/esclusi espliciti.
+`binary_ac_activity_estimate` assume zero-skipping ideale sul singolo input di layer;
+`binary_ac_potential` non lo assume. `sop_potential` è AC potenziale più attention SOP. Le
+convoluzioni con count/phase input e i mixer TCAP restano MAC multivalore. Un modulo inizializzato
+all'identità o a zero viene contato secondo il grafo che avrà dopo l'addestramento.
 
-Per F il profiler deve contare anche confronti dei max-pooling. Per T deve esporre moltiplicazioni,
-addizioni e buffer FIR separatamente. Per TCAP registra MAC MIMO e buffer per i ritardi; per PLIF
-registra numero di parametri e distribuzione dei tau appresi per layer. Un'identità iniziale non
-autorizza a dichiarare costo zero: il confronto Pareto usa il costo potenziale della struttura
-addestrata.
+## Riferimento B e candidati misurati
 
-## Baseline osservata
+| Variante | Parametri | Firing | Stato | AC attività M | SOP pot. M | MAC M | Horowitz attività µJ | Horowitz densa µJ |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| B | 500.708 | 0,05850 | 1.099.776 | 292,07 | 5.568,59 | 1.530,93 | 7.319,57 | 12.058,41 |
+| F | 431.076 | 0,13520 | 477.184 | 485,92 | 2.915,70 | 1.247,82 | 6.191,70 | 8.368,47 |
+| B+TCAP | 562.148 | 0,04682 | 1.198.080 | 198,14 | 5.568,59 | 1.782,59 | 8.392,66 | 13.216,04 |
+| B+PLIF | 502.676 | 0,05253 | 1.099.776 | 241,79 | 5.568,59 | 1.530,93 | 7.274,32 | 12.058,41 |
 
-La baseline 500k usa 16.02 Mbit di pesi FP32 e 35.19 Mbit di membrane LIF. Il primo embedding
-contiene 884,736 dei 1,099,776 elementi LIF. I MAC multivalore potenziali totali sono
-1,530,933,760; `patch_embed2.proj` ne rappresenta 754,974,720. Il firing rate aggregato del profilo
-è circa 0.0539.
+F riduce la geometria ad alta risoluzione: il firing cresce del 131,11%, ma SOP potenziali, MAC,
+stato e Horowitz densa calano rispettivamente del 47,64%, 18,49%, 56,61% e 30,60%. I max-pool
+aggiungono 36,70 M confronti non inclusi nella proxy energetica. TCAP aggiunge 251,66 M MAC e
+98.304 elementi di buffer; la minore attività binaria non compensa il termine multivalore nella
+proxy. PLIF non aggiunge stato e il decadimento sigmoid-derived può essere precomputato dopo il
+training.
 
-Il preflight strutturale su tensori della forma DVS-Lip misura 7,088,386,560 operazioni affini
-potenziali per la baseline e 4,152,373,760 per F. F usa 477,184 elementi di stato; F+T ne usa
-542,720 e aggiunge 2,949,120 moltiplicazioni FIR, 1,966,080 addizioni FIR e 36,700,160 confronti
-di pooling. Questi valori non includono un firing rate addestrato e non sostituiscono il profilo del
-checkpoint.
+La tabella completa, inclusi controlli 1M/2M, NoCrossTime e readout, è in
+`EXPERIMENT_LEDGER.md`.
 
-Lo stesso preflight strutturale misura per **B+TCAP** 562,148 parametri, 1,198,080 elementi di
-stato e 7,340,044,800 operazioni affini potenziali. Rispetto alla baseline sono +61,440 parametri,
-+98,304 elementi di stato e +251,658,240 MAC multivalore per campione. La proxy aritmetica FP32
-Horowitz densa coperta passa da 7,790.66 a 8,948.29 µJ/campione (+14.86%): l'aumento è maggiore
-del +3.55% delle operazioni affini perché il nuovo termine è interamente multivalore. Per
-**B+PLIF** il preflight misura 502,676 parametri (+1,968), lo stesso stato e gli stessi contatori
-di operazioni della baseline. Questi valori derivano da input sintetici non addestrati: non si usa
-il firing rate risultante per confronti scientifici.
+## Costi preventivi dei prossimi run
 
-## Completezza richiesta
+F+TCAP ha 492.516 parametri, 575.488 elementi di stato e circa 1.499,48 M MAC multivalore. La
+Horowitz densa strutturale è circa 9.526,10 µJ/sample. Sono somme del grafo; firing, AC attività e
+Horowitz attività non sono additivi e verranno sostituiti dal profilo del checkpoint.
 
-Ogni baseline/candidata deve essere profilata dal proprio best checkpoint con schema v4 e
-`--samples 64` durante discovery. La selezione round-robin per classe, con RNG locale seed 0,
-evita il prefix ordinato che sovrarappresentava poche classi. DVS-Lip copre 64 classi su 100:
-è uno screening, non una stima esaustiva. Per la tabella finale riprofilare baseline e candidata
-con `--samples 200` (due campioni per classe, se disponibili); non servono nuovi training.
-Si confrontano stesso dataset/split, campioni, ordine e `sampling.indices_targets_sha256`.
-Un profilo mancante resta una cella
-mancante: non si copia quello di un run con capacità o attività diversa.
+F+TBR e F+Spike-TBR hanno 431.004 parametri, 72 meno di F, e mantengono 40 forward del backbone.
+Il profiler v4 conta il modello a valle e allega i metadata della rappresentazione, ma non somma il
+preprocessing ai totali del backbone. TBR richiede durante lo streaming un accumulatore da 8 bit
+per pixel. La ricostruzione Spike-TBR richiede inoltre una membrana per pixel; con lo storage
+runtime corrente il metadata dichiara 40 bit/pixel complessivi. Event-to-bit, decay, confronti e
+reset del preprocessing devono essere riportati separatamente e non confusi con un risparmio del
+modello. B+T ed E1 restano implementati ma non appartengono ai prossimi run.
 
-Esistono soltanto i profili **v1** 500k e 1M: firing rate globale rispettivamente 0.053855 e
-0.051779; binary AC activity estimate 268.67M e 572.78M per campione. Mancano 2M, NoCrossTime,
-tre readout alternativi e DVS-Gesture. `profile-runs` recupera i best presenti sul server e scrive
-`hardware_profile_v4.json`, conservando i file storici. Non confrontare v1 e v4 direttamente:
-cambiano campioni e granularità della classificazione binario/multivalore, ora a batch unitario.
-La config usata è `config_resolved.yaml` dello stesso run, inclusi gli override storici.
+## Proxy Horowitz
 
-## Riferimento energetico Horowitz
+Il riferimento [Horowitz, ISSCC 2014](https://doi.org/10.1109/ISSCC.2014.6757323) assegna in FP32
+45 nm 0,9 pJ/add, 3,7 pJ/multiply e quindi 4,6 pJ/MAC. La proxy densa usa tutti gli AC potenziali;
+quella ad attività usa gli AC pesati per densità. Le SOP dell'attenzione restano dense. FIR e state
+mixing compaiono una sola volta nei termini elementwise.
 
-[Horowitz, ISSCC 2014, Fig. 1.1.9](https://doi.org/10.1109/ISSCC.2014.6757323) riporta per 45 nm
-FP32 0.9 pJ/add e 3.7 pJ/multiply: usiamo 4.6 pJ/MAC e 0.9 pJ/AC. Il campo
-`energy_reference` contiene una proxy con AC potenziali e una con AC pesati per densità osservata
-all'ingresso del singolo layer. Le SOP dell'attenzione restano potenziali; nessun firing rate globale
-viene applicato indiscriminatamente. FIR e state mixing sono già nei totali elementwise e vengono
-conteggiati una sola volta. I MAC del temporal channel mixer sono inclusi tra i multivalore. I
-valori sono µJ/campione e **non energia totale del modello**.
+Sono esclusi accessi memoria, routing, controllo, leakage, integrazione/reset/confronto LIF,
+max-pooling, sigmoid/tanh e riduzioni del readout. I valori sono una proxy aritmetica parziale per
+sample, non energia totale, potenza, latenza o area su FPGA/GPU/ASIC.
 
-Sono esclusi energia di integrazione/reset/confronto LIF, pooling, sigmoid/tanh, riduzioni del
-readout, calcolo online del sigmoid PLIF e accessi memoria/routing/leakage. Il decadimento PLIF può
-essere precomputato dopo il training; in quel caso il costo per timestep coincide con il LIF
-fisso. I relativi contatori disponibili restano separati.
-Non inferire una vittoria energetica del gated ignorando le sue non linearità. Il traffico FIR
-assume un buffer circolare hardware; non misura le copie o gli accessi reali di PyTorch.
+## Completezza e comparabilità
 
-## Confine delle conclusioni
+Tutti i full DVS-Lip completati dispongono ora di profilo v4. Non usare i vecchi profili v1 nei
+confronti: cambiavano campioni e classificazione binario/multivalore. Un candidato shortlisted
+richiede best checkpoint proprio, schema v4, 64 sample e lo stesso
+`sampling.indices_targets_sha256`. Per la tabella finale B e candidata saranno riprofilate su 200
+sample. Un profilo mancante rimane mancante e non viene ricostruito da un altro run.
 
-Il profiler non misura energia reale, latenza, area, costo del data movement reale, sparsity supportata
-dal backend o precisione quantizzata. Le tabelle devono usare termini come `proxy`, `potenziale` e
-`stato persistente`; le affermazioni su una piattaforma richiedono deployment e misura dedicati.
-La causalità delle equazioni è valutata in inference/eval: durante training, BatchNorm aggrega
-anche l'asse temporale. `epoch_seconds` nei log misura il training, escludendo validation/prefix
-evaluation; non è un benchmark di inferenza e risente della contesa tra run sul server.
+Il codice corrente implementa equazioni causali, ma `streaming_state_api` del modello completo è
+ancora falso; i moduli FIR/TCAP espongono una transition verificata, mentre il backbone usa forward
+di sequenza. `epoch_seconds` misura training e non inferenza. Qualunque affermazione sulla
+piattaforma richiede precisione, memoria, mapping e misura dichiarati.

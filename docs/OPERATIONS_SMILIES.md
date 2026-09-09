@@ -1,85 +1,101 @@
 # Operazioni riproducibili su SMILIES
 
-**Aggiornate:** 2026-09-08
+**Aggiornate:** 2026-09-09
 
-Dalla root del checkout sul server, sincronizzare un commit comprendente codice, config e script.
-I launcher richiedono un worktree pulito per registrare una versione riproducibile. I dati e i
-checkpoint devono restare nei path configurati; non rigenerare lo split development esistente.
-Il container monta `src/`: non serve ricostruirlo per queste modifiche se il precedente funziona.
+Ogni server fisico vede la propria GPU come indice locale `0`. I quattro nomi di sessione screen
+sono indipendenti perché vivono su macchine diverse. Prima del lancio, sincronizzare lo stesso
+commit pulito su daredevil, mustafar, stmary e kokiu; dati e checkpoint devono restare nei path
+configurati.
 
-## Verifica una volta per commit
-
-Con dati/split già validati:
+## Verifica una volta per macchina e commit
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/dataset_workflow.sh dvslip check
 ```
 
-Esegue suite, test CUDA/AMP a forma DVS-Lip, lint, shell syntax e compilazione. Se container o dati
-non sono ancora preparati, usare il workflow `make smilies-build` e
-`make smilies-gate DATASET=dvslip`; il gate dati completo include hash e shortcut e non va ripetuto
-per ogni candidato. Non avviare le campagne se il check fallisce.
+Il check esegue suite, lint, bytecode, shell syntax e test CUDA/AMP. Non avviare un candidato se
+fallisce. Il dataset gate completo non va ripetuto a ogni run.
 
-## Run già avviati
+## Allocazione corrente dei quattro server
 
-F ha superato il bounded overfit ed è entrato nel full training. Gated-v2 ha raggiunto accuracy
-1.0 ma ha fallito il vincolo preregistrato `validation_loss < 1.5`; il workflow ha correttamente
-evitato il full. Non rilanciarli mentre F è in corso.
-
-`profile-runs` scorre i full run completati, usa le loro config risolte e i loro best, rigenera anche
-i due profili v1 e conserva i vecchi file. Include DVS-Gesture. Richiede checkpoint/dataset sul
-server; segnala gli assenti in `artifacts/profile_backfill.json` e termina con errore se incompleto,
-continuando comunque sugli altri run. Nessun training viene avviato.
-
-## Due nuovi rami indipendenti sui server liberi
-
-Su due macchine fisiche diverse ogni processo usa la GPU locale `0`. Dopo aver sincronizzato lo
-stesso commit pulito ed eseguito il check su ciascuna macchina, avviare:
+### 1. F+TCAP — full candidato principale
 
 ```bash
-# Server fisico A
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-b-tcap42 -- candidate --config configs/dvslip_b_temporal_capacity.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tcap42 -- candidate --config configs/dvslip_f_temporal_capacity.yaml
 ```
+
+Il workflow esegue bounded overfit, full da pesi nuovi solo se passa, valutazione finale e profilo
+v4 del best. Non riusa pesi F o TCAP.
+
+### 2. F+TBR — timing intra-bin compresso
 
 ```bash
-# Server fisico B
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-b-plif42 -- candidate --config configs/dvslip_b_plif.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tbr42 -- candidate --config configs/dvslip_f_tbr.yaml
 ```
 
-Ogni `candidate` esegue il bounded overfit (16×4 campioni, massimo 500 epoche, stop al gate), poi
-solo se passa avvia 128 epoche da zero con la ricetta baseline, valutazione finale e profilo v4 del
-best su 64 validation. Il gate usa FP32, nessuna augmentation e zero data-loader worker; il full
-ripristina esattamente la config originale. Il gate resta quello preregistrato e non viene adattato
-al candidato. TCAP e PLIF testano ipotesi diverse e possono procedere in parallelo a F.
+Usa il TBR canonico polarity-agnostic con 8 micro-bin da 6,25 ms in ogni macro-bin da 50 ms. Forma
+`[40,1,H,W]`, backbone F e ricetta invariata; non esegue uno sweep di discretizzazione.
 
-## Monitoraggio, ripresa e recupero della sola profilazione
+### 3. F+Spike-TBR-LIF — filtro dinamico della rappresentazione
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-spike-tbr-lif42 -- candidate --config configs/dvslip_f_spike_tbr_lif.yaml
+```
+
+Usa `β=0,9`, soglia `1,1`, 8×6,25 ms e reset per macro-finestra. È una ricostruzione paper-aligned,
+non una replica di codice ufficiale. Il workflow rifiuta cambi simultanei a F, ricetta,
+augmentation o evaluation.
+
+### 4. Diagnostica temporale checkpoint-only B/PLIF
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-temporal-b-plif -- temporal-diagnostic-pair --baseline-config artifacts/dvslip_e0__20260825_211710__seed42/config_resolved.yaml --baseline-checkpoint checkpoints/dvslip_e0__20260825_211710__seed42/best.pt --plif-config artifacts/dvslip_b_plif__20260908_154858_510430__seed42/config_resolved.yaml --plif-checkpoint checkpoints/dvslip_b_plif__20260908_154858_510430__seed42/best.pt --output artifacts/dvslip_temporal_diagnostic_b_plif__20260909
+```
+
+Il comando esegue i due checkpoint in sequenza sulla stessa GPU. Non addestra e non modifica i
+checkpoint. Crea sottocartelle `baseline/` e `plif/` con:
+
+- `temporal_curve_every_bin.csv`;
+- `temporal_curve_event_aligned.csv`;
+- `temporal_activity_every_bin.csv`;
+- `temporal_activity_event_aligned.csv`;
+- `temporal_diagnostic_summary.json`, config e ambiente.
+
+La root contiene `temporal_diagnostic_pair_summary.json` con i delta PLIF−B delle AUC. La
+validation completa richiede un forward per checkpoint più riduzioni; la raccolta firing usa hook
+aggregati e non conserva tutte le mappe intermedie sulla GPU.
+
+I quattro comandi possono essere assegnati in qualunque ordine ai quattro host. La diagnostica
+finirà prima di un full; la GPU liberata resta disponibile per recovery/profiling. Non avviare
+`B+T`, E1, una variazione ON/OFF di TBR o MultiGranular-Lite prima della lettura dei tre risultati.
+
+## Monitoraggio e ripresa
 
 ```bash
 screen -ls
-tail -f artifacts/screen/dvslip-f42.log
-screen -r dvslip-f42
+tail -f artifacts/screen/dvslip-f-tcap42.log
+screen -r dvslip-f-tcap42
 ```
 
-`overfit_gate.json` contiene l'esito numerico; `candidate_workflow.json` collega gate/full/profilo.
-I run ID nei log identificano le directory. Se il full training viene interrotto, usare la sua
-config risolta e il suo `last.pt` con lo stesso commit pulito; non usare il last dell'overfit:
+`overfit_gate.json` registra il gate; `candidate_workflow.json` collega gate, full e profilo. Se un
+full viene interrotto, riprenderlo dal proprio `last.pt` con lo stesso commit pulito:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_training.sh artifacts/<run-id>/config_resolved.yaml dvslip-resume -- --resume checkpoints/<run-id>/last.pt
 ```
 
-Dopo una ripresa con `train`, oppure se fallisce solo il profiling, recuperare il profilo senza
-ripetere il training:
+Se fallisce soltanto il profilo:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh profile-recovery -- profile-checkpoint --config artifacts/<run-id>/config_resolved.yaml --checkpoint checkpoints/<run-id>/best.pt --output artifacts/<run-id>/hardware_profile_v4.json --samples 64
 ```
 
-Il wrapper `train` rimane disponibile per riprese e diagnosi; i nuovi full candidati vanno avviati
-tramite `candidate`. Per una ripresa dell'overfit usare la sua config risolta; verificare poi il
-gate e non interpretare il suo punteggio come validation indipendente. Una campagna `candidate`
-rilanciata da capo crea un nuovo gate e un nuovo full, quindi non è il comando di ripresa.
+Una campagna `candidate` rilanciata crea un nuovo overfit e un nuovo full; non è un comando di
+resume. Il run gated-v2 manuale resta fermato e non va ripreso.
 
-La tabella finale confronta profili dello stesso schema/campionamento, parametri, MAC/AC potenziali,
-attività per layer, membrane/buffer/traffico e proxy aritmetica Horowitz; nessuna misura di joule
-GPU/FPGA viene dedotta dai contatori. Per i finalisti estendere il profilo a 200 campioni.
+## Controllo degli output
+
+Un candidato completo deve avere `summary.json`, `history.csv`, predizioni/shortcut, curve prefix,
+config/ambiente, `candidate_workflow.json` e `hardware_profile_v4.json`. Confrontare i profili solo
+se checkpoint hash, schema v4 e policy di campionamento sono dichiarati. Per i finalisti il profilo
+potrà essere esteso a 200 sample; non si deducono joule GPU/FPGA dai contatori Horowitz.

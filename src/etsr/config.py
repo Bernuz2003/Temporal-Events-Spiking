@@ -176,22 +176,63 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
     representation = config.get("representation")
     if not isinstance(representation, dict):
         raise ConfigError(f"{dataset_label} requires a representation section")
-    if representation.get("name") != "count_frames_e0":
-        raise ConfigError(
-            f"The current {dataset_label} foundation supports representation.name=count_frames_e0"
-        )
-    for field in ("window_us", "bin_width_us", "count_cap"):
+    representation_name = representation.get("name")
+    allowed_representations = (
+        {
+            "count_frames_e0",
+            "phase_count_frames_e1",
+            "temporal_binary_frames_tbr",
+            "spike_tbr_lif_paper_aligned",
+        }
+        if dataset_label == "DVS-Lip"
+        else {"count_frames_e0"}
+    )
+    if representation_name not in allowed_representations:
+        raise ConfigError(f"Unsupported {dataset_label} representation.name={representation_name}")
+    for field in ("window_us", "bin_width_us"):
         if type(representation.get(field)) is not int or representation[field] <= 0:
             raise ConfigError(f"{dataset_label} representation.{field} must be a positive integer")
     if representation["window_us"] % representation["bin_width_us"]:
         raise ConfigError(f"{dataset_label} representation.window_us must divide into exact bins")
-    if representation["count_cap"] > 255:
-        raise ConfigError(f"{dataset_label} E0 count_cap must fit uint8")
+    if representation_name in {"count_frames_e0", "phase_count_frames_e1"}:
+        if type(representation.get("count_cap")) is not int or representation["count_cap"] <= 0:
+            raise ConfigError(f"{dataset_label} representation.count_cap must be positive")
+        if representation["count_cap"] > 255:
+            raise ConfigError(f"{dataset_label} count_cap must fit uint8")
+    if representation_name in {"temporal_binary_frames_tbr", "spike_tbr_lif_paper_aligned"}:
+        for field in ("micro_bin_width_us", "bits"):
+            if type(representation.get(field)) is not int or representation[field] <= 0:
+                raise ConfigError(
+                    f"{dataset_label} {representation_name} requires positive integer {field}"
+                )
+        if representation["bits"] > 16:
+            raise ConfigError("TBR representations support at most 16 bits")
+        if representation["bits"] * representation["micro_bin_width_us"] != representation["bin_width_us"]:
+            raise ConfigError("TBR bits * micro_bin_width_us must equal bin_width_us")
+    if representation_name == "spike_tbr_lif_paper_aligned":
+        beta = representation.get("lif_beta")
+        threshold = representation.get("lif_threshold")
+        if type(beta) not in (int, float) or isinstance(beta, bool) or not 0.0 <= beta < 1.0:
+            raise ConfigError("Spike-TBR representation.lif_beta must be in [0, 1)")
+        if (
+            type(threshold) not in (int, float)
+            or isinstance(threshold, bool)
+            or threshold <= 0.0
+        ):
+            raise ConfigError("Spike-TBR representation.lif_threshold must be positive")
     model = config["model"]
     if model["name"] != "mini_qkformer":
         raise ConfigError("The active baseline requires model.name=mini_qkformer")
-    if int(model.get("in_channels", 0)) != 2:
-        raise ConfigError(f"{dataset_label} E0 requires model.in_channels=2")
+    expected_channels = {
+        "count_frames_e0": 2,
+        "phase_count_frames_e1": 4,
+        "temporal_binary_frames_tbr": 1,
+        "spike_tbr_lif_paper_aligned": 1,
+    }[representation_name]
+    if int(model.get("in_channels", 0)) != expected_channels:
+        raise ConfigError(
+            f"{dataset_label} {representation_name} requires model.in_channels={expected_channels}"
+        )
     surrogate_alpha = model.get("surrogate_alpha", 4.0)
     if (
         type(surrogate_alpha) not in (int, float)

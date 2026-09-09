@@ -1,97 +1,61 @@
 # Stato corrente
 
-**Aggiornato:** 2026-09-08
+**Aggiornato:** 2026-09-09
 
-**Fase:** discovery strutturale; F in full training, gated-v2 fermato dal gate, TCAP e PLIF pronti
+**Fase:** selezione strutturale avanzata; F e TCAP positivi, rappresentazione TBR in verifica
 
-## Evidenza consolidata
+## Verità sperimentale corrente
 
-| Esperimento | Parametri | Accuracy | Macro-F1 | Profilo checkpoint | Interpretazione |
-|---|---:|---:|---:|---|---|
-| baseline 500k, seed 42 | 500,708 | 44.81 | 44.15 | v1; v4 da recuperare | riferimento di sviluppo |
-| capacity 1M, seed 42 | 1,113,508 | 49.58 | 49.38 | v1; v4 da recuperare | capacità utile ma costo >2× |
-| capacity 2M, seed 42 | 1,967,972 | 51.79 | 51.81 | mancante | limite superiore osservato, non candidata compatta |
-| NoCrossTime 500k | 500,708 | 15.13 | 13.01 | mancante | la dipendenza temporale è indispensabile |
-| mean@last_event | 500,708 | 42.50 | 42.02 | mancante | il trailing silence non spiega la baseline |
-| last@last_event | 500,708 | 32.32 | 31.83 | mancante | l'ultimo stato perde informazione |
-| gated@fixed_window | 501,476 | 19.80 | 17.60 | mancante | init sfavorevole; test del principio non conclusivo |
+La baseline B raggiunge 44,81% accuracy e 44,15% Macro-F1. F raggiunge 46,88/46,15 con 431.076
+parametri e un profilo nettamente più leggero. B+TCAP è il miglior 500k-class corrente con
+48,38/48,12 e migliora B di 3,57/3,97 punti. B+PLIF termina a 43,74/43,68, quindi non è candidato
+per il punteggio finale. I controlli 1M e 2M raggiungono F1 49,38 e 51,81 ma servono come upper
+bound di capacità. Tabelle complete di prestazione, PrefixAUC e hardware sono in
+`EXPERIMENT_LEDGER.md`.
 
-Le predizioni disponibili riproducono esattamente F1 e confusion matrix registrate. I miglioramenti
-500k→1M e 500k→2M sono compatibili con più capacità sul medesimo seed, ma non dimostrano robustezza
-multi-seed né comparabilità con risultati official-test della letteratura. La validation è
-sample-stratified perché il rilascio locale non espone identità speaker.
+Il profilo F conferma un trade-off favorevole: rispetto a B riduce SOP potenziali del 47,64%, MAC
+multivalore del 18,49%, stato e traffico del 56,61%, Horowitz attività del 15,41% e densa del
+30,60%. Il firing sale da 0,0585 a 0,1352, quindi il risparmio viene dalla geometria del front-end,
+non dalla sparsità. TCAP abbassa firing e AC attività ma aggiunge 251,66 M MAC multivalore e porta
+la Horowitz attività a +14,66% rispetto a B.
 
-Nel gated readout storico `gate_input=1` e `gate_bias=0` portano, con feature non negative, a gate
-iniziali che cancellano rapidamente la memoria remota. Su 40 passi a input nullo il rapporto
-tra gradiente sul primo e sull'ultimo passo è `2^-39 ≈ 1.82e-12`. La nuova config esplicita inizializza
-un update rate del 5%, indipendente dall'input: il rapporto è `0.95^39 ≈ 0.135`. Il risultato storico non
-consente quindi di rigettare un readout ricorrente; non prova neppure che l'inizializzazione fosse
-l'unica causa del fallimento.
+## Fenomeno temporale PLIF
 
-## Costo osservato
+PLIF supera B di 6,66 punti F1 a 1 s e 8,32 a 1,5 s, poi termina 0,47 punti sotto. Non perde
+prestazione nella coda: cresce di 4,93 punti da 1,5 a 2 s, mentre B cresce di 13,72. Poiché il 99,4%
+dei sample validation è già terminato entro 1,5 s, il fenomeno riguarda soprattutto la dinamica
+post-evento e la normalizzazione del mean. I τ appresi sono eterogenei, con τ medio 6,227 nello
+spike-attention finale e τ medi 1,442/1,672 nelle trasformazioni q/proj.
 
-Il profilo della baseline conta 16.02 Mbit di pesi FP32 e 35.19 Mbit di stato LIF, pari a 1,099,776
-elementi. Il primo embedding contiene l'80.45% dello stato LIF. I due maggiori termini convolutivi
-potenziali sono `patch_embed2.proj` (754,974,720 MAC, 49.3% dei MAC multivalore) e la prima
-convoluzione (377,487,360 MAC). Il firing rate globale osservato è circa 0.0539. Questi sono proxy
-riproducibili, non misure di energia o latenza su FPGA.
+È implementato `temporal-diagnostic`, che riusa i checkpoint B e PLIF e produce curve a ogni bin,
+due denominatori del mean, margini/stabilità e attività per layer in tempo assoluto ed event-aligned.
+L'allineamento event-aware è marcato oracle e non diventa una nuova policy di readout.
 
-La profilazione è incompleta per 2M, controlli e DVS-Gesture. I checkpoint omessi localmente possono
-consentirne il recupero sui server: `profile-runs` verifica quelli disponibili e segnala gli assenti.
-Questo limita soltanto conclusioni hardware su quei run. Da ora un run shortlisted non
-è chiuso finché il profilo del checkpoint migliore non esiste.
+## Implementazione pronta
 
-## Candidati attivi
+- `configs/dvslip_f_temporal_capacity.yaml`: front-end F più mixer TCAP a ritardi 1/2/4;
+- `configs/dvslip_f_tbr.yaml`: F con TBR canonico, 8 micro-bin da 6,25 ms per ciascun macro-bin
+  da 50 ms;
+- `configs/dvslip_f_spike_tbr_lif.yaml`: stesso contratto con filtro LIF paper-aligned,
+  `β=0,9` e soglia `1,1`;
+- comando `temporal-diagnostic`: quattro CSV, summary, config e ambiente, nessun training;
+- workflow `candidate`: blocca TBR ai valori DVS-Lip pubblicati e conserva F, ricetta,
+  augmentation, split ed evaluation.
 
-**F — front-end piramidale.** Quattro convoluzioni 3×3 con canali 8→16→32→64, tre max-pooling e
-shortcut 16→64 a stride 4. Mantiene la risoluzione 16×16 in ingresso allo stage transformer. Il
-preflight integrato a forma DVS-Lip misura 431,076 parametri, 477,184 elementi di stato persistente
-e 4.152 miliardi di operazioni affini potenziali, contro 500,708, 1,099,776 e 7.088 miliardi della
-baseline: −13.9% parametri, −56.6% stato e −41.4% operazioni affini. I pool aggiungono 36.70 milioni
-di confronti, contabilizzati separatamente.
+TBR e Spike-TBR conservano `T=40` e producono un canale perché la formulazione pubblicata scarta
+la polarità. TBR conserva l'occupazione binaria a 6,25 ms, ma perde la molteplicità nello stesso
+micro-bin. La ricostruzione Spike-TBR dichiara due scelte non verificabili contro codice ufficiale:
+polarità ignorata e reset della membrana a ogni finestra da 50 ms, coerente con l'inizializzazione
+per `ΔT` dell'algoritmo pubblicato.
 
-**T — FIR temporale causale channel-wise.** Tre tap con identità iniziale, applicati prima del LIF
-in due punti a bassa risoluzione: l'uscita del front-end e il downsampling del secondo embedding,
-con dilatazioni 1 e 2. Su F aggiunge 576 coefficienti, 65,536 elementi di buffer, 2.95 milioni di
-moltiplicazioni e 1.97 milioni di addizioni per campione. F+T totalizza quindi 431,652 parametri e
-542,720 elementi di stato. È la versione minima e controllabile dell'idea PSN/multi-delay.
+## Prossima acquisizione di evidenza
 
-**TCAP — prova di capacità temporale cross-channel.** Nei medesimi due punti a bassa risoluzione
-del backbone baseline applica
-`y[t] = x[t] + W1 x[t-1] + W2 x[t-2] + W4 x[t-4]`, con una matrice completa per ritardo.
-Le matrici partono da zero: il modello iniziale è funzione per funzione la baseline e l'unica
-capacità aggiunta collega tempi diversi. A forma DVS-Lip aggiunge 61,440 parametri (+12.27%),
-98,304 elementi di buffer (+8.94%) e 251,658,240 MAC multivalore per campione. Le operazioni affini
-potenziali crescono del 3.55%; la proxy aritmetica FP32 Horowitz densa cresce del 14.86%. È un
-upper-bound diagnostico: se produce segnale, il passo successivo è comprimerlo, non adottarlo
-automaticamente come soluzione finale.
+Tre server eseguono F+TCAP, F+TBR e F+Spike-TBR-LIF tramite bounded overfit e full condizionale. Il
+quarto esegue la diagnostica B/PLIF e resta libero. B+T è rinviato alla compressione post-freeze;
+B+E1 non viene lanciato. MultiGranular-Lite resta una candidata forte, ma richiede una topologia e
+una contabilità hardware preregistrate per non trasformare il principio MSTP in una soluzione ad
+hoc.
 
-**PLIF per canale.** Ogni LIF apprende `1/tau = sigmoid(w)` per feature channel; nei moduli di
-attenzione il parametro segue gli head dove quella è la dimensione semantica. `w=0` inizializza
-esattamente `tau=2`, quindi il modello coincide con la baseline al primo forward. Aggiunge 1,968
-parametri (+0.393%), nessuno stato temporale e nessuna nuova operazione per timestep nel grafo
-profilato, assumendo il decadimento precomputato in inference. Il profilo del checkpoint registra
-distribuzione e range dei tau appresi.
-
-## Run del 2026-09-08
-
-F ha superato il gate alla epoca 368; il full è partito da pesi nuovi. Lo snapshot locale arriva
-alla epoca 7 e non è ancora interpretabile come risultato finale.
-
-Gated-v2 ha raggiunto accuracy 1.0 sul subset, con traiettoria finita e senza overflow, ma non ha
-superato il criterio preregistrato: nelle ultime cinque epoche la validation loss è rimasta circa
-1.77 contro il vincolo stretto `<1.5` (minimo osservato 1.7643). Il full non è partito. Il gate non
-viene abbassato dopo aver visto il risultato: il run dimostra separabilità del subset, ma è
-compatibile con margini logit deboli e un'ottimizzazione più difficile del readout limitato da
-`tanh` e dalla ricorrenza diagonale. Il solo gate non identifica causalmente quale dei due fattori
-domini. Gated-v2 non riceve un secondo full durante questa fase.
-
-## Prossimo gate
-
-I test CPU coprono forma, causalità ed equivalenza step/sequence dei moduli temporali, backward,
-equivalenza iniziale con la baseline, PLIF, init gated storica/corretta, profilazione e workflow con
-fallimento del gate. I test CUDA/AMP a forma DVS-Lip richiedono SMILIES. Dopo il check dello stesso
-commit sui due server liberi, avviare TCAP e PLIF tramite `candidate`: ciascun comando gestisce
-bounded overfit, eventuale full da zero e profilo v4 del best. I due risultati vanno letti insieme
-a parametri, stato, SOP/firing rate e proxy Horowitz; un gate superato non costituisce evidenza di
-generalizzazione.
+L'official test resta inutilizzato. Tutti i nuovi full sono seed 42 e servono alla selezione; la
+robustezza richiederà due nuovi seed comuni per B e candidata finale prima della fase di
+augmentation.

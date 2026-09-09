@@ -82,6 +82,24 @@ def build_parser() -> argparse.ArgumentParser:
     profile.add_argument("--output", required=True)
     profile.add_argument("--samples", type=int, default=64)
 
+    temporal_diagnostic = subparsers.add_parser(
+        "temporal-diagnostic",
+        help="Diagnose every causal prefix and the post-event tail of a selected checkpoint",
+    )
+    temporal_diagnostic.add_argument("--config", required=True)
+    temporal_diagnostic.add_argument("--checkpoint", required=True)
+    temporal_diagnostic.add_argument("--output", required=True)
+
+    temporal_pair = subparsers.add_parser(
+        "temporal-diagnostic-pair",
+        help="Run the preregistered baseline and PLIF checkpoint diagnostics sequentially",
+    )
+    temporal_pair.add_argument("--baseline-config", required=True)
+    temporal_pair.add_argument("--baseline-checkpoint", required=True)
+    temporal_pair.add_argument("--plif-config", required=True)
+    temporal_pair.add_argument("--plif-checkpoint", required=True)
+    temporal_pair.add_argument("--output", required=True)
+
     preflight = subparsers.add_parser(
         "preflight-dvslip",
         help="Validate the prospective official-train DVS-Lip archive without opening test",
@@ -262,6 +280,43 @@ def main() -> None:
                 "samples_profiled": profile["samples_profiled"],
                 "trainable_parameters": profile["parameters"]["trainable_elements"],
                 "official_test_used": profile["official_test_used"],
+            }
+        )
+    elif args.command == "temporal-diagnostic":
+        from etsr.config import load_config
+        from etsr.evaluation.temporal_diagnostic import diagnose_checkpoint_temporal_dynamics
+
+        summary = diagnose_checkpoint_temporal_dynamics(
+            load_config(args.config), args.checkpoint, args.output
+        )
+        print(
+            {
+                "output": str(Path(args.output).resolve()),
+                "checkpoint_epoch": summary["checkpoint_epoch"],
+                "samples": summary["samples"],
+                "prefix_auc": summary["prefix_auc"],
+                "official_test_used": summary["official_test_used"],
+            }
+        )
+    elif args.command == "temporal-diagnostic-pair":
+        from etsr.config import load_config
+        from etsr.evaluation.temporal_diagnostic import diagnose_baseline_plif_pair
+
+        summary = diagnose_baseline_plif_pair(
+            load_config(args.baseline_config),
+            args.baseline_checkpoint,
+            load_config(args.plif_config),
+            args.plif_checkpoint,
+            args.output,
+        )
+        print(
+            {
+                "output": str(Path(args.output).resolve()),
+                "samples": summary["samples"],
+                "plif_minus_baseline_prefix_auc": summary[
+                    "plif_minus_baseline_prefix_auc"
+                ],
+                "official_test_used": summary["official_test_used"],
             }
         )
     elif args.command == "preflight-dvslip":

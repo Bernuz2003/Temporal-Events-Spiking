@@ -8,7 +8,12 @@ import torch
 from etsr.config import ConfigError, load_config
 from etsr.data.common import build_loader
 from etsr.data.events import EncodedEventDataset, EventSample
-from etsr.encoders.count import CountFrameEncoder
+from etsr.encoders.count import (
+    CountFrameEncoder,
+    PhaseCountFrameEncoder,
+    SpikeTemporalBinaryFrameEncoder,
+    TemporalBinaryFrameEncoder,
+)
 
 
 def _sample() -> EventSample:
@@ -77,6 +82,86 @@ def test_e0_encoder_fails_instead_of_clipping_time_or_counts():
     )
     with pytest.raises(ValueError, match="exceeding the explicit E0 uint8 cap"):
         _encoder()(overflow)
+
+
+def test_e1_phase_encoder_preserves_counts_and_exposes_intra_bin_time():
+    encoder = PhaseCountFrameEncoder(
+        height=4,
+        width=4,
+        window_us=2_000_000,
+        bin_width_us=50_000,
+        count_cap=255,
+    )
+
+    encoded = encoder(_sample())
+    e0 = _encoder()(_sample()).tensor.float()
+
+    assert encoded.tensor.dtype == torch.float32
+    assert encoded.tensor.shape == (40, 4, 4, 4)
+    assert torch.allclose(encoded.tensor[:, 0] + encoded.tensor[:, 1], e0[:, 0])
+    assert torch.allclose(encoded.tensor[:, 2] + encoded.tensor[:, 3], e0[:, 1])
+    assert encoded.tensor[0, 0, 2, 1] == 1.0
+    assert encoded.tensor[0, 3, 2, 1] == pytest.approx(49_999 / 50_000)
+    assert encoded.tensor[1, 2, 2, 1] == 1.0
+    assert encoded.representation_name == "phase_count_frames_e1"
+    assert encoded.metadata["endpoint_knowledge"] == "none"
+    assert encoded.metadata["encoded_event_mass"] == pytest.approx(4.0)
+
+
+def _tbr_sample() -> EventSample:
+    return EventSample(
+        x=np.array([1, 1, 1, 1, 1], dtype=np.int8),
+        y=np.array([2, 2, 2, 2, 2], dtype=np.int8),
+        t_us=np.array([0, 6_249, 6_250, 49_999, 50_000], dtype=np.int32),
+        polarity=np.array([0, 1, 0, 1, 1], dtype=np.int8),
+        target=3,
+        sample_id="word/tbr.npy",
+        speaker_id=None,
+        duration_us=50_000,
+        metadata={},
+    )
+
+
+def _tbr_encoder(encoder_type=TemporalBinaryFrameEncoder, **extra):
+    return encoder_type(
+        height=4,
+        width=4,
+        window_us=2_000_000,
+        bin_width_us=50_000,
+        micro_bin_width_us=6_250,
+        bits=8,
+        **extra,
+    )
+
+
+def test_tbr_matches_canonical_bit_order_and_discards_polarity_and_multiplicity():
+    encoded = _tbr_encoder()(_tbr_sample())
+
+    assert encoded.tensor.shape == (40, 1, 4, 4)
+    assert encoded.tensor[0, 0, 2, 1] == pytest.approx((1 + 2 + 128) / 255)
+    assert encoded.tensor[1, 0, 2, 1] == pytest.approx(1 / 255)
+    assert encoded.metadata["source_event_count"] == 5
+    assert encoded.metadata["occupied_micro_voxels"] == 4
+    assert encoded.metadata["micro_bin_collisions"] == 1
+    assert encoded.representation_parameters["polarity_policy"] == "discard"
+    assert encoded.representation_parameters["normalization_divisor"] == 255
+
+
+def test_spike_tbr_lif_uses_published_constants_and_resets_each_macro_window():
+    encoded = _tbr_encoder(
+        SpikeTemporalBinaryFrameEncoder,
+        lif_beta=0.9,
+        lif_threshold=1.1,
+    )(_tbr_sample())
+
+    # Two events in the first micro-bin cross the threshold immediately (bit 0); the following
+    # event does not. The last event in macro-window 0 is isolated after decay (bit 7).
+    assert encoded.tensor[0, 0, 2, 1] == pytest.approx((1 + 128) / 255)
+    # The isolated event at 50 ms cannot inherit membrane across the explicit macro reset.
+    assert encoded.tensor[1, 0, 2, 1] == 0
+    assert encoded.representation_parameters["lif_beta"] == 0.9
+    assert encoded.representation_parameters["lif_threshold"] == 1.1
+    assert encoded.representation_parameters["fidelity"].startswith("paper_aligned")
 
 
 def test_encoded_dataset_adapts_to_the_shared_training_batch_contract():

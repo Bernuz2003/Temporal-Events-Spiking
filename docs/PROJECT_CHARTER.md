@@ -25,8 +25,8 @@ strutturale. Un nuovo run deve eliminare un'incertezza capace di cambiare la can
 
 La metrica di selezione è Macro-F1 sulla validation development. Accuracy, Acc1, Acc2, curva di
 latenza causale, parametri, operazioni potenziali, attività e stato persistente sono metriche
-secondarie obbligatorie. Il confronto usa la stessa rappresentazione E0, split, seed iniziale e
-ricetta di training.
+secondarie obbligatorie. I confronti architetturali usano E0; i confronti di rappresentazione usano
+F come controllo e mantengono split, seed, ricetta, augmentation, 40 macro-step e backbone.
 
 Un miglioramento di almeno **+2 punti percentuali di Macro-F1** su seed 42 è una soglia pratica per
 dare priorità alla replica, non una prova di superiorità. La decisione finale richiede più seed e

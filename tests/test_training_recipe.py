@@ -136,6 +136,42 @@ def test_checkpoint_profile_cli_has_a_bounded_default_sample_count():
     assert args.samples == 64
 
 
+def test_temporal_diagnostic_cli_requires_selected_checkpoint_and_output():
+    args = build_parser().parse_args(
+        [
+            "temporal-diagnostic",
+            "--config",
+            "artifacts/run/config_resolved.yaml",
+            "--checkpoint",
+            "checkpoints/run/best.pt",
+            "--output",
+            "artifacts/run/temporal_diagnostic",
+        ]
+    )
+
+    assert args.config.endswith("config_resolved.yaml")
+    assert args.checkpoint.endswith("best.pt")
+    assert args.output.endswith("temporal_diagnostic")
+
+    pair = build_parser().parse_args(
+        [
+            "temporal-diagnostic-pair",
+            "--baseline-config",
+            "artifacts/b/config_resolved.yaml",
+            "--baseline-checkpoint",
+            "checkpoints/b/best.pt",
+            "--plif-config",
+            "artifacts/p/config_resolved.yaml",
+            "--plif-checkpoint",
+            "checkpoints/p/best.pt",
+            "--output",
+            "artifacts/temporal_pair",
+        ]
+    )
+    assert pair.baseline_checkpoint.endswith("best.pt")
+    assert pair.plif_config.endswith("config_resolved.yaml")
+
+
 def test_checkpoint_evaluation_contract_allows_only_metric_changes():
     common = {
         "dataset": {"name": "dvslip"},

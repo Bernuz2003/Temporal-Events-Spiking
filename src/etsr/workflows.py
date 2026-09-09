@@ -18,9 +18,41 @@ def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
     if config["dataset"]["name"] != "dvslip" or config["training"].get("overfit"):
         raise ValueError("candidate requires a full DVS-Lip configuration")
     reference = load_config("configs/dvslip_e0.yaml")
-    for section in ("dataset", "representation", "augmentation", "training", "evaluation"):
-        if config.get(section) != reference.get(section):
-            raise ValueError(f"Architecture discovery must preserve baseline {section}")
+    representation_name = config["representation"]["name"]
+    if representation_name == "phase_count_frames_e1":
+        for section in ("dataset", "augmentation", "training", "evaluation"):
+            if config.get(section) != reference.get(section):
+                raise ValueError(f"Representation discovery must preserve baseline {section}")
+        expected_representation = {**reference["representation"], "name": "phase_count_frames_e1"}
+        expected_model = {**reference["model"], "in_channels": 4}
+        if config["representation"] != expected_representation or config["model"] != expected_model:
+            raise ValueError("E1 discovery may change only phase encoding and input channels")
+    elif representation_name in {
+        "temporal_binary_frames_tbr",
+        "spike_tbr_lif_paper_aligned",
+    }:
+        reference = load_config("configs/dvslip_f.yaml")
+        for section in ("dataset", "augmentation", "training", "evaluation"):
+            if config.get(section) != reference.get(section):
+                raise ValueError(f"TBR discovery must preserve F {section}")
+        expected_model = {**reference["model"], "in_channels": 1}
+        if config["model"] != expected_model:
+            raise ValueError("TBR discovery may change only F input channels")
+        common = {
+            "window_us": 2_000_000,
+            "bin_width_us": 50_000,
+            "micro_bin_width_us": 6_250,
+            "bits": 8,
+        }
+        expected_representation = {"name": representation_name, **common}
+        if representation_name == "spike_tbr_lif_paper_aligned":
+            expected_representation.update({"lif_beta": 0.9, "lif_threshold": 1.1})
+        if config["representation"] != expected_representation:
+            raise ValueError("TBR discovery is fixed to the preregistered DVS-Lip paper settings")
+    else:
+        for section in ("dataset", "representation", "augmentation", "training", "evaluation"):
+            if config.get(section) != reference.get(section):
+                raise ValueError(f"Architecture discovery must preserve baseline {section}")
     gate_config = copy.deepcopy(config)
     gate_config["experiment"]["name"] += "_overfit"
     gate_config["training"].update({
