@@ -181,7 +181,8 @@ def test_multigranular_encoder_preserves_e0_and_adds_fine_low_resolution_counts(
     assert isinstance(encoded.tensor, dict)
     assert torch.equal(encoded.tensor["coarse"], _encoder()(_tbr_sample()).tensor)
     assert encoded.tensor["fine"].shape == (320, 2, 2, 2)
-    assert encoded.tensor["fine"].dtype == torch.uint16
+    # PyTorch 2.2 on SMILIES cannot wrap numpy.uint16; int32 preserves the full logical range.
+    assert encoded.tensor["fine"].dtype == torch.int32
     assert int(encoded.tensor["fine"].sum()) == len(_tbr_sample().t_us)
     assert encoded.tensor["fine"][0, 0, 1, 0] == 1
     assert encoded.tensor["fine"][0, 1, 1, 0] == 1

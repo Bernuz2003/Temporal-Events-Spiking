@@ -457,7 +457,7 @@ class MultiGranularCountFrameEncoder:
         if count_cap > np.iinfo(np.uint8).max:
             raise ValueError("Multi-granular coarse count_cap must fit uint8 storage.")
         if fine_count_cap > np.iinfo(np.uint16).max:
-            raise ValueError("Multi-granular fine_count_cap must fit uint16 storage.")
+            raise ValueError("Multi-granular fine_count_cap must fit the unsigned 16-bit range.")
 
         self.height = height
         self.width = width
@@ -500,7 +500,9 @@ class MultiGranularCountFrameEncoder:
             "coarse_count_cap": self.count_cap,
             "fine_count_cap": self.fine_count_cap,
             "coarse_storage_dtype": "uint8",
-            "fine_storage_dtype": "uint16",
+            # torch 2.2 cannot materialize numpy.uint16; int32 preserves the complete configured
+            # count range and is converted to float32 by EncodedEventDataset before the model.
+            "fine_storage_dtype": "int32",
             "timestamp_normalization": False,
             "endpoint_knowledge": "none",
         }
@@ -532,9 +534,9 @@ class MultiGranularCountFrameEncoder:
             )
         flat = np.zeros(
             self.micro_time_steps * 2 * self.fine_height * self.fine_width,
-            dtype=np.uint16,
+            dtype=np.int32,
         )
-        flat[occupied] = counts.astype(np.uint16)
+        flat[occupied] = counts.astype(np.int32)
         fine = torch.from_numpy(
             flat.reshape(self.micro_time_steps, 2, self.fine_height, self.fine_width)
         )

@@ -236,7 +236,7 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
             raise ConfigError("MultiGranular fine_spatial_stride must exceed one")
         fine_count_cap = representation.get("fine_count_cap")
         if type(fine_count_cap) is not int or not 0 < fine_count_cap <= 65_535:
-            raise ConfigError("MultiGranular fine_count_cap must fit uint16")
+            raise ConfigError("MultiGranular fine_count_cap must fit the unsigned 16-bit range")
     model = config["model"]
     if model["name"] != "mini_qkformer":
         raise ConfigError("The active baseline requires model.name=mini_qkformer")
