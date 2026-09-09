@@ -48,6 +48,9 @@ una curva temporale distinta e merita la diagnostica checkpoint-only descritta s
 | B+TCAP | superato | 138 | full completato | accuracy 98,44%, loss 1,4534 all'ultima epoca |
 | B+PLIF | superato | 165 | full completato | accuracy 100%, loss 1,4782 all'ultima epoca |
 | gated-v2 | fallito | 500 | full non autorizzato dal workflow | accuracy 100%, loss 1,7716; il vincolo `<1,5` non è stato abbassato |
+| F+TCAP | superato | 402 | full in corso | ultime cinque epoche valide; validation accuracy 96,88%, loss 1,4857 |
+| F+TBR | **fallito** | 500 | full bloccato | accuracy train 100% e validation 98,44%, ma loss minima validation 1,5368 e finale 1,5543 |
+| F+Spike-TBR-LIF | superato | 294 | full in corso | accuracy train/validation 100%, loss validation 1,4969; minimo 1,4769 |
 
 Il full gated-v2 è stato avviato manualmente per diagnosi e fermato dopo 28 epoche. Il miglior
 Macro-F1 osservato è 9,69% all'epoca 27; all'epoca 28 è 6,60%. Non è un risultato completo e non
@@ -162,15 +165,70 @@ F1 TCAP−F circa +1,97 pp con IC95% [0,02; 3,87], mentre PLIF−B attraversa ze
 sono selezionati su questa stessa validation e ogni variante ha un solo seed, questi numeri
 stabiliscono priorità, non significatività confermativa.
 
-## PLIF: dinamica appresa e diagnostica preregistrata
+## PLIF: diagnostica temporale checkpoint-only completata
 
 PLIF apprende scale temporali non banali. Il `stage2.attention.attn_lif` raggiunge τ medio 6,227,
 range 4,820–7,086; `stage2.attention.q_lif` scende a τ medio 1,442 e
 `stage2.attention.proj_lif` a 1,672. La separazione fra memoria persistente e trasformazioni rapide
 è reale, ma non basta a migliorare F1 a 2 s.
 
-Prima di qualunque nuovo training PLIF si esegue `temporal-diagnostic` sui best di B e PLIF. Il
-comando produce, ogni 50 ms:
+La diagnostica sui best di B e PLIF copre tutti i 2.995 sample validation, 40 punti a intervalli di
+50 ms e tutti gli offset rispetto all'ultimo bin occupato. I checkpoint SHA-256 sono registrati in
+`artifacts/dvslip_temporal_diagnostic_b_plif__20260909_v2/temporal_diagnostic_pair_summary.json`.
+Il test conferma un vantaggio di dinamica precoce e rigetta l'ipotesi che il fenomeno dipenda
+principalmente dal denominatore della media.
+
+| Readout checkpoint-only | B Acc AUC | PLIF Acc AUC | Δ | B F1 AUC | PLIF F1 AUC | Δ |
+|---|---:|---:|---:|---:|---:|---:|
+| prefix mean `sum/t` | 0,22410 | 0,25122 | **+0,02712** | 0,20188 | 0,23661 | **+0,03473** |
+| denominatore fisso `sum/40` | 0,22650 | 0,25170 | **+0,02520** | 0,20393 | 0,23771 | **+0,03378** |
+
+Le due normalizzazioni differiscono poco e lasciano quasi invariato il vantaggio PLIF. A 1 s, per
+esempio, il denominatore fisso aggiunge circa 0,39 pp F1 a entrambi. Il massimo scarto osservato ai
+punti centrali resta inferiore a 0,7 pp. Il recupero tardivo di B deriva quindi dall'evoluzione
+degli stati, non dalla sola riduzione di scala causata dal padding nel mean readout.
+
+| Offset dall'ultimo evento | B F1 % | PLIF F1 % | Δ PLIF−B pp | Quota clippata a 2 s |
+|---:|---:|---:|---:|---:|
+| 0 ms | 23,40 | 31,06 | **+7,66** | 0,00% |
+| 50 ms | 23,70 | 32,72 | **+9,03** | 0,00% |
+| 100 ms | 23,77 | 33,57 | **+9,80** | 0,00% |
+| 200 ms | 24,93 | 34,87 | **+9,95** | 0,03% |
+| 300 ms | 26,37 | 36,33 | **+9,95** | 0,03% |
+| 400 ms | 29,11 | 37,66 | **+8,56** | 0,20% |
+| 500 ms | 31,89 | 39,11 | **+7,23** | 0,60% |
+| 600 ms | 35,54 | 40,58 | +5,04 | 2,57% |
+| 700 ms | 39,85 | 42,01 | +2,15 | 8,75% |
+| 800 ms | 42,30 | 42,84 | +0,54 | 21,00% |
+| 950 ms | 43,67 | 43,43 | −0,24 | 56,53% |
+
+PLIF anticipa dunque una decisione utile, ma nessun punto event-aligned non clippato supera il F1
+finale di B a 2 s, 44,15%. Il massimo di entrambe le curve appare soltanto quando la maggioranza
+dei sample è già clippata all'orizzonte completo e coincide sostanzialmente col punto finale. Non
+esiste un `K` nascosto che converta PLIF nel miglior classificatore; scegliere 200–300 ms sullo
+stesso validation set ottimizzerebbe una latenza oracle senza battere il riferimento primario.
+
+La traccia per layer spiega il vantaggio precoce. Dopo l'ultimo evento l'input è esattamente nullo
+già da `L+50 ms`; PLIF mantiene però più attività nei blocchi profondi e meno in diversi strati
+iniziali.
+
+| Offset | `stage2.attention.attn_lif` B | PLIF | `stage2.encoded_abs_mean` B | PLIF |
+|---:|---:|---:|---:|---:|
+| L | 0,5117 | **0,6172** | 0,9090 | **0,9281** |
+| +100 ms | 0,4130 | **0,5182** | 0,7838 | **0,8523** |
+| +200 ms | 0,2546 | **0,3729** | 0,5769 | **0,7440** |
+| +300 ms | 0,1120 | **0,2336** | 0,3585 | **0,5948** |
+| +400 ms | 0,0399 | **0,1291** | 0,2382 | **0,4272** |
+| +500 ms | 0,0215 | **0,0642** | 0,2013 | **0,2972** |
+| +800 ms | **0,0171** | 0,0081 | **0,1874** | 0,1753 |
+
+Il `stage2.attention.attn_lif` PLIF ha τ medio 6,227, mentre Q/projection apprendono scale rapide:
+il modello separa filtraggio iniziale e persistenza semantica profonda. Dopo circa 600–800 ms il
+vantaggio di attività si esaurisce e B recupera. Il risultato è quindi una proprietà di
+**latenza/dinamica**, utile per motivare in futuro supervisione ai prefissi o arresto adattivo
+basato su confidenza, non una promozione di PLIF per accuracy finale.
+
+La diagnostica ha prodotto, ogni 50 ms:
 
 - accuracy, Macro-F1, loss, confidenza, entropia, margine top-1 e margine della classe vera;
 - accordo con la decisione finale, cambi di classe e stabilità fino a 2 s;
@@ -207,12 +265,46 @@ di rappresentazioni con evidenza diretta su DVS-Lip.
 
 **F+TBR.** TBR canonico polarity-agnostic, `N=8`, `Δt=6,25 ms`, `ΔT=50 ms`, sempre 40 macro-step.
 Ha 431.004 parametri, 72 meno di F per il primo conv a un canale. Il metadata registra un
-accumulatore TBR di 8 bit per pixel e le collisioni che quantificano la molteplicità scartata.
+accumulatore TBR di 8 bit per pixel e le collisioni che quantificano la molteplicità scartata. Il
+gate ha raggiunto accuracy 100% train e 98,44% validation, ma non loss `<1,5`: è un fallimento di
+confidenza/separazione dei logit, non incapacità di memorizzare le 64 istanze. Il full resta
+correttamente bloccato e non si apre uno sweep della codifica.
 
 **F+Spike-TBR-LIF.** Stessa forma e stessi parametri di F+TBR, con filtro per-pixel a `β=0,9` e
 soglia `1,1`. Il preprocessing richiede membrana più accumulatore; il profilo v4 del modello non
 deve confonderli coi soli stati del backbone. Il metadata dichiara reset hard, reset per finestra e
 assenza di codice ufficiale di riferimento.
+
+**F+MultiGranular-Lite.** La topologia chiusa usa E0 invariato a `40×2×128×128` e un secondo stream
+ON/OFF a `320×2×16×16`: 6,25 ms nel tempo e pooling spaziale non sovrapposto 8×8. Il ramo fine usa
+Conv3×3 `2→16`, Conv1×1 `16→64`, LIF continui sull'intero sample e una Conv1d depthwise causale con
+kernel/stride 8; produce 40 mappe che vengono sommate all'uscita 64×16×16 di F prima di stage 1.
+Il Transformer vede sempre 40 step. La rappresentazione aumenta gli elementi di input solo del
+12,5% rispetto a E0, conserva polarità e molteplicità e non usa endpoint oracle. Il modello ha
+433.188 parametri, soltanto 2.112 più di F. Prima dell'attività misurata, il ramo aggiunge circa
+23,59 M operazioni multivalore sul count fine e 89,13 M AC potenziali su feature spiking, oltre al
+buffer causale della riduzione temporale. La configurazione è unica e preregistrata; larghezza,
+stride e clock ratio non ricevono sweep.
+
+## Snapshot dei full ancora in corso
+
+Questi valori sono diagnostici e non entrano nella tabella primaria finché mancano summary,
+predizioni finali e profilo del best.
+
+| Run | Epoca snapshot | Train Acc % | Val Acc % | Val F1 % | Val loss | Grad norm | Clip fraction |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| F+TCAP | 48 | 53,77 | **41,77** | **39,72** | 2,5472 | 46,23 | 1,00 |
+| F+Spike-TBR-LIF | 38 | 13,75 | 10,42 | 8,76 | 3,9196 | 48,80 | 1,00 |
+
+Alla stessa epoca 38, F aveva F1 16,46%, B 23,82%, B+TCAP 30,95% e F+TCAP 32,33%: Spike-TBR è
+quindi indietro di 7,70 pp rispetto a F e 23,57 pp rispetto a F+TCAP. Non è un problema numerico:
+loss e gradienti sono finiti e la clip fraction 1,0 compare anche negli altri full. Il collo di
+bottiglia è informativo. Su 64 sample validation deterministici, Spike-TBR emette in media 808,5
+voxel macro non nulli contro 7.594,6 di TBR, rapporto 0,0982. Il reset della membrana ogni 50 ms
+interrompe inoltre accumuli sub-soglia; mantenendo la stessa ricorrenza continua per il sample il
+numero medio di voxel emessi sale a circa 2.123,7, cioè 2,89×. Questa misura spiega il ritardo ma
+non autorizza un secondo full: la continuità fra macro-finestre non è determinata dal paper e
+diventerebbe una variante locale.
 
 ## DVS-Gesture
 

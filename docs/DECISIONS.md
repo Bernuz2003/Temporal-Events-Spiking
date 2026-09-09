@@ -22,32 +22,38 @@
 7. **B+T non viene eseguito ora.** T è il FIR depthwise da 576 coefficienti che comprime TCAP
    eliminando il mixing cross-channel. È un esperimento di ottimizzazione, non una candidata con
    maggiore potenziale prestazionale, e sarà rivalutato soltanto sull'architettura congelata.
-8. PLIF non è promosso per il punteggio finale: 43,68% F1 (−0,47 pp). Non si provano altri subset di
-   layer, inizializzazioni o combinazioni durante discovery. La sua elevata PrefixAUC e i τ appresi
-   autorizzano soltanto la diagnostica checkpoint-only B/PLIF, non `last_event+K` né un nuovo full.
-9. La diagnostica temporale separa `sum(h[1:t])/t`, `sum(h[1:t])/40` e attività post-evento; misura
-   margini, stabilità e firing per layer. L'allineamento all'ultimo evento è oracle e viene usato
-   solo per spiegazione meccanicistica. Un eventuale uso futuro richiederà supervisione ai prefissi
-   o arresto adattivo validato, non una costante scelta sul validation set.
+8. PLIF non è promosso per il punteggio finale: 43,68% F1 (−0,47 pp). La diagnostica completa gli
+   assegna però +3,47 pp di F1 PrefixAUC rispetto a B e circa +10 pp F1 tra `L+100` e `L+300 ms`.
+   Mantiene attività semantica profonda per 300–500 ms su input nullo, coerentemente coi τ appresi.
+9. Il denominatore `sum/t` contro `sum/40` cambia poco le curve. Nessun cutoff event-aligned PLIF
+   supera il F1 finale di B; `last_event+K` è quindi respinto. PLIF resta un risultato di latenza e
+   dinamica. Supervisione ai prefissi o arresto adattivo sono eventuali lavori post-freeze.
 10. Gated-v2 ha fallito il bounded overfit e il full manuale non ha mostrato recupero entro 28
     epoche. L'esatta forma diagonale/tanh è chiusa. Il fallimento storico resta invalido per via
     dell'inizializzazione, ma quello corretto è evidenza sufficiente per non spendere altri run.
-11. La rappresentazione E0 a 40 bin è una variabile strutturale esplicita. I probe prioritari sono
-    **F+TBR** e **F+Spike-TBR-LIF**: 8 micro-bin da 6,25 ms sono compressi in ciascuno dei 40
-    macro-bin da 50 ms. Nessuno sweep di bit, `Δt`, `β` o soglia viene aperto.
+11. F+TBR ha fallito il gate esclusivamente sulla loss: accuracy train 100% e validation 98,44%,
+    loss validation minima 1,5368. La codifica permette memorizzazione ma produce separazione dei
+    logit insufficiente sotto la ricetta invariata. Il full resta bloccato e non si provano bit,
+    `Δt`, polarità o normalizzazioni alternative.
 12. Il TBR canonico pubblicato scarta polarità e molteplicità intra-micro-bin; il confronto locale
     usa quindi un canale ed è fedele a questa semantica. Spike-TBR usa `β=0,9` e soglia `1,1`, ma
     viene chiamato paper-aligned e non replica ufficiale: non è disponibile codice sorgente e il
     paper non determina completamente `w(p)` né la continuità della membrana fra finestre `ΔT`.
-13. E1 phase-count resta implementato ma sospeso. MultiGranular-Lite è una candidata successiva
-    ad alto potenziale, non ancora un run: prima vanno fissati ramo fine, fusione e costo. EST,
-    HATS, TORE/TAF, Matrix-LSTM e replica MSTP completa restano fuori dalla campagna corrente.
-14. Le quattro macchine sono capacità massima, non un obbligo a riempire una griglia. L'iterazione
-    usa tre full indipendenti e una diagnostica: F+TCAP, F+TBR, F+Spike-TBR-LIF e B/PLIF
-    checkpoint-only. Nessuna combinazione parte prima dei risultati.
-15. Quando emerge una candidata finale, baseline e candidata vengono replicate su due nuovi seed
+13. Spike-TBR ha superato il gate, ma nello snapshot epoca 38 è a 8,76% F1. L'encoder emette solo
+    il 9,82% dei voxel macro non nulli di TBR sui 64 sample diagnostici; il reset ogni 50 ms spezza
+    accumuli sub-soglia. Il full può terminare per completezza, ma non si lancia una variante di
+    reset: il paper non specifica la continuità e un secondo run sarebbe tuning locale.
+14. MultiGranular-Lite è ora definito e implementato come singolo candidato: E0 full-spatial a 40
+    step più count ON/OFF a 320 step e 16×16, ramo spiking `2→16→64`, riduzione temporale causale
+    depthwise 8:1 e fusione additiva prima dello stage 1. Il backbone resta a 40 step, l'input cresce
+    del 12,5%, non c'è endpoint oracle e non sono aperti sweep. È autorizzato al bounded overfit.
+15. E1 phase-count, EST, HATS, TORE/TAF, Matrix-LSTM e replica MSTP completa restano sospesi.
+16. Le quattro macchine sono capacità massima, non un obbligo a riempire una griglia. Una macchina
+    libera può eseguire il gate MultiGranular-Lite; la seconda resta libera finché F+TCAP non
+    conclude. Non si crea un'altra rappresentazione per saturarla.
+17. Quando emerge una candidata finale, baseline e candidata vengono replicate su due nuovi seed
     comuni. Si riportano media/deviazione, confronto appaiato, Acc1/Acc2, PrefixAUC e profilo del
     best. Solo allora si passa a augmentation e ottimizzazione.
-16. Ogni conclusione hardware deve includere parametri, MAC multivalore, AC/SOP potenziali e ad
+18. Ogni conclusione hardware deve includere parametri, MAC multivalore, AC/SOP potenziali e ad
     attività, firing, stato/traffico e le due proxy Horowitz. Le proxy aritmetiche non sono joule
     misurati su FPGA e non includono memoria, routing, leakage o tutte le dinamiche LIF.

@@ -18,56 +18,27 @@ fallisce. Il dataset gate completo non va ripetuto a ogni run.
 
 ## Allocazione corrente dei quattro server
 
-### 1. F+TCAP — full candidato principale
+- F+TCAP e F+Spike-TBR-LIF sono già in corso: non rilanciarli.
+- F+TBR ha fallito il gate: non avviare manualmente il full.
+- La diagnostica B/PLIF è completa in
+  `artifacts/dvslip_temporal_diagnostic_b_plif__20260909_v2`.
+- Una macchina libera esegue MultiGranular-Lite; la seconda resta riserva.
+
+### F+MultiGranular-Lite — gate e full condizionale
+
+Dopo avere sincronizzato il commit contenente la nuova config ed eseguito il check statico:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tcap42 -- candidate --config configs/dvslip_f_temporal_capacity.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-mg-lite42 -- candidate --config configs/dvslip_f_multigranular_lite.yaml
 ```
 
-Il workflow esegue bounded overfit, full da pesi nuovi solo se passa, valutazione finale e profilo
-v4 del best. Non riusa pesi F o TCAP.
+Il workflow usa E0 coarse a 40×50 ms e un ramo fine ON/OFF a 320×6,25 ms già ridotto a 16×16.
+Solo il ramo economico vede 320 step; una convoluzione temporale depthwise causale riduce 8:1 prima
+del Transformer. Il full parte da pesi nuovi soltanto se il gate standard passa. Non cambiare
+larghezza del ramo, stride spaziale, clock ratio, loss o soglia del gate.
 
-### 2. F+TBR — timing intra-bin compresso
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tbr42 -- candidate --config configs/dvslip_f_tbr.yaml
-```
-
-Usa il TBR canonico polarity-agnostic con 8 micro-bin da 6,25 ms in ogni macro-bin da 50 ms. Forma
-`[40,1,H,W]`, backbone F e ricetta invariata; non esegue uno sweep di discretizzazione.
-
-### 3. F+Spike-TBR-LIF — filtro dinamico della rappresentazione
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-spike-tbr-lif42 -- candidate --config configs/dvslip_f_spike_tbr_lif.yaml
-```
-
-Usa `β=0,9`, soglia `1,1`, 8×6,25 ms e reset per macro-finestra. È una ricostruzione paper-aligned,
-non una replica di codice ufficiale. Il workflow rifiuta cambi simultanei a F, ricetta,
-augmentation o evaluation.
-
-### 4. Diagnostica temporale checkpoint-only B/PLIF
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-temporal-b-plif -- temporal-diagnostic-pair --baseline-config artifacts/dvslip_e0__20260825_211710__seed42/config_resolved.yaml --baseline-checkpoint checkpoints/dvslip_e0__20260825_211710__seed42/best.pt --plif-config artifacts/dvslip_b_plif__20260908_154858_510430__seed42/config_resolved.yaml --plif-checkpoint checkpoints/dvslip_b_plif__20260908_154858_510430__seed42/best.pt --output artifacts/dvslip_temporal_diagnostic_b_plif__20260909
-```
-
-Il comando esegue i due checkpoint in sequenza sulla stessa GPU. Non addestra e non modifica i
-checkpoint. Crea sottocartelle `baseline/` e `plif/` con:
-
-- `temporal_curve_every_bin.csv`;
-- `temporal_curve_event_aligned.csv`;
-- `temporal_activity_every_bin.csv`;
-- `temporal_activity_event_aligned.csv`;
-- `temporal_diagnostic_summary.json`, config e ambiente.
-
-La root contiene `temporal_diagnostic_pair_summary.json` con i delta PLIF−B delle AUC. La
-validation completa richiede un forward per checkpoint più riduzioni; la raccolta firing usa hook
-aggregati e non conserva tutte le mappe intermedie sulla GPU.
-
-I quattro comandi possono essere assegnati in qualunque ordine ai quattro host. La diagnostica
-finirà prima di un full; la GPU liberata resta disponibile per recovery/profiling. Non avviare
-`B+T`, E1, una variazione ON/OFF di TBR o MultiGranular-Lite prima della lettura dei tre risultati.
+Non avviare `B+T`, E1, una variante TBR o un secondo MultiGranular-Lite sulla macchina rimasta
+libera. Il prossimo uso di quella GPU dipende dal risultato finale di F+TCAP.
 
 ## Monitoraggio e ripresa
 

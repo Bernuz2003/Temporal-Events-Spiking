@@ -10,6 +10,7 @@ from etsr.data.common import build_loader
 from etsr.data.events import EncodedEventDataset, EventSample
 from etsr.encoders.count import (
     CountFrameEncoder,
+    MultiGranularCountFrameEncoder,
     PhaseCountFrameEncoder,
     SpikeTemporalBinaryFrameEncoder,
     TemporalBinaryFrameEncoder,
@@ -162,6 +163,30 @@ def test_spike_tbr_lif_uses_published_constants_and_resets_each_macro_window():
     assert encoded.representation_parameters["lif_beta"] == 0.9
     assert encoded.representation_parameters["lif_threshold"] == 1.1
     assert encoded.representation_parameters["fidelity"].startswith("paper_aligned")
+
+
+def test_multigranular_encoder_preserves_e0_and_adds_fine_low_resolution_counts():
+    encoder = MultiGranularCountFrameEncoder(
+        height=4,
+        width=4,
+        window_us=2_000_000,
+        bin_width_us=50_000,
+        micro_bin_width_us=6_250,
+        fine_spatial_stride=2,
+        count_cap=255,
+        fine_count_cap=65_535,
+    )
+    encoded = encoder(_tbr_sample())
+
+    assert isinstance(encoded.tensor, dict)
+    assert torch.equal(encoded.tensor["coarse"], _encoder()(_tbr_sample()).tensor)
+    assert encoded.tensor["fine"].shape == (320, 2, 2, 2)
+    assert encoded.tensor["fine"].dtype == torch.uint16
+    assert int(encoded.tensor["fine"].sum()) == len(_tbr_sample().t_us)
+    assert encoded.tensor["fine"][0, 0, 1, 0] == 1
+    assert encoded.tensor["fine"][0, 1, 1, 0] == 1
+    assert encoded.representation_parameters["endpoint_knowledge"] == "none"
+    assert encoded.metadata["fine_encoded_event_count"] == encoded.metadata["source_event_count"]
 
 
 def test_encoded_dataset_adapts_to_the_shared_training_batch_contract():

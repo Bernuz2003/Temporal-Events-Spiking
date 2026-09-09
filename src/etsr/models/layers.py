@@ -259,6 +259,71 @@ class PyramidalPatchEmbedding(nn.Module):
         return x + self.shortcut(shortcut_source)
 
 
+class FineTemporalBranch(nn.Module):
+    """Cheap high-rate branch compressed to the coarse clock before token processing.
+
+    Fine frames are already spatially pooled by the representation.  Two spiking convolutions
+    process their 6.25 ms sequence, then a channel-wise causal strided temporal convolution maps
+    every eight completed micro-steps to one 50 ms feature map.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int,
+        out_channels: int,
+        micro_steps_per_macro: int,
+        tau: float,
+        threshold: float,
+    ) -> None:
+        super().__init__()
+        if micro_steps_per_macro <= 1:
+            raise ValueError("micro_steps_per_macro must be greater than one")
+        self.micro_steps_per_macro = micro_steps_per_macro
+        self.spatial = ConvBNLIF2d(
+            in_channels,
+            hidden_channels,
+            3,
+            padding=1,
+            tau=tau,
+            threshold=threshold,
+        )
+        self.project = ConvBNLIF2d(
+            hidden_channels,
+            out_channels,
+            1,
+            tau=tau,
+            threshold=threshold,
+        )
+        self.temporal_reduce = nn.Conv1d(
+            out_channels,
+            out_channels,
+            kernel_size=micro_steps_per_macro,
+            stride=micro_steps_per_macro,
+            groups=out_channels,
+            bias=False,
+        )
+        self.temporal_bn = nn.BatchNorm1d(out_channels)
+        self.output_lif = _lif(out_channels, tau, threshold)
+
+    def initialize_temporal_reducer(self) -> None:
+        nn.init.constant_(self.temporal_reduce.weight, 1.0 / self.micro_steps_per_macro)
+
+    def forward(self, fine_frames: torch.Tensor) -> torch.Tensor:
+        if fine_frames.ndim != 5:
+            raise ValueError("Fine branch expects [B, T_micro, C, H, W].")
+        if fine_frames.shape[1] % self.micro_steps_per_macro:
+            raise ValueError("Fine time axis must contain complete macro-windows.")
+        x = fine_frames.permute(1, 0, 2, 3, 4).contiguous()
+        x = self.project(self.spatial(x))
+        micro_steps, batch, channels, height, width = x.shape
+        x = x.permute(1, 3, 4, 2, 0).reshape(batch * height * width, channels, micro_steps)
+        x = self.temporal_bn(self.temporal_reduce(x))
+        macro_steps = x.shape[-1]
+        x = x.reshape(batch, height, width, channels, macro_steps).permute(4, 0, 3, 1, 2)
+        return self.output_lif(x.contiguous())
+
+
 class PatchEmbeddingStage(nn.Module):
     """Downsample two spiking branches and add them without another threshold."""
 

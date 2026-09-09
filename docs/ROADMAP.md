@@ -8,27 +8,27 @@ La prima ondata è conclusa. F e TCAP hanno superato B; PLIF non migliora il pun
 ma anticipa l'emergere dell'informazione; gated-v2 è chiuso. I risultati e i profili completi sono
 in `EXPERIMENT_LEDGER.md`.
 
-## Iterazione corrente: tre run ad alto ROI e una diagnostica
+## Iterazione corrente: due full in corso, una diagnosi chiusa e un nuovo gate
 
 1. **F+TCAP, seed 42 — candidato principale.** Verifica se front-end efficiente e mixing temporale
    ritardato sono compatibili. È il solo run che può superare direttamente il miglior 500k corrente
    combinando due segnali locali positivi.
-2. **F+TBR, seed 42 — rappresentazione canonica.** Usa 8 bit e micro-bin da 6,25 ms: ogni frame
-   copre gli stessi 50 ms di E0 e il backbone continua a elaborare 40 step. Il confronto con F
-   misura il valore dell'occupazione temporale intra-bin compressa.
-3. **F+Spike-TBR-LIF, seed 42 — filtro della rappresentazione.** Aggiunge al punto 2 un LIF
-   per-pixel con i valori DVS-Lip pubblicati `β=0,9` e soglia `1,1`. Il confronto TBR/Spike-TBR
-   misura il valore del filtro dinamico a parità di F e forma dell'input.
-4. **Diagnostica B/PLIF — zero training.** Valuta ogni bin e la coda event-aligned, separando
-   denominatore del mean e attività ricorrente. Non seleziona iperparametri e non compete per il
-   budget di full training dopo l'esecuzione.
+2. **F+TBR, seed 42 — chiuso al gate.** Ha memorizzato il subset ma non ha raggiunto loss `<1,5`.
+   Nessun full e nessuna variante della codifica canonica.
+3. **F+Spike-TBR-LIF, seed 42 — full in corso.** Usa il LIF per-pixel con i valori DVS-Lip
+   pubblicati `β=0,9` e soglia `1,1`. L'input locale risulta molto più sparso di TBR e lo snapshot
+   all'epoca 38 è debole; il run termina senza aprire varianti della ricostruzione.
+4. **Diagnostica B/PLIF — completata.** PLIF anticipa le decisioni tramite persistenza profonda,
+   ma nessun cutoff supera B finale. Il ramo resta un risultato di latenza senza nuovo training.
+5. **F+MultiGranular-Lite, seed 42 — nuovo candidato.** Conserva E0 e aggiunge una branch causale
+   6,25 ms a 16×16. La riduzione temporale appresa avviene prima dello stage 1; il Transformer
+   continua a elaborare 40 step. Si esegue un solo workflow gate→full condizionale.
 
 Ogni full usa `candidate`: test statici del commit, bounded overfit 16×4, nuovo training da zero
 soltanto se il gate passa, valutazione e profilo v4 del best. Nessuna modifica della ricetta è
-ammessa. I tre full sono indipendenti e possono essere avviati sulle GPU locali `0` di tre
-macchine fisiche. La quarta esegue la diagnostica breve e rimane riserva. `B+T` è rinviato perché
-è la compressione depthwise di TCAP; E1 phase-count è sospeso perché è una variazione locale a ROI
-inferiore rispetto alle rappresentazioni con evidenza diretta DVS-Lip.
+ammessa. I full sono indipendenti sulle GPU locali `0` delle macchine fisiche. `B+T` è rinviato
+perché è la compressione depthwise di TCAP; E1 phase-count è sospeso. Una macchina resta libera:
+la capacità parallela non giustifica un quinto candidato non preregistrato.
 
 ## Decisione alla ricezione degli artifact
 
@@ -36,10 +36,11 @@ inferiore rispetto alle rappresentazioni con evidenza diretta DVS-Lip.
 |---|---|
 | F+TCAP > TCAP e > F | finalista prestazionale; confrontare costo misurato con B e F |
 | F+TCAP non supera TCAP | non assumere additività; TCAP resta finalista e F resta Pareto efficiente |
-| F+TBR ≥ F +2 pp F1 | TBR entra nella shortlist; una sola combinazione col temporal core vincente |
-| F+TBR < F +2 pp | nessuna variazione di bit/Δt; interpretare Spike-TBR prima di chiudere la famiglia |
-| F+Spike-TBR ≥ F+TBR +2 pp | promuovere il filtro LIF e riportare stato e preprocessing |
-| Spike-TBR non supera TBR | conservare TBR; nessuno sweep di β o soglia nella discovery |
+| F+TBR fallisce il gate | nessun full e nessuna variazione di bit/Δt; ramo canonico chiuso |
+| F+Spike-TBR ≥ F +2 pp F1 | promuovere il filtro LIF e riportare stato e preprocessing |
+| Spike-TBR non supera F | chiudere TBR/Spike-TBR; nessuno sweep di β, soglia o reset |
+| MultiGranular-Lite ≥ F +2 pp F1 | ramo fine in shortlist; una sola combinazione col temporal core vincente |
+| MultiGranular-Lite fallisce il gate o resta sotto +2 pp | chiudere senza sweep di branch/stride/fusione |
 | PLIF stabile prima ma non a 2 s | risultato latency/dynamics; rimandare prefix supervision/halting |
 | PLIF non stabile o vantaggio dovuto alla scala | chiudere il ramo senza training |
 
@@ -71,8 +72,8 @@ fuori dal budget principale.
 
 La compressione `TCAP → T depthwise` appartiene a questa fase: T è un FIR causale per-canale da
 576 coefficienti che elimina il mixing cross-channel. MultiGranular-Lite entra prima del freeze
-solo se TBR/Spike-TBR confermano il collo di bottiglia intra-bin e dopo una specifica chiusa di
-topologia, fusione, stato e operazioni; non si traduce il principio MSTP in un ramo arbitrario.
+soltanto con la topologia chiusa descritta sopra; non vengono provate traduzioni alternative di
+MSTP.
 
 ## Stop rule
 

@@ -547,3 +547,56 @@ def test_dvslip_tbr_candidates_change_only_f_representation_and_input_channels(
     assert candidate["model"] == {**frontend["model"], "in_channels": 1}
     model = build_model(candidate["model"], num_classes=100)
     assert sum(parameter.numel() for parameter in model.parameters()) == 431_004
+
+
+def test_multigranular_lite_keeps_main_clock_and_accepts_aligned_two_rate_input():
+    model = MiniQKFormer(
+        2,
+        5,
+        embed_dim=32,
+        num_heads=4,
+        frontend="pyramidal",
+        multigranular_lite=True,
+        multigranular_fine_channels=4,
+        multigranular_micro_steps=8,
+    )
+    frames = {
+        "coarse": torch.rand(2, 4, 2, 32, 32),
+        "fine": torch.rand(2, 32, 2, 4, 4),
+    }
+    with torch.no_grad():
+        encoded = model._encode(frames)
+        logits = model(frames)
+
+    assert encoded.shape[:3] == (4, 2, 32)
+    assert logits.shape == (2, 5)
+    assert model.fine_temporal_branch is not None
+    assert model.fine_temporal_branch.temporal_reduce.groups == 16
+    torch.testing.assert_close(
+        model.fine_temporal_branch.temporal_reduce.weight,
+        torch.full_like(model.fine_temporal_branch.temporal_reduce.weight, 1 / 8),
+    )
+
+
+def test_dvslip_multigranular_config_changes_only_preregistered_f_fields():
+    root = Path(__file__).parents[1]
+    frontend = load_config(root / "configs" / "dvslip_f.yaml")
+    candidate = load_config(root / "configs" / "dvslip_f_multigranular_lite.yaml")
+
+    for section in ("dataset", "augmentation", "evaluation", "training"):
+        assert candidate[section] == frontend[section]
+    assert candidate["representation"] == {
+        "name": "multigranular_count_frames_mg_lite",
+        "window_us": 2_000_000,
+        "bin_width_us": 50_000,
+        "micro_bin_width_us": 6_250,
+        "fine_spatial_stride": 8,
+        "count_cap": 255,
+        "fine_count_cap": 65_535,
+    }
+    assert candidate["model"] == {
+        **frontend["model"],
+        "multigranular_lite": True,
+        "multigranular_fine_channels": 16,
+        "multigranular_micro_steps": 8,
+    }

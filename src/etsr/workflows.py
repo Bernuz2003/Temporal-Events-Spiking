@@ -49,6 +49,28 @@ def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
             expected_representation.update({"lif_beta": 0.9, "lif_threshold": 1.1})
         if config["representation"] != expected_representation:
             raise ValueError("TBR discovery is fixed to the preregistered DVS-Lip paper settings")
+    elif representation_name == "multigranular_count_frames_mg_lite":
+        reference = load_config("configs/dvslip_f.yaml")
+        for section in ("dataset", "augmentation", "training", "evaluation"):
+            if config.get(section) != reference.get(section):
+                raise ValueError(f"MultiGranular-Lite discovery must preserve F {section}")
+        expected_representation = {
+            "name": representation_name,
+            "window_us": 2_000_000,
+            "bin_width_us": 50_000,
+            "micro_bin_width_us": 6_250,
+            "fine_spatial_stride": 8,
+            "count_cap": 255,
+            "fine_count_cap": 65_535,
+        }
+        expected_model = {
+            **reference["model"],
+            "multigranular_lite": True,
+            "multigranular_fine_channels": 16,
+            "multigranular_micro_steps": 8,
+        }
+        if config["representation"] != expected_representation or config["model"] != expected_model:
+            raise ValueError("MultiGranular-Lite discovery is fixed to its preregistered design")
     else:
         for section in ("dataset", "representation", "augmentation", "training", "evaluation"):
             if config.get(section) != reference.get(section):

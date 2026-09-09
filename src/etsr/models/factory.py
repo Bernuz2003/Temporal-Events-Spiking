@@ -31,4 +31,7 @@ def build_model(config: dict[str, Any], num_classes: int) -> nn.Module:
         temporal_channel_mixer_delays=tuple(config.get("temporal_channel_mixer_delays", (1, 2, 4))),
         learnable_lif_tau=config.get("learnable_lif_tau", False),
         gated_initial_memory_steps=config.get("gated_initial_memory_steps"),
+        multigranular_lite=config.get("multigranular_lite", False),
+        multigranular_fine_channels=int(config.get("multigranular_fine_channels", 16)),
+        multigranular_micro_steps=int(config.get("multigranular_micro_steps", 8)),
     )

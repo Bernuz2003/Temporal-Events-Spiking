@@ -105,6 +105,12 @@ usa i count per micro-bin come input, reset hard e reinizializza la membrana a o
 coerentemente con l'inizializzazione per `ΔT` dell'algoritmo. Queste scelte sono salvate nella config
 e nei metadata e non saranno oggetto di sweep.
 
+La verifica empirica locale rende questa ambiguità materiale: sui primi 64 sample validation la
+ricostruzione emette in media 808,5 voxel macro non nulli, contro 7.594,6 del TBR canonico. Una
+simulazione checkpoint-free che mantiene la membrana fra macro-finestre sale a 2.123,7 voxel, ma
+resta molto più sparsa e non è autorizzata come nuovo candidato: scegliere la policy dopo aver visto
+il fallimento sarebbe tuning della ricostruzione, non replica del risultato pubblicato.
+
 I due run usano F come substrato. Entrambi producono `[40,1,H,W]`; il Transformer continua a
 elaborare 40 step. F+TBR misura il valore del timing intra-bin compresso; F+Spike-TBR misura il
 valore aggiunto dal filtro LIF a parità di shape e backbone. Non si usa una variante ON/OFF locale,
@@ -119,11 +125,21 @@ temporale con rappresentazione spaziale più economica, poi un message-flow inte
 Questo è diverso da TBR: TBR comprime deterministicamente otto occupazioni in un valore prima del
 modello; un ramo multi-granular elabora esplicitamente i micro-step e apprende la compressione.
 
-MultiGranular-Lite resta ad alto potenziale, ma non è ancora un run valido. Una versione locale
-richiede scelte nuove su larghezza, downsampling, condivisione dei pesi, operatore temporale e punto
-di fusione. Lanciarla ora trasformerebbe un principio pubblicato in una combinazione ad hoc e
-renderebbe un fallimento non interpretabile. Se TBR o Spike-TBR superano F di almeno 2 pp F1, si
-definisce una sola topologia Lite con budget e stato espliciti e la si confronta col vincitore.
+L'ablazione pubblicata è particolarmente utile: low-rate 30 bin raggiunge 69,57% accuracy,
+high-rate 210 bin 69,49%, la combinazione senza Multi-Scale Feature Relation Module 71,11% e MSTP
+completo 72,10%. I due rami hanno forza individuale simile ma feature complementari; il guadagno
+non deriva dal semplice aumento uniforme del numero di frame. Il
+[codice ufficiale](https://github.com/tgc1997/event-based-lip-reading) conferma due tensori distinti,
+un ramo high-rate assottigliato nei canali e convoluzioni temporali strided che riallineano le
+feature al clock low-rate prima della fusione. Quel sistema usa però voxel endpoint-normalizzati,
+ResNet-18 e GRU bidirezionale; non viene copiato integralmente.
+
+La sola topologia locale autorizzata conserva E0 `[40,2,128,128]` e aggiunge count ON/OFF causali
+`[320,2,16,16]`. Il ramo fine `2→16→64` usa LIF continui e una riduzione depthwise con kernel e
+stride 8, quindi si fonde all'uscita di F prima dello stage 1. Il Transformer rimane a 40 step e
+l'input denso cresce del 12,5%, anziché 8×. Questa è un'estrazione esplicita del principio
+high-time/low-space del paper, con una specifica unica e profilabile; non si aprono varianti di
+larghezza, stride o punto di fusione.
 
 ### Alternative rinviate
 

@@ -3,6 +3,7 @@
 from etsr.encoders.count import (
     CountFrameEncoder,
     EncodedRepresentation,
+    MultiGranularCountFrameEncoder,
     SpikeTemporalBinaryFrameEncoder,
     TemporalBinaryFrameEncoder,
 )
@@ -10,6 +11,7 @@ from etsr.encoders.count import (
 __all__ = [
     "CountFrameEncoder",
     "EncodedRepresentation",
+    "MultiGranularCountFrameEncoder",
     "SpikeTemporalBinaryFrameEncoder",
     "TemporalBinaryFrameEncoder",
 ]

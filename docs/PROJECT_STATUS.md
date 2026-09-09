@@ -2,7 +2,8 @@
 
 **Aggiornato:** 2026-09-09
 
-**Fase:** selezione strutturale avanzata; F e TCAP positivi, rappresentazione TBR in verifica
+**Fase:** selezione strutturale avanzata; F+TCAP in corso, TBR canonico chiuso al gate,
+MultiGranular-Lite pronto
 
 ## Verità sperimentale corrente
 
@@ -27,9 +28,10 @@ dei sample validation è già terminato entro 1,5 s, il fenomeno riguarda soprat
 post-evento e la normalizzazione del mean. I τ appresi sono eterogenei, con τ medio 6,227 nello
 spike-attention finale e τ medi 1,442/1,672 nelle trasformazioni q/proj.
 
-È implementato `temporal-diagnostic`, che riusa i checkpoint B e PLIF e produce curve a ogni bin,
-due denominatori del mean, margini/stabilità e attività per layer in tempo assoluto ed event-aligned.
-L'allineamento event-aware è marcato oracle e non diventa una nuova policy di readout.
+La diagnostica è completata. PLIF migliora F1 PrefixAUC di 3,47 pp e mantiene circa +10 pp F1 tra
+100 e 300 ms dopo l'ultimo evento. Le due normalizzazioni del mean sono quasi equivalenti: il
+fenomeno dipende dagli stati profondi persistenti. Nessun cutoff PLIF supera però il F1 finale di B,
+quindi l'allineamento event-aware resta spiegazione oracle e non diventa una policy di readout.
 
 ## Implementazione pronta
 
@@ -38,6 +40,8 @@ L'allineamento event-aware è marcato oracle e non diventa una nuova policy di r
   da 50 ms;
 - `configs/dvslip_f_spike_tbr_lif.yaml`: stesso contratto con filtro LIF paper-aligned,
   `β=0,9` e soglia `1,1`;
+- `configs/dvslip_f_multigranular_lite.yaml`: E0 coarse a 40 step più ramo count ON/OFF
+  320×16×16, compressione temporale appresa 8:1 e fusione prima dello stage 1;
 - comando `temporal-diagnostic`: quattro CSV, summary, config e ambiente, nessun training;
 - workflow `candidate`: blocca TBR ai valori DVS-Lip pubblicati e conserva F, ricetta,
   augmentation, split ed evaluation.
@@ -50,11 +54,15 @@ per `ΔT` dell'algoritmo pubblicato.
 
 ## Prossima acquisizione di evidenza
 
-Tre server eseguono F+TCAP, F+TBR e F+Spike-TBR-LIF tramite bounded overfit e full condizionale. Il
-quarto esegue la diagnostica B/PLIF e resta libero. B+T è rinviato alla compressione post-freeze;
-B+E1 non viene lanciato. MultiGranular-Lite resta una candidata forte, ma richiede una topologia e
-una contabilità hardware preregistrate per non trasformare il principio MSTP in una soluzione ad
-hoc.
+F+TCAP e F+Spike-TBR-LIF sono in corso. All'epoca 48 F+TCAP raggiunge 39,72% F1 validation ed è
+nettamente promettente; all'epoca 38 Spike-TBR è a 8,76% e soffre un input sovrafiltrato. F+TBR ha
+fallito il gate pur raggiungendo accuracy quasi perfetta, perché la loss validation non è scesa
+sotto 1,5. Non si aggira il gate e non si aprono variazioni TBR.
+
+Una macchina libera può ora eseguire `F+MultiGranular-Lite` col normale workflow `candidate`. La
+topologia è chiusa: high-time/low-space causale, input denso +12,5%, Transformer ancora a 40 step.
+La seconda macchina resta riserva fino all'esito di F+TCAP; B+T è rinviato alla compressione
+post-freeze e B+E1 resta sospeso.
 
 L'official test resta inutilizzato. Tutti i nuovi full sono seed 42 e servono alla selezione; la
 robustezza richiederà due nuovi seed comuni per B e candidata finale prima della fase di

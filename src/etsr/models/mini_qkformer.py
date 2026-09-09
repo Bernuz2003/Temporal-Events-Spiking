@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from etsr.models.layers import (
+    FineTemporalBranch,
     InitialPatchEmbedding,
     PatchEmbeddingStage,
     PyramidalPatchEmbedding,
@@ -44,6 +45,9 @@ class MiniQKFormer(nn.Module):
         temporal_channel_mixer_delays: tuple[int, ...] = (1, 2, 4),
         learnable_lif_tau: bool = False,
         gated_initial_memory_steps: float | None = None,
+        multigranular_lite: bool = False,
+        multigranular_fine_channels: int = 16,
+        multigranular_micro_steps: int = 8,
     ) -> None:
         super().__init__()
         if embed_dim % 4 != 0:
@@ -86,6 +90,14 @@ class MiniQKFormer(nn.Module):
             raise ValueError("temporal channel mixer delays must be increasing positive integers")
         if gated_initial_memory_steps is not None and gated_initial_memory_steps <= 1.0:
             raise ValueError("gated_initial_memory_steps must be greater than one")
+        if type(multigranular_lite) is not bool:
+            raise ValueError("multigranular_lite must be boolean")
+        if multigranular_lite and frontend != "pyramidal":
+            raise ValueError("multigranular_lite requires the pyramidal front-end")
+        if multigranular_fine_channels <= 0:
+            raise ValueError("multigranular_fine_channels must be positive")
+        if multigranular_micro_steps <= 1:
+            raise ValueError("multigranular_micro_steps must be greater than one")
         self.num_classes = num_classes
         self.readout_name = readout
         self.readout_time = readout_time
@@ -93,6 +105,7 @@ class MiniQKFormer(nn.Module):
         self.temporal_fir_enabled = temporal_fir
         self.temporal_channel_mixer_enabled = temporal_channel_mixer
         self.learnable_lif_tau_enabled = learnable_lif_tau
+        self.multigranular_lite_enabled = multigranular_lite
         half = embed_dim // 2
 
         first_fir = temporal_fir_kernel_size if temporal_fir else None
@@ -109,6 +122,18 @@ class MiniQKFormer(nn.Module):
             temporal_fir_dilation=temporal_fir_dilations[0],
             temporal_channel_mixer_delays=channel_mixer_delays,
             learnable_tau=learnable_lif_tau,
+        )
+        self.fine_temporal_branch = (
+            FineTemporalBranch(
+                in_channels=2,
+                hidden_channels=multigranular_fine_channels,
+                out_channels=half,
+                micro_steps_per_macro=multigranular_micro_steps,
+                tau=lif_tau,
+                threshold=lif_threshold,
+            )
+            if multigranular_lite
+            else None
         )
         self.stage1 = SpikingBlock(
             attention=TokenQKAttention(half, num_heads, lif_tau, lif_threshold, learnable_lif_tau),
@@ -150,6 +175,8 @@ class MiniQKFormer(nn.Module):
                 module.surrogate_alpha = float(surrogate_alpha)
                 module.cross_time = lif_cross_time
         self.apply(self._initialize)
+        if self.fine_temporal_branch is not None:
+            self.fine_temporal_branch.initialize_temporal_reducer()
 
     @staticmethod
     def _initialize(module: nn.Module) -> None:
@@ -160,25 +187,45 @@ class MiniQKFormer(nn.Module):
             if getattr(module, "bias", None) is not None:
                 nn.init.zeros_(module.bias)
 
-    def _encode(self, frames: torch.Tensor) -> torch.Tensor:
-        if frames.ndim != 5:
+    def _encode(self, frames: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
+        if isinstance(frames, dict):
+            if not self.multigranular_lite_enabled or set(frames) != {"coarse", "fine"}:
+                raise ValueError("A coarse/fine input requires multigranular_lite.")
+            coarse_frames = frames["coarse"]
+            fine_frames = frames["fine"]
+        else:
+            if self.multigranular_lite_enabled:
+                raise ValueError("multigranular_lite requires coarse and fine input streams.")
+            coarse_frames = frames
+            fine_frames = None
+        if coarse_frames.ndim != 5:
             raise ValueError("Expected input [B, T, C, H, W].")
-        x = frames.permute(1, 0, 2, 3, 4).contiguous()
+        x = coarse_frames.permute(1, 0, 2, 3, 4).contiguous()
         x = self.patch_embed1(x)
+        if fine_frames is not None:
+            assert self.fine_temporal_branch is not None
+            fine = self.fine_temporal_branch(fine_frames)
+            if fine.shape != x.shape:
+                raise ValueError(
+                    f"Fine branch output {tuple(fine.shape)} does not match coarse {tuple(x.shape)}."
+                )
+            x = x + fine
         x = self.stage1(x)
         x = self.patch_embed2(x)
         return self.stage2(x)
 
-    def forward(self, frames: torch.Tensor) -> torch.Tensor:
+    def forward(self, frames: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
         x = self._encode(frames)
         valid_steps = self._last_event_steps(frames) if self.readout_time == "last_event" else None
         pooled = self._readout(x, valid_steps)
         return self.head(pooled)
 
     @staticmethod
-    def _last_event_steps(frames: torch.Tensor) -> torch.Tensor:
+    def _last_event_steps(frames: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
         """Return the one-based final occupied bin for each encoded sample."""
 
+        if isinstance(frames, dict):
+            frames = frames["coarse"]
         occupied = frames.flatten(2).ne(0).any(dim=2)
         positions = torch.arange(
             1,

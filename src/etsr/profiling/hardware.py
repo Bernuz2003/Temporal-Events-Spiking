@@ -11,7 +11,14 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+from etsr.data.events import (
+    encoded_batch_size,
+    move_encoded_input,
+    select_encoded_batch,
+    slice_encoded_batch,
+)
 from etsr.models.layers import (
+    FineTemporalBranch,
     InitialPatchEmbedding,
     PatchEmbeddingStage,
     PyramidalPatchEmbedding,
@@ -38,7 +45,9 @@ class _HardwareProfiler:
         self.gate_step_counts: dict[str, int] = defaultdict(int)
         self.handles: list[Any] = []
         for name, module in model.named_modules():
-            if isinstance(  # noqa: UP038 - removed by modern Ruff; tuple form is intentional.
+            if isinstance(module, FineTemporalBranch):
+                hook = self._fine_temporal_branch_hook(name)
+            elif isinstance(  # noqa: UP038 - removed by modern Ruff; tuple form is intentional.
                 module, (nn.Conv1d, nn.Conv2d, nn.Linear)
             ):
                 hook = self._dense_hook(name)
@@ -58,12 +67,42 @@ class _HardwareProfiler:
                 hook = self._attention_hook(name)
             elif isinstance(  # noqa: UP038 - removed by modern Ruff; tuple form is intentional.
                 module,
-                (InitialPatchEmbedding, PyramidalPatchEmbedding, PatchEmbeddingStage, SpikingBlock),
+                (
+                    InitialPatchEmbedding,
+                    PyramidalPatchEmbedding,
+                    PatchEmbeddingStage,
+                    SpikingBlock,
+                ),
             ):
                 hook = self._residual_hook(name)
             else:
                 continue
             self.handles.append(module.register_forward_hook(hook))
+
+    def _fine_temporal_branch_hook(self, name: str):
+        def record(
+            module: FineTemporalBranch,
+            _inputs: tuple[torch.Tensor],
+            output: torch.Tensor,
+        ) -> None:
+            ratio = module.micro_steps_per_macro
+            elements = output.numel()
+            history_reads = elements * ratio
+            history_writes = elements * ratio
+            layer = self.layers[name]
+            layer["elementwise_add"] += elements
+            layer["state_reads"] += history_reads
+            layer["state_writes"] += history_writes
+            self.totals["elementwise_add"] += elements
+            self.totals["state_reads"] += history_reads
+            self.totals["recurrent_state_updates"] += history_writes
+            state_elements = (ratio - 1) * output[0].numel() // output.shape[1]
+            self.state_shapes[name] = (
+                state_elements,
+                output.element_size() * 8,
+            )
+
+        return record
 
     def _maxpool_hook(self, name: str):
         def record(
@@ -486,14 +525,14 @@ def profile_model(
             remaining = max_samples - samples
             if remaining <= 0:
                 break
-            frames = frames[:remaining].to(device, non_blocking=True)
+            frames = move_encoded_input(slice_encoded_batch(frames, remaining), device)
             # Observational binary classification must not depend on loader batching.
             profiler.batch_size = 1
-            for sample in frames:
-                model(sample.unsqueeze(0))
+            for sample_index in range(encoded_batch_size(frames)):
+                model(select_encoded_batch(frames, sample_index))
             sample_indices.extend(int(index) for index in indices[:remaining])
             sample_targets.extend(int(target) for target in targets[:remaining])
-            samples += int(frames.shape[0])
+            samples += encoded_batch_size(frames)
     finally:
         profiler.close()
     if samples == 0:

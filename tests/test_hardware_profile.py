@@ -1,6 +1,6 @@
 import pytest
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 from etsr.models.mini_qkformer import MiniQKFormer
 from etsr.profiling import profile_model
@@ -153,6 +153,42 @@ def test_hardware_profile_counts_temporal_capacity_and_plif_separately():
             )["state"]["persistent_state_elements"]
         )
     )
+
+
+def test_hardware_profile_accepts_multigranular_batches_and_counts_reducer_state():
+    class TwoRateDataset(Dataset):
+        def __len__(self):
+            return 1
+
+        def __getitem__(self, _index):
+            return {
+                "coarse": torch.rand(4, 2, 32, 32),
+                "fine": torch.rand(32, 2, 4, 4),
+            }, 0, 0
+
+    model = MiniQKFormer(
+        2,
+        4,
+        embed_dim=32,
+        num_heads=4,
+        frontend="pyramidal",
+        multigranular_lite=True,
+        multigranular_fine_channels=4,
+        multigranular_micro_steps=8,
+    )
+    profile = profile_model(
+        model,
+        DataLoader(TwoRateDataset(), batch_size=1),
+        torch.device("cpu"),
+        1,
+    )
+
+    assert profile["samples_profiled"] == 1
+    reducer = profile["layers"]["fine_temporal_branch.temporal_reduce"]
+    assert reducer["binary_ac_potential"] > 0
+    history = profile["layers"]["fine_temporal_branch"]
+    assert history["persistent_state_elements"] == 7 * 16 * 4 * 4
+    assert history["state_reads"] > 0
 
 
 def test_hardware_profile_distinguishes_no_cross_time_from_gated_readout_state():

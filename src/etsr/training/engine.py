@@ -13,6 +13,11 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+from etsr.data.events import (
+    encoded_time_steps,
+    move_encoded_input,
+    slice_encoded_time,
+)
 from etsr.evaluation.metrics import ClassificationAccumulator, ClassificationResult
 from etsr.training.checkpointing import load_model_state
 
@@ -91,7 +96,7 @@ def train_one_epoch(
     optimizer.zero_grad(set_to_none=True)
 
     for batch_index, (frames, targets, _indices) in enumerate(loader):
-        frames = frames.to(device, non_blocking=True)
+        frames = move_encoded_input(frames, device)
         targets = targets.to(device, non_blocking=True)
 
         with torch.autocast(device_type=device.type, enabled=amp_enabled):
@@ -185,28 +190,34 @@ def evaluate(
     model.eval()
     accumulator = ClassificationAccumulator(num_classes, collect_predictions)
     for batch_index, (frames, targets, indices) in enumerate(loader):
-        frames = frames.to(device, non_blocking=True)
+        frames = move_encoded_input(frames, device)
         targets = targets.to(device, non_blocking=True)
         if prefix_steps is None:
             logits = model(frames)
         elif isinstance(prefix_steps, int):
-            if not 1 <= prefix_steps <= frames.shape[1]:
+            if not 1 <= prefix_steps <= encoded_time_steps(frames):
                 raise ValueError("prefix_steps must fit the encoded time axis.")
-            logits = model(frames[:, :prefix_steps])
+            logits = model(slice_encoded_time(frames, prefix_steps))
         else:
             batch_steps = torch.as_tensor(
                 [prefix_steps[int(index)] for index in indices],
                 dtype=torch.long,
                 device=device,
             )
-            if bool(((batch_steps < 1) | (batch_steps > frames.shape[1])).any().item()):
+            if bool(((batch_steps < 1) | (batch_steps > encoded_time_steps(frames))).any().item()):
                 raise ValueError("Every per-sample prefix must fit the encoded time axis.")
             positions: list[torch.Tensor] = []
             outputs: list[torch.Tensor] = []
             for steps in torch.unique(batch_steps, sorted=True):
                 selected = torch.nonzero(batch_steps == steps, as_tuple=False).squeeze(1)
                 positions.append(selected)
-                outputs.append(model(frames.index_select(0, selected)[:, : int(steps.item())]))
+                if isinstance(frames, torch.Tensor):
+                    selected_frames = frames.index_select(0, selected)
+                else:
+                    selected_frames = {
+                        name: value.index_select(0, selected) for name, value in frames.items()
+                    }
+                outputs.append(model(slice_encoded_time(selected_frames, int(steps.item()))))
             order = torch.cat(positions).argsort()
             logits = torch.cat(outputs).index_select(0, order)
         loss = criterion(logits, targets)

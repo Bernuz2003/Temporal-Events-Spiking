@@ -9,6 +9,49 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+EncodedInput = torch.Tensor | dict[str, torch.Tensor]
+
+
+def move_encoded_input(frames: EncodedInput, device: torch.device) -> EncodedInput:
+    if isinstance(frames, torch.Tensor):
+        return frames.to(device, non_blocking=True)
+    return {name: value.to(device, non_blocking=True) for name, value in frames.items()}
+
+
+def encoded_batch_size(frames: EncodedInput) -> int:
+    if isinstance(frames, torch.Tensor):
+        return int(frames.shape[0])
+    return int(frames["coarse"].shape[0])
+
+
+def encoded_time_steps(frames: EncodedInput) -> int:
+    if isinstance(frames, torch.Tensor):
+        return int(frames.shape[1])
+    return int(frames["coarse"].shape[1])
+
+
+def slice_encoded_batch(frames: EncodedInput, stop: int) -> EncodedInput:
+    if isinstance(frames, torch.Tensor):
+        return frames[:stop]
+    return {name: value[:stop] for name, value in frames.items()}
+
+
+def select_encoded_batch(frames: EncodedInput, index: int) -> EncodedInput:
+    if isinstance(frames, torch.Tensor):
+        return frames[index : index + 1]
+    return {name: value[index : index + 1] for name, value in frames.items()}
+
+
+def slice_encoded_time(frames: EncodedInput, steps: int) -> EncodedInput:
+    if isinstance(frames, torch.Tensor):
+        return frames[:, :steps]
+    coarse_steps = int(frames["coarse"].shape[1])
+    fine_steps = int(frames["fine"].shape[1])
+    if fine_steps % coarse_steps:
+        raise ValueError("Fine time axis must be an integer multiple of the coarse axis.")
+    ratio = fine_steps // coarse_steps
+    return {"coarse": frames["coarse"][:, :steps], "fine": frames["fine"][:, : steps * ratio]}
+
 
 @dataclass(frozen=True)
 class EventSample:
@@ -76,20 +119,41 @@ class EncodedEventDataset(Dataset):
     def __len__(self) -> int:
         return len(self.raw_dataset)
 
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, int, int]:
+    def __getitem__(self, index: int) -> tuple[EncodedInput, int, int]:
         encoded = self.encoder(self.raw_dataset[index])
         frames = encoded.tensor
         if self.horizontal_flip_probability and bool(
             torch.rand(()) < self.horizontal_flip_probability
         ):
-            frames = torch.flip(frames, dims=(-1,))
+            if isinstance(frames, torch.Tensor):
+                frames = torch.flip(frames, dims=(-1,))
+            else:
+                frames = {name: torch.flip(value, dims=(-1,)) for name, value in frames.items()}
         for _ in range(self.temporal_mask_count):
             length = int(torch.randint(1, self.temporal_mask_max_steps + 1, ()).item())
-            start = int(torch.randint(0, frames.shape[0] - length + 1, ()).item())
-            frames[start : start + length] = 0
+            time_steps = self.encoder.time_steps
+            start = int(torch.randint(0, time_steps - length + 1, ()).item())
+            if isinstance(frames, torch.Tensor):
+                frames[start : start + length] = 0
+            else:
+                ratio = frames["fine"].shape[0] // frames["coarse"].shape[0]
+                frames["coarse"][start : start + length] = 0
+                frames["fine"][start * ratio : (start + length) * ratio] = 0
         for _ in range(self.spatial_erasing_count):
             size = int(torch.randint(1, self.spatial_erasing_max_pixels + 1, ()).item())
-            top = int(torch.randint(0, frames.shape[-2] - size + 1, ()).item())
-            left = int(torch.randint(0, frames.shape[-1] - size + 1, ()).item())
-            frames[..., top : top + size, left : left + size] = 0
-        return frames.to(torch.float32), encoded.target, int(index)
+            top = int(torch.randint(0, self.encoder.height - size + 1, ()).item())
+            left = int(torch.randint(0, self.encoder.width - size + 1, ()).item())
+            if isinstance(frames, torch.Tensor):
+                frames[..., top : top + size, left : left + size] = 0
+            else:
+                frames["coarse"][..., top : top + size, left : left + size] = 0
+                stride = self.encoder.fine_spatial_stride
+                fine_top, fine_left = top // stride, left // stride
+                fine_bottom = (top + size + stride - 1) // stride
+                fine_right = (left + size + stride - 1) // stride
+                frames["fine"][..., fine_top:fine_bottom, fine_left:fine_right] = 0
+        if isinstance(frames, torch.Tensor):
+            output: EncodedInput = frames.to(torch.float32)
+        else:
+            output = {name: value.to(torch.float32) for name, value in frames.items()}
+        return output, encoded.target, int(index)

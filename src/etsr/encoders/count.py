@@ -16,7 +16,7 @@ from etsr.data.events import EventSample
 class EncodedRepresentation:
     """Tensor plus the timing, representation and state semantics needed to interpret it."""
 
-    tensor: torch.Tensor
+    tensor: torch.Tensor | dict[str, torch.Tensor]
     target: int
     sample_id: str
     time_axis: int
@@ -410,6 +410,150 @@ class SpikeTemporalBinaryFrameEncoder(TemporalBinaryFrameEncoder):
                 "source_event_count": len(sample.t_us),
                 "occupied_micro_voxels": occupied,
                 "emitted_spike_voxels": int(spikes.sum()),
+                "timestamp_normalized": False,
+                "endpoint_knowledge": "none",
+            },
+        )
+
+
+class MultiGranularCountFrameEncoder:
+    """Causal coarse/fine count representation for the lightweight two-rate front-end.
+
+    The coarse stream is exactly E0.  The fine stream keeps the same ON/OFF count semantics at
+    ``micro_bin_width_us`` but pools sensor coordinates into non-overlapping spatial cells.  This
+    allocates temporal resolution where it is cheap without using endpoint-normalized time.
+    """
+
+    name = "multigranular_count_frames_mg_lite"
+
+    def __init__(
+        self,
+        *,
+        height: int,
+        width: int,
+        window_us: int,
+        bin_width_us: int,
+        micro_bin_width_us: int,
+        fine_spatial_stride: int,
+        count_cap: int,
+        fine_count_cap: int,
+    ) -> None:
+        for field, value in (
+            ("height", height),
+            ("width", width),
+            ("window_us", window_us),
+            ("bin_width_us", bin_width_us),
+            ("micro_bin_width_us", micro_bin_width_us),
+            ("fine_spatial_stride", fine_spatial_stride),
+            ("count_cap", count_cap),
+            ("fine_count_cap", fine_count_cap),
+        ):
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{field} must be a positive integer.")
+        if window_us % bin_width_us or bin_width_us % micro_bin_width_us:
+            raise ValueError("Multi-granular time widths must divide exactly.")
+        if height % fine_spatial_stride or width % fine_spatial_stride:
+            raise ValueError("fine_spatial_stride must divide both sensor dimensions.")
+        if count_cap > np.iinfo(np.uint8).max:
+            raise ValueError("Multi-granular coarse count_cap must fit uint8 storage.")
+        if fine_count_cap > np.iinfo(np.uint16).max:
+            raise ValueError("Multi-granular fine_count_cap must fit uint16 storage.")
+
+        self.height = height
+        self.width = width
+        self.window_us = window_us
+        self.bin_width_us = bin_width_us
+        self.micro_bin_width_us = micro_bin_width_us
+        self.fine_spatial_stride = fine_spatial_stride
+        self.count_cap = count_cap
+        self.fine_count_cap = fine_count_cap
+        self.time_steps = window_us // bin_width_us
+        self.micro_steps_per_macro = bin_width_us // micro_bin_width_us
+        self.micro_time_steps = window_us // micro_bin_width_us
+        self.fine_height = height // fine_spatial_stride
+        self.fine_width = width // fine_spatial_stride
+        self.time_bin_edges_us = tuple(range(0, window_us + bin_width_us, bin_width_us))
+        self.coarse_encoder = CountFrameEncoder(
+            height=height,
+            width=width,
+            window_us=window_us,
+            bin_width_us=bin_width_us,
+            count_cap=count_cap,
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "height": self.height,
+            "width": self.width,
+            "window_us": self.window_us,
+            "bin_width_us": self.bin_width_us,
+            "time_steps": self.time_steps,
+            "micro_bin_width_us": self.micro_bin_width_us,
+            "micro_steps_per_macro": self.micro_steps_per_macro,
+            "micro_time_steps": self.micro_time_steps,
+            "channels": {"OFF": 0, "ON": 1},
+            "coarse_shape": [self.time_steps, 2, self.height, self.width],
+            "fine_shape": [self.micro_time_steps, 2, self.fine_height, self.fine_width],
+            "fine_spatial_stride": self.fine_spatial_stride,
+            "fine_spatial_pool": "non_overlapping_count_sum",
+            "coarse_count_cap": self.count_cap,
+            "fine_count_cap": self.fine_count_cap,
+            "coarse_storage_dtype": "uint8",
+            "fine_storage_dtype": "uint16",
+            "timestamp_normalization": False,
+            "endpoint_knowledge": "none",
+        }
+
+    @property
+    def state_profile(self) -> dict[str, int | bool]:
+        return {
+            "stateful": False,
+            "persistent_state_elements": 0,
+            "persistent_state_bits": 0,
+        }
+
+    def __call__(self, sample: EventSample) -> EncodedRepresentation:
+        coarse = self.coarse_encoder(sample)
+        timestamps = np.asarray(sample.t_us)
+        polarities = np.asarray(sample.polarity)
+        fine_x = np.asarray(sample.x) // self.fine_spatial_stride
+        fine_y = np.asarray(sample.y) // self.fine_spatial_stride
+        micro_bins = timestamps // self.micro_bin_width_us
+        linear_indices = (
+            (micro_bins * 2 + polarities) * self.fine_height + fine_y
+        ) * self.fine_width + fine_x
+        occupied, counts = np.unique(linear_indices, return_counts=True)
+        maximum_count = int(counts.max())
+        if maximum_count > self.fine_count_cap:
+            raise ValueError(
+                f"Sample {sample.sample_id} needs fine count {maximum_count}, exceeding "
+                f"multi-granular cap {self.fine_count_cap}."
+            )
+        flat = np.zeros(
+            self.micro_time_steps * 2 * self.fine_height * self.fine_width,
+            dtype=np.uint16,
+        )
+        flat[occupied] = counts.astype(np.uint16)
+        fine = torch.from_numpy(
+            flat.reshape(self.micro_time_steps, 2, self.fine_height, self.fine_width)
+        )
+        return EncodedRepresentation(
+            tensor={"coarse": coarse.tensor, "fine": fine},
+            target=sample.target,
+            sample_id=sample.sample_id,
+            time_axis=0,
+            time_bin_edges_us=self.time_bin_edges_us,
+            time_unit="microsecond",
+            representation_name=self.name,
+            representation_parameters=self.parameters,
+            state_profile=self.state_profile,
+            metadata={
+                "source_event_count": len(timestamps),
+                "coarse_encoded_event_count": coarse.metadata["encoded_event_count"],
+                "fine_encoded_event_count": int(counts.sum()),
+                "fine_occupied_voxels": len(occupied),
+                "fine_maximum_voxel_count": maximum_count,
                 "timestamp_normalized": False,
                 "endpoint_knowledge": "none",
             },
