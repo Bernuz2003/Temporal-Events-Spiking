@@ -1,6 +1,6 @@
 # Fonti e selezione delle famiglie architetturali
 
-**Aggiornato:** 2026-09-09
+**Aggiornato:** 2026-09-12
 
 I punteggi pubblicati non sono direttamente confrontabili con la development validation locale:
 molti lavori selezionano sul test ufficiale, usano crop/binning/augmentation diversi o modelli molto
@@ -53,7 +53,7 @@ ricevono altro budget nella discovery corrente.
 
 ## Riferimenti DVS-Lip e protocollo
 
-- [MSTP, CVPR 2022](https://openaccess.thecvf.com/content/CVPR2022/html/Tan_Event-Based_Lip-Reading_With_Multi-Scale_Spatio-Temporal_Features_CVPR_2022_paper.html):
+- [MSTP, CVPR 2022](https://openaccess.thecvf.com/content/CVPR2022/html/Tan_Multi-Grained_Spatio-Temporal_Features_Perceived_Network_for_Event-Based_Lip-Reading_CVPR_2022_paper.html):
   dataset, split officiale, Acc1/Acc2 e baseline di letteratura.
 - [Codice ufficiale MSTP](https://github.com/tgc1997/event-based-lip-reading): semantica del loader;
   la funzione pubblica inverte le etichette testuali Acc1/Acc2 rispetto al paper.
@@ -168,3 +168,19 @@ sono peggiori per la fase corrente.
 E1 phase-count e duration-normalized restano implementazione/probe sospesi: il primo è una
 statistica locale non supportata direttamente su DVS-Lip, il secondo usa endpoint oracle. Nessuno
 dei due riceve un full mentre sono disponibili TBR e Spike-TBR.
+
+## Triage finale prima del freeze
+
+| Famiglia | Evidenza | Decisione corrente |
+|---|---|---|
+| High-frequency local mixing | [MaxFormer](https://papers.neurips.cc/paper_files/paper/2025/hash/956834836f36dd07df7064ff42ca69f2-Abstract-Conference.html) mostra che MaxPool e depthwise convolution contrastano il bias low-pass delle SNN; [HFR-Lip](https://doi.org/10.1016/j.ins.2025.123026) individua direttamente su DVS-Lip la perdita di bordi e micro-deformazioni | **unico probe condizionale ammesso**, nel primo stage di F+TCAP, se MG+TCAP non raggiunge la soglia |
+| PMSN | [NSA](https://www.ijcai.org/proceedings/2025/0544.pdf) riporta su DVS-Lip 57,43% contro 17,83% del LIF nello stesso MLP | non trasferibile come singola ablation: usa 200 bin, crop 88×88, last-step readout e sostituisce la dinamica neuronale dell'intera rete; inoltre la proxy pubblicata costa 6,8× il LIF |
+| chwPSN / MD-Mixer | evidenza diretta o forte sul mixing temporale esplicito | TCAP ha già validato il principio; la versione depthwise appartiene alla compressione, mentre ritardi discreti soft-to-hard aprirebbero un nuovo tuning |
+| SpikGRU2+ | forte risultato DVS-Lip | backbone, 90 bin, readout bidirezionale e augmentation cambiano insieme; gated-v2 locale è negativo |
+| MTGA, graph, TORE/TAF, EST, Matrix-LSTM | preservano timing fine | richiedono una nuova rappresentazione e nuovi iperparametri; MG ha già fornito il probe positivo a minor costo di sviluppo |
+| LMU, Mamba, S4D/GSU | forti su sequenze lunghe | nessun confronto controllato nello stesso backbone DVS-Lip e integrazione non minimale; rinviati |
+
+Il collo residuo più concreto è spaziale: F+TCAP ottiene 44,42% su Acc1 e 61,15% su Acc2; MG
+migliora F di 3,54 pp su Acc1 ma solo 0,60 pp su Acc2. Questo rende il probe high-frequency più
+mirato di un altro temporal core. Non viene implementato finché MG+TCAP non determina quale
+substrato architetturale debba essere congelato.

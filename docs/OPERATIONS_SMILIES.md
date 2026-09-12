@@ -1,6 +1,6 @@
 # Operazioni riproducibili su SMILIES
 
-**Aggiornate:** 2026-09-09
+**Aggiornate:** 2026-09-12
 
 Ogni server fisico vede la propria GPU come indice locale `0`. I quattro nomi di sessione screen
 sono indipendenti perché vivono su macchine diverse. Prima del lancio, sincronizzare lo stesso
@@ -16,31 +16,24 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/dataset_workflow.sh dvslip check
 Il check esegue suite, lint, bytecode, shell syntax e test CUDA/AMP. Non avviare un candidato se
 fallisce. Il dataset gate completo non va ripetuto a ogni run.
 
-## Run MultiGranular
+## Run MG-Cap+TCAP
 
-- F+TCAP e F+Spike-TBR-LIF sono già in corso: non rilanciarli.
-- F+TBR ha fallito il gate: non avviare manualmente il full.
-- La diagnostica B/PLIF è completa in
-  `artifacts/dvslip_temporal_diagnostic_b_plif__20260909_v2`.
-
-Dopo avere sincronizzato il commit ed eseguito il check, avviare i due workflow indipendenti:
+Dopo avere sincronizzato il commit ed eseguito il check, avviare il workflow registrato:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-mg-capacity42 -- candidate --config configs/dvslip_f_multigranular_capacity.yaml
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-mg-lite42 -- candidate --config configs/dvslip_f_multigranular_lite.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-mg-tcap42 -- candidate --config configs/dvslip_f_multigranular_temporal_capacity.yaml
 ```
 
-Entrambi usano `multigranular_count_frame`: cambiano soltanto i parametri dichiarati nei due YAML.
-Capacity usa fine grid 32×32, riduzione MIMO e fusione appresa; Lite usa 16×16, riduzione depthwise
-e somma. Il full parte da pesi nuovi soltanto se il gate standard passa. Non cambiare stride,
-larghezza, gruppi temporali, fusione, loss o soglia del gate dopo avere osservato il risultato.
+La configurazione riusa integralmente F, MG-Cap e TCAP: fine grid 32×32, riduzione MIMO, fusione
+appresa e ritardi TCAP 1/2/4. Il full parte da pesi nuovi soltanto se il gate standard passa. Non
+cambiare stride, larghezza, gruppi, ritardi, loss o soglia del gate.
 
 ## Monitoraggio e ripresa
 
 ```bash
 screen -ls
-tail -f artifacts/screen/dvslip-f-tcap42.log
-screen -r dvslip-f-tcap42
+tail -f artifacts/screen/dvslip-f-mg-tcap42.log
+screen -r dvslip-f-mg-tcap42
 ```
 
 `overfit_gate.json` registra il gate; `candidate_workflow.json` collega gate, full e profilo. Se un

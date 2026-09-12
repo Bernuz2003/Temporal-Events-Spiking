@@ -735,3 +735,25 @@ def test_dvslip_multigranular_capacity_config_stays_below_baseline_parameter_bud
     }
     model = build_model(candidate["model"], num_classes=100)
     assert sum(parameter.numel() for parameter in model.parameters()) == 480_036
+
+
+def test_dvslip_multigranular_tcap_combines_only_validated_components():
+    root = Path(__file__).parents[1]
+    multigranular = load_config(root / "configs" / "dvslip_f_multigranular_capacity.yaml")
+    temporal = load_config(root / "configs" / "dvslip_f_temporal_capacity.yaml")
+    combined = load_config(
+        root / "configs" / "dvslip_f_multigranular_temporal_capacity.yaml"
+    )
+
+    for section in ("dataset", "augmentation", "evaluation", "training"):
+        assert combined[section] == multigranular[section]
+    assert combined["representation"] == multigranular["representation"]
+    assert combined["model"] == {
+        **multigranular["model"],
+        "temporal_channel_mixer": temporal["model"]["temporal_channel_mixer"],
+        "temporal_channel_mixer_delays": temporal["model"][
+            "temporal_channel_mixer_delays"
+        ],
+    }
+    model = build_model(combined["model"], num_classes=100)
+    assert sum(parameter.numel() for parameter in model.parameters()) == 541_476

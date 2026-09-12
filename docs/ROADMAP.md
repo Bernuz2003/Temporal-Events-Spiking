@@ -1,31 +1,25 @@
 # Roadmap decisiva
 
-**Aggiornata:** 2026-09-09
+**Aggiornata:** 2026-09-12
 
 ## Stato del discovery
 
-La prima ondata è conclusa. F e TCAP hanno superato B; PLIF non migliora il punto operativo finale
-ma anticipa l'emergere dell'informazione; gated-v2 è chiuso. I risultati e i profili completi sono
-in `EXPERIMENT_LEDGER.md`.
+F+TCAP è il miglior modello corrente con 52,36% Macro-F1; MG-Cap raggiunge 48,42% e conferma
+l'utilità della branch fine, ma con un costo molto maggiore. PLIF, gated-v2, TBR e le varianti di
+clock matching sono chiusi. I risultati e i profili sono in `EXPERIMENT_LEDGER.md`.
 
 ## Iterazione corrente
 
-1. **F+TCAP, seed 42 — candidato principale.** Verifica se front-end efficiente e mixing temporale
-   ritardato sono compatibili. È il solo run che può superare direttamente il miglior 500k corrente
-   combinando due segnali locali positivi.
-2. **F+TBR, seed 42 — chiuso al gate.** Ha memorizzato il subset ma non ha raggiunto loss `<1,5`.
-   Nessun full e nessuna variante della codifica canonica.
-3. **F+Spike-TBR-LIF, seed 42 — full in corso.** Usa il LIF per-pixel con i valori DVS-Lip
-   pubblicati `β=0,9` e soglia `1,1`. L'input locale risulta molto più sparso di TBR e lo snapshot
-   all'epoca 38 è debole; il run termina senza aprire varianti della ricostruzione.
-4. **Diagnostica B/PLIF — completata.** PLIF anticipa le decisioni tramite persistenza profonda,
-   ma nessun cutoff supera B finale. Il ramo resta un risultato di latenza senza nuovo training.
-5. **F+MultiGranular-Capacity, seed 42 — prova di utilità.** Conserva E0 e aggiunge una branch
-   causale a 6,25 ms e 32×32, poi downsampling appreso, mixing temporale MIMO e fusione residua.
-   Rimane sotto il numero di parametri di B e verifica l'ipotesi senza compressioni premature.
-6. **F+MultiGranular-Lite, seed 42 — controllo Pareto.** Usa lo stesso encoder parametrico con
-   griglia 16×16, mixing depthwise e somma diretta. Misura quanto del segnale sopravvive nella
-   configurazione economica; un suo fallimento isolato non chiude la famiglia.
+1. **F+MG-Cap+TCAP, seed 42 — ultimo run combinatorio.** Unisce senza modifiche i tre moduli che
+   hanno prodotto un segnale positivo. Ha 541.476 parametri; il costo del ramo fine e di TCAP si
+   somma quasi interamente, quindi il run deve guadagnare almeno 2 pp F1 su F+TCAP per essere
+   promosso come finalista prestazionale.
+2. **Probe spaziale high-frequency — condizionale.** Se il combinato non raggiunge la soglia e
+   Acc1 resta il collo di bottiglia, testare un solo mixer locale depthwise nel primo stage di
+   F+TCAP, motivato congiuntamente da MaxFormer e HFR-Lip. Topologia e costo vanno chiusi prima del
+   gate; nessuno sweep di kernel, posizione o larghezza.
+3. **Conferma.** Il vincitore architetturale e B vengono replicati su due nuovi seed comuni e
+   profilati prima del freeze.
 
 Ogni full usa `candidate`: test statici del commit, bounded overfit 16×4, nuovo training da zero
 soltanto se il gate passa, valutazione e profilo v4 del best. Nessuna modifica della ricetta è
@@ -36,20 +30,13 @@ perché è la compressione depthwise di TCAP; E1 phase-count è sospeso.
 
 | Evidenza | Decisione |
 |---|---|
-| F+TCAP > TCAP e > F | finalista prestazionale; confrontare costo misurato con B e F |
-| F+TCAP non supera TCAP | non assumere additività; TCAP resta finalista e F resta Pareto efficiente |
-| F+TBR fallisce il gate | nessun full e nessuna variazione di bit/Δt; ramo canonico chiuso |
-| F+Spike-TBR ≥ F +2 pp F1 | promuovere il filtro LIF e riportare stato e preprocessing |
-| Spike-TBR non supera F | chiudere TBR/Spike-TBR; nessuno sweep di β, soglia o reset |
-| MultiGranular-Capacity ≥ F +2 pp F1 | ipotesi confermata; confrontare Lite e poi combinare una sola configurazione col temporal core vincente |
-| Capacity migliora ma Lite no | ramo utile, compressione attuale troppo aggressiva; nessuno sweep prima del freeze |
-| Capacity e Lite non superano F | chiudere questa integrazione multi-granular senza sweep |
-| Lite migliora almeno quanto Capacity | preferire Lite per il rapporto prestazione/costo |
-| PLIF stabile prima ma non a 2 s | risultato latency/dynamics; rimandare prefix supervision/halting |
-| PLIF non stabile o vantaggio dovuto alla scala | chiudere il ramo senza training |
+| MG+TCAP ≥ F+TCAP +2 pp F1 | promuovere il combinato e passare direttamente alla conferma multi-seed |
+| MG+TCAP migliora meno di 2 pp | scartare MG dal finalista; F+TCAP resta riferimento e si valuta il solo probe high-frequency |
+| Probe high-frequency ≥ F+TCAP +2 pp F1 | promuoverlo, quindi conferma multi-seed |
+| Anche il probe high-frequency resta sotto soglia | chiudere la discovery con F+TCAP |
 
-La soglia di 2 pp serve a impedire combinazioni su rumore single-seed. Un candidato sotto soglia può
-restare scientificamente interessante senza ricevere un altro full.
+La soglia di 2 pp evita di promuovere un modello molto più costoso sulla base di una variazione
+single-seed modesta. Non si eseguono altre varianti di tau, gain, stride o fusione MG.
 
 ## Conferma dell'architettura
 

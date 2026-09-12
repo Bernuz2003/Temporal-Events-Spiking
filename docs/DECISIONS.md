@@ -1,6 +1,6 @@
 # Decisioni attive
 
-**Aggiornate:** 2026-09-09
+**Aggiornate:** 2026-09-12
 
 1. DVS-Lip resta il benchmark di sviluppo e l'official test resta embargoed fino alla valutazione
    finale. Tutte le cifre correnti sono seed 42 sulla development validation ricavata
@@ -15,10 +15,8 @@
 5. TCAP è promosso come prova positiva del temporal core: 48,12% F1 (+3,97 pp), con +12,27%
    parametri, +16,44% MAC multivalore e +14,66% Horowitz attività. Il segnale giustifica il
    trasferimento su F; la compressione depthwise T è rinviata alla fase Pareto post-freeze.
-6. Il prossimo candidato prestazionale è **F+TCAP**. La composizione ha 492.516 parametri e un costo
-   strutturale previsto inferiore a B; attività ed energia saranno accettate soltanto dal profilo
-   del proprio best. Complementarità degli errori F/TCAP rende il run informativo, senza garantire
-   additività dei guadagni.
+6. **F+TCAP è il riferimento prestazionale corrente:** 52,79% accuracy e 52,36% F1, rispettivamente
+   +7,98/+8,21 pp su B, con 492.516 parametri. Acc1/Acc2 sono 44,42/61,15%.
 7. **B+T non viene eseguito ora.** T è il FIR depthwise da 576 coefficienti che comprime TCAP
    eliminando il mixing cross-channel. È un esperimento di ottimizzazione, non una candidata con
    maggiore potenziale prestazionale, e sarà rivalutato soltanto sull'architettura congelata.
@@ -57,3 +55,12 @@
 18. Ogni conclusione hardware deve includere parametri, MAC multivalore, AC/SOP potenziali e ad
     attività, firing, stato/traffico e le due proxy Horowitz. Le proxy aritmetiche non sono joule
     misurati su FPGA e non includono memoria, routing, leakage o tutte le dinamiche LIF.
+19. MG-Cap è positivo ma non Pareto: 48,42% F1 (+2,27 pp su F), 480.036 parametri, 673.792 elementi
+    di stato e 20,30 h di training. Il guadagno è concentrato su Acc1 (+3,54 pp), mentre Acc2 sale
+    di 0,60 pp. Riceve una sola combinazione con TCAP, senza ulteriore tuning interno.
+20. I due clock-matched MG hanno fallito il gate. L'uguaglianza del decadimento fisico fra clock
+    non è un'invarianza del percorso Conv-BN-LIF; la variante a gain 0,5 aumenta inoltre di circa
+    sei volte il guadagno integrato. Il codice dedicato è stato rimosso tornando a `cde6ec3`.
+21. Prima del freeze resta al massimo un probe high-frequency locale, condizionato all'esito di
+    MG+TCAP. PMSN/PSN, GRU, LMU, Mamba, MTGA/graph e nuove rappresentazioni non ricevono full in
+    questa fase perché richiedono un cambio di protocollo o più run di attribuzione.

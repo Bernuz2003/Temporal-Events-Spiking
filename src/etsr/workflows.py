@@ -61,6 +61,20 @@ def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
             "count_cap": 255,
             "fine_count_cap": 65_535,
         }
+        capacity_model = {
+            **reference["model"],
+            "multigranular": True,
+            "multigranular_fine_channels": 16,
+            "multigranular_fine_mid_channels": 32,
+            "multigranular_temporal_groups": 1,
+            "multigranular_fusion": "concat_residual",
+            "multigranular_micro_steps": 8,
+        }
+        capacity_representation = {
+            "name": representation_name,
+            **common_representation,
+            "fine_spatial_stride": 4,
+        }
         allowed_designs = (
             (
                 {"name": representation_name, **common_representation, "fine_spatial_stride": 8},
@@ -73,16 +87,13 @@ def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
                     "multigranular_micro_steps": 8,
                 },
             ),
+            (capacity_representation, capacity_model),
             (
-                {"name": representation_name, **common_representation, "fine_spatial_stride": 4},
+                capacity_representation,
                 {
-                    **reference["model"],
-                    "multigranular": True,
-                    "multigranular_fine_channels": 16,
-                    "multigranular_fine_mid_channels": 32,
-                    "multigranular_temporal_groups": 1,
-                    "multigranular_fusion": "concat_residual",
-                    "multigranular_micro_steps": 8,
+                    **capacity_model,
+                    "temporal_channel_mixer": True,
+                    "temporal_channel_mixer_delays": [1, 2, 4],
                 },
             ),
         )

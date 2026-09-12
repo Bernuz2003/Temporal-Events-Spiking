@@ -133,6 +133,21 @@ def test_candidate_accepts_only_preregistered_multigranular_capacity(monkeypatch
         workflows.run_candidate(config)
 
 
+def test_candidate_accepts_preregistered_multigranular_temporal_capacity(monkeypatch):
+    config = load_config("configs/dvslip_f_multigranular_temporal_capacity.yaml")
+    monkeypatch.setattr(
+        workflows,
+        "train_experiment",
+        lambda _config: (_ for _ in ()).throw(RuntimeError("gate reached")),
+    )
+    with pytest.raises(RuntimeError, match="gate reached"):
+        workflows.run_candidate(config)
+
+    config["model"]["temporal_channel_mixer_delays"] = [1, 3, 5]
+    with pytest.raises(ValueError, match="fixed to its preregistered design"):
+        workflows.run_candidate(config)
+
+
 def test_runner_overfit_early_stops_and_records_actual_subset(tmp_path, monkeypatch):
     frames = torch.tensor([[1., 0.], [1., 0.], [0., 1.], [0., 1.]])
     targets = torch.tensor([0, 0, 1, 1])

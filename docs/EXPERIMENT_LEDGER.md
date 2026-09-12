@@ -1,6 +1,6 @@
 # Registro esperimenti e risultati
 
-**Aggiornato:** 2026-09-09
+**Aggiornato:** 2026-09-12
 
 Tutti i risultati DVS-Lip in questo documento provengono dalla development validation di 2.995
 sample ricavata esclusivamente dall'official-train. L'official test non è stato aperto. Salvo
@@ -28,6 +28,8 @@ classi visivamente confondibili e Acc2 le 50 parole comuni secondo il manifest v
 | **F** `dvslip_f__20260908_094118_261095__seed42` | 123 | 431.076 | 46,88 | **+2,07** | 46,15 | **+1,99** | 37,74 | 56,01 | 0,2366 | 3,41 | 6,69 h |
 | **B+TCAP** `dvslip_b_temporal_capacity__20260908_144107_967818__seed42` | 108 | 562.148 | **48,38** | **+3,57** | **48,12** | **+3,97** | **40,95** | 55,81 | 0,2611 | 4,64 | 10,34 h |
 | **B+PLIF** `dvslip_b_plif__20260908_154858_510430__seed42` | 116 | 502.676 | 43,74 | −1,07 | 43,68 | −0,47 | 37,14 | 50,33 | **0,2758** | 5,62 | 13,38 h |
+| **F+TCAP** `dvslip_f_temporal_capacity__20260909_124154_088394__seed42` | 122 | 492.516 | **52,79** | **+7,98** | **52,36** | **+8,21** | **44,42** | **61,15** | 0,2916 | 3,50 | 6,61 h |
+| **F+MG-Cap** `dvslip_f_multigranular_capacity__20260909_201157_029311__seed42` | 127 | 480.036 | 48,95 | +4,14 | 48,42 | +4,27 | 41,28 | 56,61 | 0,2534 | 4,94 | 20,30 h |
 
 I controlli di capacità confermano che il task non è saturo: 1M e 2M guadagnano rispettivamente
 5,22 e 7,66 punti F1, ma moltiplicano parametri, stato e costo. Non sono candidati compatti. Il
@@ -48,9 +50,12 @@ una curva temporale distinta e merita la diagnostica checkpoint-only descritta s
 | B+TCAP | superato | 138 | full completato | accuracy 98,44%, loss 1,4534 all'ultima epoca |
 | B+PLIF | superato | 165 | full completato | accuracy 100%, loss 1,4782 all'ultima epoca |
 | gated-v2 | fallito | 500 | full non autorizzato dal workflow | accuracy 100%, loss 1,7716; il vincolo `<1,5` non è stato abbassato |
-| F+TCAP | superato | 402 | full in corso | ultime cinque epoche valide; validation accuracy 96,88%, loss 1,4857 |
+| F+TCAP | superato | 402 | full completato | 52,36% F1; profilo v4 presente |
 | F+TBR | **fallito** | 500 | full bloccato | accuracy train 100% e validation 98,44%, ma loss minima validation 1,5368 e finale 1,5543 |
 | F+Spike-TBR-LIF | superato | 294 | full in corso | accuracy train/validation 100%, loss validation 1,4969; minimo 1,4769 |
+| F+MG-Cap | superato | 317 | full completato | 48,42% F1; profilo v4 presente |
+| MG clock-matched | fallito | 500 | full bloccato | loss minima 1,7349; norma gradiente media finale 115,3 |
+| MG clock-matched impulse | fallito | 500 | full bloccato | max accuracy 95,31%, loss minima 1,6826; norma gradiente media finale 173,3 |
 
 Il full gated-v2 è stato avviato manualmente per diagnosi e fermato dopo 28 epoche. Il miglior
 Macro-F1 osservato è 9,69% all'epoca 27; all'epoca 28 è 6,60%. Non è un risultato completo e non

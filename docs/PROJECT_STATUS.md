@@ -1,18 +1,16 @@
 # Stato corrente
 
-**Aggiornato:** 2026-09-09
+**Aggiornato:** 2026-09-12
 
-**Fase:** selezione strutturale avanzata; F+TCAP in corso, TBR canonico chiuso al gate,
-MultiGranular configurato per prova di capacità e controllo Pareto
+**Fase:** chiusura della selezione strutturale; pronto il gate F+MG-Cap+TCAP
 
 ## Verità sperimentale corrente
 
-La baseline B raggiunge 44,81% accuracy e 44,15% Macro-F1. F raggiunge 46,88/46,15 con 431.076
-parametri e un profilo nettamente più leggero. B+TCAP è il miglior 500k-class corrente con
-48,38/48,12 e migliora B di 3,57/3,97 punti. B+PLIF termina a 43,74/43,68, quindi non è candidato
-per il punteggio finale. I controlli 1M e 2M raggiungono F1 49,38 e 51,81 ma servono come upper
-bound di capacità. Tabelle complete di prestazione, PrefixAUC e hardware sono in
-`EXPERIMENT_LEDGER.md`.
+La baseline B raggiunge 44,81/44,15% accuracy/F1. F raggiunge 46,88/46,15 con 431.076 parametri.
+F+TCAP è il miglior modello corrente con 52,79/52,36 e 492.516 parametri, superando anche il
+controllo 2M. MG-Cap raggiunge 48,95/48,42 con 480.036 parametri, ma richiede 20,30 h e aumenta
+stato e compute. Il prossimo run combina MG-Cap e TCAP senza cambiare rappresentazione, recipe o
+iperparametri dei moduli.
 
 Il profilo F conferma un trade-off favorevole: rispetto a B riduce SOP potenziali del 47,64%, MAC
 multivalore del 18,49%, stato e traffico del 56,61%, Horowitz attività del 15,41% e densa del
@@ -44,6 +42,8 @@ quindi l'allineamento event-aware resta spiegazione oracle e non diventa una pol
   appreso, mixing temporale MIMO 8:1 e fusione residua appresa;
 - `configs/dvslip_f_multigranular_lite.yaml`: lo stesso encoder e ramo parametrico a 320×16×16,
   mixing depthwise e fusione additiva;
+- `configs/dvslip_f_multigranular_temporal_capacity.yaml`: composizione registrata MG-Cap+TCAP,
+  541.476 parametri;
 - comando `temporal-diagnostic`: quattro CSV, summary, config e ambiente, nessun training;
 - workflow `candidate`: blocca TBR ai valori DVS-Lip pubblicati e conserva F, ricetta,
   augmentation, split ed evaluation.
@@ -56,15 +56,9 @@ per `ΔT` dell'algoritmo pubblicato.
 
 ## Prossima acquisizione di evidenza
 
-F+TCAP e F+Spike-TBR-LIF sono in corso. All'epoca 48 F+TCAP raggiunge 39,72% F1 validation ed è
-nettamente promettente; all'epoca 38 Spike-TBR è a 8,76% e soffre un input sovrafiltrato. F+TBR ha
-fallito il gate pur raggiungendo accuracy quasi perfetta, perché la loss validation non è scesa
-sotto 1,5. Non si aggira il gate e non si aprono variazioni TBR.
-
-Le due configurazioni MultiGranular possono ora attraversare il normale workflow `candidate`.
-Capacity è la prova falsificabile dell'ipotesi; Lite è il controllo di compressione. Entrambe sono
-causali e lasciano il Transformer principale a 40 step. B+T resta rinviato alla compressione
-post-freeze e B+E1 resta sospeso.
+MG-Cap+TCAP attraversa il normale workflow `candidate`: bounded overfit, full da pesi nuovi e
+profilo del best. Se non supera F+TCAP di almeno 2 pp F1, MG non entra nel finalista. Resta al
+massimo un probe spaziale high-frequency prima della replica multi-seed e del freeze.
 
 L'official test resta inutilizzato. Tutti i nuovi full sono seed 42 e servono alla selezione; la
 robustezza richiederà due nuovi seed comuni per B e candidata finale prima della fase di
