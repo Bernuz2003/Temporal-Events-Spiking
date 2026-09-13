@@ -1,6 +1,6 @@
 # Registro esperimenti e risultati
 
-**Aggiornato:** 2026-09-12
+**Aggiornato:** 2026-09-13
 
 Tutti i risultati DVS-Lip in questo documento provengono dalla development validation di 2.995
 sample ricavata esclusivamente dall'official-train. L'official test non è stato aperto. Salvo
@@ -30,6 +30,7 @@ classi visivamente confondibili e Acc2 le 50 parole comuni secondo il manifest v
 | **B+PLIF** `dvslip_b_plif__20260908_154858_510430__seed42` | 116 | 502.676 | 43,74 | −1,07 | 43,68 | −0,47 | 37,14 | 50,33 | **0,2758** | 5,62 | 13,38 h |
 | **F+TCAP** `dvslip_f_temporal_capacity__20260909_124154_088394__seed42` | 122 | 492.516 | **52,79** | **+7,98** | **52,36** | **+8,21** | **44,42** | **61,15** | 0,2916 | 3,50 | 6,61 h |
 | **F+MG-Cap** `dvslip_f_multigranular_capacity__20260909_201157_029311__seed42` | 127 | 480.036 | 48,95 | +4,14 | 48,42 | +4,27 | 41,28 | 56,61 | 0,2534 | 4,94 | 20,30 h |
+| **F+MG-Cap+TCAP** `dvslip_f_multigranular_temporal_capacity__20260912_135802_779469__seed42` | 112 | 541.476 | **53,52** | **+8,71** | **53,15** | **+9,00** | **46,09** | **60,95** | **0,3113** | 5,02 | 19,17 h |
 
 I controlli di capacità confermano che il task non è saturo: 1M e 2M guadagnano rispettivamente
 5,22 e 7,66 punti F1, ma moltiplicano parametri, stato e costo. Non sono candidati compatti. Il
@@ -37,10 +38,17 @@ collasso NoCrossTime dimostra invece che la dipendenza fra bin è indispensabile
 readout mostra che addestrare e leggere soltanto fino all'ultimo evento non migliora il punteggio
 finale: mean@last_event perde 2,13 punti e last@last_event 12,32 punti.
 
-F e TCAP sono i due risultati strutturali utili. F guadagna quasi due punti F1 riducendo parametri,
-stato e proxy energetiche; TCAP guadagna quasi quattro punti e migliora entrambe le partizioni,
-con il delta maggiore su Acc1. PLIF non supera B al punto operativo primario di 2 s, ma presenta
-una curva temporale distinta e merita la diagnostica checkpoint-only descritta sotto.
+F e TCAP sono i due risultati strutturali più solidi. F guadagna quasi due punti F1 riducendo
+parametri, stato e proxy energetiche; TCAP guadagna 3,97 punti su B e 6,21 su F. Il combinato è il
+record single-seed, ma MG aggiunge a F+TCAP soltanto 0,73 pp accuracy e 0,80 pp F1, meno della soglia
+preregistrata di 2 pp. MG migliora soprattutto Acc1 (+1,67 pp), mentre Acc2 cala di 0,20 pp. PLIF
+non supera B al punto operativo primario di 2 s, ma presenta una dinamica temporale utile alla fase
+di raffinamento.
+
+I guadagni di MG e TCAP sopra F non sono additivi: `46,15 + 2,27 + 6,21 = 54,63%` sarebbe
+l'attesa puramente additiva, contro 53,15% osservato. L'interazione è −1,48 pp; MG conserva circa
+il 35% del proprio guadagno marginale quando TCAP è già presente. I moduli condividono quindi parte
+dell'informazione temporale che recuperano.
 
 ## Gate e run interrotti
 
@@ -52,8 +60,9 @@ una curva temporale distinta e merita la diagnostica checkpoint-only descritta s
 | gated-v2 | fallito | 500 | full non autorizzato dal workflow | accuracy 100%, loss 1,7716; il vincolo `<1,5` non è stato abbassato |
 | F+TCAP | superato | 402 | full completato | 52,36% F1; profilo v4 presente |
 | F+TBR | **fallito** | 500 | full bloccato | accuracy train 100% e validation 98,44%, ma loss minima validation 1,5368 e finale 1,5543 |
-| F+Spike-TBR-LIF | superato | 294 | full in corso | accuracy train/validation 100%, loss validation 1,4969; minimo 1,4769 |
+| F+Spike-TBR-LIF | superato | 294 | full fermato a 92/128 | best F1 15,74%; nessun summary/profilo finale |
 | F+MG-Cap | superato | 317 | full completato | 48,42% F1; profilo v4 presente |
+| F+MG-Cap+TCAP | superato | 314 | full completato | cinque epoche consecutive valide; 53,15% F1 e profilo v4 |
 | MG clock-matched | fallito | 500 | full bloccato | loss minima 1,7349; norma gradiente media finale 115,3 |
 | MG clock-matched impulse | fallito | 500 | full bloccato | max accuracy 95,31%, loss minima 1,6826; norma gradiente media finale 173,3 |
 
@@ -84,6 +93,21 @@ per dichiarare una modalità di deployment già validata.
 | F | 0,2366 | −0,0088 | 0,1044 | 0,1160 | oracle per la sola curva relativa |
 | TCAP | 0,2611 | +0,0158 | 0,1065 | 0,1183 | oracle per la sola curva relativa |
 | PLIF | **0,2758** | **+0,0305** | **0,1248** | **0,1387** | oracle per la sola curva relativa |
+
+### Effetto temporale della combinazione finale
+
+| Modello | F1 250 ms % | F1 500 ms % | F1 1 s % | F1 1,5 s % | F1 2 s % | F1-PrefixAUC | F1-AUC su durata |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| F+TCAP | 0,48 | 4,00 | 25,98 | 39,49 | 52,36 | 0,2707 | 0,1179 |
+| F+MG-Cap | 0,79 | 3,74 | 24,37 | 36,46 | 48,42 | 0,2239 | 0,0945 |
+| **F+MG-Cap+TCAP** | **0,78** | **5,18** | **31,02** | **41,27** | **53,15** | **0,2942** | **0,1475** |
+| capacity 2M | 2,01 | 10,34 | 36,93 | 43,38 | 51,81 | 0,3282 | 0,1645 |
+
+MG aggiunto a F+TCAP anticipa l'informazione più di quanto migliori il punto finale: a 1 s il
+vantaggio è +5,05 pp F1, a 1,5 s +1,79 pp e a 2 s +0,80 pp; il F1-PrefixAUC sale di 2,34 pp. Il
+controllo 2M conserva però la migliore curva precoce. Il ramo fine è quindi complementare alla
+memoria TCAP sul piano temporale, ma non chiude il gap di capacità con un ritorno sufficiente sul
+punto operativo primario.
 
 PLIF raggiunge prima una rappresentazione discriminativa: a 1,5 s ha già l'88,7% del proprio F1
 finale, contro il 68,9% di B. Da 1,5 a 2 s PLIF non peggiora: sale da 38,76 a 43,68 (+4,93 pp).
@@ -118,6 +142,9 @@ Sono contatori per sample, non misure GPU o FPGA.
 | **F** | **0,1352** | **477.184** | **18,61** | **19,56** | 485,92 | **2.904,56** | 11,14 | **2.915,70** | **1.247,82** |
 | **B+TCAP** | **0,0468** | 1.198.080 | 45,84 | 46,17 | **198,14** | 5.557,45 | 11,14 | 5.568,59 | 1.782,59 |
 | **B+PLIF** | 0,0525 | 1.099.776 | 42,89 | 45,09 | 241,79 | 5.557,45 | 11,14 | 5.568,59 | 1.530,93 |
+| **F+TCAP** | 0,0976 | 575.488 | 21,56 | 20,65 | 272,84 | 2.904,56 | 11,14 | 2.915,70 | 1.499,48 |
+| **F+MG-Cap** | 0,0873 | 673.792 | 40,81 | 42,04 | 539,20 | 3.659,53 | 11,14 | 3.670,67 | 1.593,85 |
+| **F+MG-Cap+TCAP** | 0,0630 | 772.096 | 43,76 | 43,12 | 286,66 | 3.659,53 | 11,14 | 3.670,67 | 1.845,51 |
 
 | Variante | Horowitz attività µJ/sample | Δ vs B | Horowitz densa µJ/sample | Δ vs B | Limite principale |
 |---|---:|---:|---:|---:|---|
@@ -131,6 +158,9 @@ Sono contatori per sample, non misure GPU o FPGA.
 | **F** | **6.191,70** | **−15,41%** | **8.368,47** | **−30,60%** | 36,70 M confronti max-pool esclusi |
 | **B+TCAP** | 8.392,66 | +14,66% | 13.216,04 | +9,60% | include 251,66 M MAC del mixer |
 | **B+PLIF** | 7.274,32 | −0,62% | 12.058,41 | 0,00% | decadimenti precomputabili in inference |
+| **F+TCAP** | **7.157,55** | **−2,21%** | **9.526,10** | **−21,00%** | miglior fronte prestazione/costo corrente |
+| **F+MG-Cap** | 7.834,34 | +7,03% | 10.642,64 | −11,74% | branch fine a 320 step |
+| **F+MG-Cap+TCAP** | 8.764,68 | +19,74% | 11.800,27 | −2,14% | record F1, ma ritorno marginale basso |
 
 La proxy Horowitz usa FP32 45 nm: 4,6 pJ/MAC, 0,9 pJ/AC e 3,7 pJ/moltiplicazione. Esclude
 accessi memoria, routing, controllo, leakage, confronto/reset/integrazione LIF, pooling e riduzioni
@@ -169,6 +199,28 @@ p=0,287 per PLIF vs B e p≈0,130 per TCAP vs F. Un bootstrap stratificato per c
 F1 TCAP−F circa +1,97 pp con IC95% [0,02; 3,87], mentre PLIF−B attraversa zero. Poiché i checkpoint
 sono selezionati su questa stessa validation e ogni variante ha un solo seed, questi numeri
 stabiliscono priorità, non significatività confermativa.
+
+Il confronto decisivo usa le predizioni individuali. F+MG-Cap+TCAP e F+TCAP classificano entrambi
+correttamente 1.152 sample; il combinato ne corregge 451 che F+TCAP sbaglia, ma ne perde 429 che
+F+TCAP risolve. Il saldo di 22 sample dà McNemar esatto `p=0,479`. Il bootstrap appaiato
+stratificato per classe stima `ΔF1=+0,795 pp`, IC95% `[−1,161; +2,705]`. Il delta non è robusto nel
+singolo seed. Al contrario, aggiungere TCAP a MG produce `+4,732 pp` F1, IC95%
+`[+2,834; +6,696]`, e McNemar `p=3,15e−6`: la capacità temporale è il contributo replicato fra
+front-end diversi.
+
+### Dinamica di ottimizzazione dei finalisti
+
+| Modello | Best epoca | F1 finale % | F1 medio ultime 10 % | Train acc finale % | Norma grad. mediana | Clip fraction | Overflow AMP |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| F+TCAP | 122 | 51,79 | 51,66 | 79,08 | 42,72 | 99,998% | 0,059% |
+| F+MG-Cap | 127 | 47,47 | 47,69 | 66,57 | 78,54 | 99,761% | 0,063% |
+| F+MG-Cap+TCAP | 112 | 52,13 | 51,85 | 79,09 | 49,91 | 99,992% | 0,059% |
+
+I best tardivi di F+TCAP e MG indicano che 128 epoche possono troncare la convergenza; il combinato
+raggiunge invece il massimo a 112 e poi oscilla di circa un punto. Il clipping globale a 1,0 è
+attivo praticamente in ogni step, mentre gli overflow AMP sono trascurabili. Sono due variabili da
+studiare dopo il freeze con un confronto singolo e preregistrato, non ragioni per reinterpretare i
+delta architetturali già osservati.
 
 ## PLIF: diagnostica temporale checkpoint-only completata
 
@@ -252,10 +304,9 @@ dataset. Non motiverà una finestra `last_event+K` tarata sulla validation.
 ## Candidati già predisposti
 
 **F+TCAP.** Combina i due meccanismi risultati utili senza cambiare ricetta o rappresentazione.
-Ha 492.516 parametri, cioè −1,64% rispetto a B. Prima di misurare l'attività, la contabilità
-strutturale stima 575.488 elementi di stato (−47,67%), circa 1.499,48 M MAC multivalore (−2,05%) e
-una Horowitz densa di circa 9.526,10 µJ/sample (−21,00%). L'attività reale non è additiva e deve
-essere profilata sul best del run.
+Ha 492.516 parametri, cioè −1,64% rispetto a B. Il profilo del best misura 575.488 elementi di stato
+(−47,67%), 1.499,48 M MAC multivalore (−2,05%), 2.915,70 M SOP potenziali (−47,64%) e una proxy
+Horowitz di 7.157,55 µJ ad attività (−2,21%) / 9.526,10 µJ densa (−21,00%). È il finalista Pareto.
 
 **B+T.** È la compressione depthwise preregistrata del segnale TCAP: 576 coefficienti e nessun
 mixing cross-channel. Non viene eseguita durante la selezione prestazionale; resta disponibile per
@@ -295,23 +346,27 @@ stride e clock ratio non ricevono sweep.
 `320×2×32×32`. Prima della fusione riduce lo spazio con un blocco residuo appreso `16→32`, proietta
 a 64 canali, comprime ogni gruppo di otto micro-step con Conv1d MIMO `64→64` e fonde tramite
 concat-conv residua. Ha 480.036 parametri: +48.960 su F e −20.672 rispetto a B. È la prova di
-utilità della famiglia; Lite resta il confronto di compressione. I costi dipendenti dall'attività
-saranno riportati soltanto dal profilo del best.
+utilità della famiglia; Lite resta il confronto di compressione. Il best misura 673.792 elementi
+di stato, 3.670,67 M SOP, 1.593,85 M MAC e 7.834,34 µJ nella proxy ad attività.
 
-## Snapshot dei full ancora in corso
+**F+MG-Cap+TCAP.** È il record development a seed 42: 53,52% accuracy e 53,15% F1. Rispetto a
+F+TCAP aggiunge 0,80 pp F1, ma anche +9,94% parametri, +34,16% stato, +23,08% MAC, +25,89% SOP,
++22,45% energia proxy ad attività e +190% tempo di training. Non supera la soglia preregistrata e
+resta un risultato esplorativo orientato anche alla latenza, non il finalista primario.
+
+## Run incompleto Spike-TBR
 
 Questi valori sono diagnostici e non entrano nella tabella primaria finché mancano summary,
 predizioni finali e profilo del best.
 
 | Run | Epoca snapshot | Train Acc % | Val Acc % | Val F1 % | Val loss | Grad norm | Clip fraction |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| F+TCAP | 48 | 53,77 | **41,77** | **39,72** | 2,5472 | 46,23 | 1,00 |
-| F+Spike-TBR-LIF | 38 | 13,75 | 10,42 | 8,76 | 3,9196 | 48,80 | 1,00 |
+| F+Spike-TBR-LIF | 92 | 26,62 | 14,76 | 14,30 | 3,5397 | 43,29 | 1,00 |
 
-Alla stessa epoca 38, F aveva F1 16,46%, B 23,82%, B+TCAP 30,95% e F+TCAP 32,33%: Spike-TBR è
-quindi indietro di 7,70 pp rispetto a F e 23,57 pp rispetto a F+TCAP. Non è un problema numerico:
-loss e gradienti sono finiti e la clip fraction 1,0 compare anche negli altri full. Il collo di
-bottiglia è informativo. Su 64 sample validation deterministici, Spike-TBR emette in media 808,5
+Il best F1 osservato prima dello stop è 15,74% all'epoca 82; a 92 epoche la curva resta al 14,30%.
+Non è un problema numerico: loss e gradienti sono finiti e la clip fraction 1,0 compare anche negli
+altri full. Il collo di bottiglia è informativo. Su 64 sample validation deterministici, Spike-TBR
+emette in media 808,5
 voxel macro non nulli contro 7.594,6 di TBR, rapporto 0,0982. Il reset della membrana ogni 50 ms
 interrompe inoltre accumuli sub-soglia; mantenendo la stessa ricorrenza continua per il sample il
 numero medio di voxel emessi sale a circa 2.123,7, cioè 2,89×. Questa misura spiega il ritardo ma

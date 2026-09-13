@@ -1,6 +1,6 @@
 # Profilazione hardware proxy
 
-**Aggiornata:** 2026-09-09
+**Aggiornata:** 2026-09-13
 
 ## Contatori e semantica
 
@@ -23,6 +23,9 @@ all'identità o a zero viene contato secondo il grafo che avrà dopo l'addestram
 | F | 431.076 | 0,13520 | 477.184 | 485,92 | 2.915,70 | 1.247,82 | 6.191,70 | 8.368,47 |
 | B+TCAP | 562.148 | 0,04682 | 1.198.080 | 198,14 | 5.568,59 | 1.782,59 | 8.392,66 | 13.216,04 |
 | B+PLIF | 502.676 | 0,05253 | 1.099.776 | 241,79 | 5.568,59 | 1.530,93 | 7.274,32 | 12.058,41 |
+| **F+TCAP** | **492.516** | 0,09757 | **575.488** | 272,84 | **2.915,70** | **1.499,48** | **7.157,55** | **9.526,10** |
+| F+MG-Cap | 480.036 | 0,08729 | 673.792 | 539,20 | 3.670,67 | 1.593,85 | 7.834,34 | 10.642,64 |
+| F+MG-Cap+TCAP | 541.476 | 0,06297 | 772.096 | 286,66 | 3.670,67 | 1.845,51 | 8.764,68 | 11.800,27 |
 
 F riduce la geometria ad alta risoluzione: il firing cresce del 131,11%, ma SOP potenziali, MAC,
 stato e Horowitz densa calano rispettivamente del 47,64%, 18,49%, 56,61% e 30,60%. I max-pool
@@ -31,14 +34,16 @@ aggiungono 36,70 M confronti non inclusi nella proxy energetica. TCAP aggiunge 2
 proxy. PLIF non aggiunge stato e il decadimento sigmoid-derived può essere precomputato dopo il
 training.
 
+F+TCAP combina il miglior risultato strutturale ripetibile con costi ancora inferiori a B: −1,64%
+parametri, −47,67% stato, −47,64% SOP potenziali, −2,05% MAC e −2,21% nella proxy ad attività. Il
+combinato MG+TCAP stabilisce il record single-seed, ma rispetto a F+TCAP richiede +34,16% stato,
++23,08% MAC, +25,89% SOP e +22,45% energia proxy per +0,80 pp F1. Non è quindi sullo stesso fronte
+di Pareto.
+
 La tabella completa, inclusi controlli 1M/2M, NoCrossTime e readout, è in
 `EXPERIMENT_LEDGER.md`.
 
-## Costi preventivi dei prossimi run
-
-F+TCAP ha 492.516 parametri, 575.488 elementi di stato e circa 1.499,48 M MAC multivalore. La
-Horowitz densa strutturale è circa 9.526,10 µJ/sample. Sono somme del grafo; firing, AC attività e
-Horowitz attività non sono additivi e verranno sostituiti dal profilo del checkpoint.
+## Rappresentazioni con preprocessing esterno
 
 F+TBR e F+Spike-TBR hanno 431.004 parametri, 72 meno di F, e mantengono 40 forward del backbone.
 Il profiler v4 conta il modello a valle e allega i metadata della rappresentazione, ma non somma il

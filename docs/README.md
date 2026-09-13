@@ -8,6 +8,7 @@ in Git; snapshot, duplicati e documenti della fase DVS-Gesture/DVS-GC sono stati
 | [`PROJECT_CHARTER.md`](PROJECT_CHARTER.md) | obiettivo, vincoli e criteri scientifici |
 | [`PROJECT_STATUS.md`](PROJECT_STATUS.md) | verità empirica corrente e prossimo passo |
 | [`ROADMAP.md`](ROADMAP.md) | albero decisionale e budget dei run |
+| [`VALIDATION_REFINEMENT_ROADMAP.md`](VALIDATION_REFINEMENT_ROADMAP.md) | conferma multi-seed, raffinamento e pretraining post-freeze |
 | [`DECISIONS.md`](DECISIONS.md) | decisioni attive che vincolano il lavoro futuro |
 | [`EXPERIMENT_LEDGER.md`](EXPERIMENT_LEDGER.md) | registro compatto dei run e della profilazione |
 | [`SOURCES.md`](SOURCES.md) | letteratura usata e limiti dei confronti |

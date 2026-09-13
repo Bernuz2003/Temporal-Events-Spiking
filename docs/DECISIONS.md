@@ -1,6 +1,6 @@
 # Decisioni attive
 
-**Aggiornate:** 2026-09-12
+**Aggiornate:** 2026-09-13
 
 1. DVS-Lip resta il benchmark di sviluppo e l'official test resta embargoed fino alla valutazione
    finale. Tutte le cifre correnti sono seed 42 sulla development validation ricavata
@@ -61,6 +61,28 @@
 20. I due clock-matched MG hanno fallito il gate. L'uguaglianza del decadimento fisico fra clock
     non è un'invarianza del percorso Conv-BN-LIF; la variante a gain 0,5 aumenta inoltre di circa
     sei volte il guadagno integrato. Il codice dedicato è stato rimosso tornando a `cde6ec3`.
-21. Prima del freeze resta al massimo un probe high-frequency locale, condizionato all'esito di
-    MG+TCAP. PMSN/PSN, GRU, LMU, Mamba, MTGA/graph e nuove rappresentazioni non ricevono full in
+21. Poiché MG+TCAP non ha raggiunto la soglia, prima del freeze resta un probe high-frequency
+    locale. PMSN/PSN, GRU, LMU, Mamba, MTGA/graph e nuove rappresentazioni non ricevono full in
     questa fase perché richiedono un cambio di protocollo o più run di attribuzione.
+22. F+MG-Cap+TCAP è il record development single-seed: 53,52% accuracy e 53,15% F1, +8,71/+9,00
+    pp su B. MG aggiunge però soltanto 0,73/0,80 pp a F+TCAP, con IC95% appaiato F1
+    `[−1,16; +2,71]` e McNemar `p=0,479`; non raggiunge la soglia preregistrata di +2 pp.
+23. **F+TCAP resta il finalista strutturale primario.** MG+TCAP viene conservato come record
+    esplorativo e candidato di latenza, perché migliora il F1 a 1 s di 5,05 pp e il F1-PrefixAUC
+    di 2,34 pp, ma costa +34,16% stato, +23,08% MAC, +25,89% SOP, +22,45% Horowitz ad attività e
+    circa 2,9 volte il tempo di training rispetto a F+TCAP.
+24. TCAP è il risultato architetturale robusto: aggiunge +6,21 pp F1 a F e +4,73 pp a MG. Prima di
+    modificare i ritardi si esegue un'ablation checkpoint-only dei tap 1/2/4. Un solo run
+    `[1,2,4,8]` è ammesso se rimuovere `d=4` costa almeno 1 pp e il suo contributo non è inferiore
+    a `d=2`; non si esegue uno sweep dei ritardi.
+25. La discovery può ricevere un solo probe high-frequency: F+TCAP con mixer locale depthwise 3×3
+    nel primo stage, E0 e stage 2 invariati. La promozione richiede +2 pp F1 oppure parità entro
+    0,5 pp con vantaggio hardware misurato. Dopo il probe e la diagnostica condizionale dei tap
+    l'architettura viene
+    congelata.
+26. La fase successiva separa conferma multi-seed, trasferimento DVS-Gesture, raffinamento
+    supervisionato, SSL/predictive pretraining, compressione e infine test ufficiale. La sequenza e
+    le stop rule sono in `VALIDATION_REFINEMENT_ROADMAP.md`.
+27. PLIF non viene reinserito come neuron model. La sua persistenza post-evento e il vantaggio ai
+    prefissi motivano una loss ausiliaria ai prefissi tardivi e, più avanti, un eventuale arresto
+    adattivo; entrambe sono valutate sulla struttura congelata.

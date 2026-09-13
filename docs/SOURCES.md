@@ -1,6 +1,6 @@
 # Fonti e selezione delle famiglie architetturali
 
-**Aggiornato:** 2026-09-12
+**Aggiornato:** 2026-09-13
 
 I punteggi pubblicati non sono direttamente confrontabili con la development validation locale:
 molti lavori selezionano sul test ufficiale, usano crop/binning/augmentation diversi o modelli molto
@@ -173,7 +173,7 @@ dei due riceve un full mentre sono disponibili TBR e Spike-TBR.
 
 | Famiglia | Evidenza | Decisione corrente |
 |---|---|---|
-| High-frequency local mixing | [MaxFormer](https://papers.neurips.cc/paper_files/paper/2025/hash/956834836f36dd07df7064ff42ca69f2-Abstract-Conference.html) mostra che MaxPool e depthwise convolution contrastano il bias low-pass delle SNN; [HFR-Lip](https://doi.org/10.1016/j.ins.2025.123026) individua direttamente su DVS-Lip la perdita di bordi e micro-deformazioni | **unico probe condizionale ammesso**, nel primo stage di F+TCAP, se MG+TCAP non raggiunge la soglia |
+| High-frequency local mixing | [MaxFormer](https://papers.neurips.cc/paper_files/paper/2025/hash/956834836f36dd07df7064ff42ca69f2-Abstract-Conference.html) mostra che MaxPool e depthwise convolution contrastano il bias low-pass delle SNN; [HFR-Lip](https://doi.org/10.1016/j.ins.2025.123026) individua direttamente su DVS-Lip la perdita di bordi e micro-deformazioni | **unico probe architetturale ammesso** nel primo stage di F+TCAP; MG+TCAP non ha raggiunto la soglia |
 | PMSN | [NSA](https://www.ijcai.org/proceedings/2025/0544.pdf) riporta su DVS-Lip 57,43% contro 17,83% del LIF nello stesso MLP | non trasferibile come singola ablation: usa 200 bin, crop 88×88, last-step readout e sostituisce la dinamica neuronale dell'intera rete; inoltre la proxy pubblicata costa 6,8× il LIF |
 | chwPSN / MD-Mixer | evidenza diretta o forte sul mixing temporale esplicito | TCAP ha già validato il principio; la versione depthwise appartiene alla compressione, mentre ritardi discreti soft-to-hard aprirebbero un nuovo tuning |
 | SpikGRU2+ | forte risultato DVS-Lip | backbone, 90 bin, readout bidirezionale e augmentation cambiano insieme; gated-v2 locale è negativo |
@@ -181,6 +181,20 @@ dei due riceve un full mentre sono disponibili TBR e Spike-TBR.
 | LMU, Mamba, S4D/GSU | forti su sequenze lunghe | nessun confronto controllato nello stesso backbone DVS-Lip e integrazione non minimale; rinviati |
 
 Il collo residuo più concreto è spaziale: F+TCAP ottiene 44,42% su Acc1 e 61,15% su Acc2; MG
-migliora F di 3,54 pp su Acc1 ma solo 0,60 pp su Acc2. Questo rende il probe high-frequency più
-mirato di un altro temporal core. Non viene implementato finché MG+TCAP non determina quale
-substrato architetturale debba essere congelato.
+migliora F di 3,54 pp su Acc1 ma solo 0,60 pp su Acc2. Nel combinato MG aggiunge 1,67 pp su Acc1 e
+perde 0,20 pp su Acc2 rispetto a F+TCAP. Poiché il delta finale è solo +0,80 pp F1, il probe
+high-frequency resta l'unica alternativa architetturale autorizzata prima del freeze.
+
+## Fonti per validazione e raffinamento
+
+| Tecnica | Evidenza primaria | Uso nel progetto |
+|---|---|---|
+| Temporal Maskout | [G2N2, BMVC 2023](https://proceedings.bmvc2023.org/660/) riporta il miglior risultato DVS-Lip con otto intervalli mascherati e un guadagno consistente rispetto a nessuna maschera | prima augmentation post-freeze, configurazione unica 8×1–4 bin |
+| Neuromorphic Data Augmentation | [NDA, ECCV 2022](https://www.ecva.net/papers/eccv_2022/papers_ECCV/papers/136670623.pdf) valida trasformazioni geometriche e CutMix su più benchmark DVS | una sola policy geometrica a bassa intensità dopo Maskout |
+| Supervisione temporale | [TET, ICLR 2022](https://openreview.net/pdf?id=_XNtisL32jv) ottimizza le uscite lungo il tempo e migliora generalizzazione/flatness nelle SNN | variante dichiarata late-prefix a 1 e 1,5 s, motivata dalla diagnostica PLIF |
+| Ritardi apprendibili | [DCLS, ICLR 2024](https://proceedings.iclr.cc/paper_files/paper/2024/hash/4df1cc5a7528b7197ad8ae76ff30107a-Abstract-Conference.html) apprende ritardi discreti su speech/event task | non adottato ora; prima si abla TCAP e si ammette al massimo il tap fisso 8 |
+| Pretraining masked-event | [MEM, WACV 2024](https://openaccess.thecvf.com/content/WACV2024/papers/Klenk_Masked_Event_Modeling_Self-Supervised_Pretraining_for_Event_Cameras_WACV_2024_paper.pdf) trasferisce rappresentazioni auto-supervisionate a task semantici | un solo pretraining latente JEPA-like sul backbone congelato, dopo il riferimento supervisionato |
+
+Queste fonti non rendono trasferibili i valori assoluti fra protocolli. Servono a scegliere una
+configurazione iniziale e una stop rule, evitando una ricerca combinatoria. La sequenza operativa è
+in `VALIDATION_REFINEMENT_ROADMAP.md`.
