@@ -270,6 +270,12 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
     embed_dim = int(model.get("embed_dim", 128))
     if frontend == "pyramidal" and embed_dim % 16:
         raise ConfigError("model.frontend=pyramidal requires embed_dim divisible by 16")
+    stage1_mixer = model.get("stage1_mixer", "token_qk")
+    if stage1_mixer not in {"token_qk", "depthwise_conv"}:
+        raise ConfigError("model.stage1_mixer must be token_qk or depthwise_conv")
+    stage1_kernel = model.get("stage1_depthwise_kernel_size", 3)
+    if type(stage1_kernel) is not int or stage1_kernel < 3 or stage1_kernel % 2 == 0:
+        raise ConfigError("model.stage1_depthwise_kernel_size must be an odd integer >= 3")
     multigranular = model.get("multigranular", False)
     if type(multigranular) is not bool:
         raise ConfigError("model.multigranular must be boolean")

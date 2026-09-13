@@ -10,6 +10,7 @@ from etsr.models.layers import (
     PatchEmbeddingStage,
     PyramidalPatchEmbedding,
     SpikingBlock,
+    SpikingDepthwiseLocalMixer,
     SpikingSelfAttention,
     TokenQKAttention,
 )
@@ -52,6 +53,8 @@ class MiniQKFormer(nn.Module):
         multigranular_temporal_groups: int | None = None,
         multigranular_fusion: str = "add",
         multigranular_micro_steps: int = 8,
+        stage1_mixer: str = "token_qk",
+        stage1_depthwise_kernel_size: int = 3,
     ) -> None:
         super().__init__()
         if embed_dim % 4 != 0:
@@ -113,6 +116,10 @@ class MiniQKFormer(nn.Module):
             raise ValueError("A learned multi-granular fusion requires multigranular=true")
         if multigranular_micro_steps <= 1:
             raise ValueError("multigranular_micro_steps must be greater than one")
+        if stage1_mixer not in {"token_qk", "depthwise_conv"}:
+            raise ValueError("stage1_mixer must be token_qk or depthwise_conv")
+        if stage1_depthwise_kernel_size < 3 or stage1_depthwise_kernel_size % 2 == 0:
+            raise ValueError("stage1_depthwise_kernel_size must be an odd integer >= 3")
         self.num_classes = num_classes
         self.readout_name = readout
         self.readout_time = readout_time
@@ -122,6 +129,7 @@ class MiniQKFormer(nn.Module):
         self.learnable_lif_tau_enabled = learnable_lif_tau
         self.multigranular_enabled = multigranular
         self.multigranular_fusion_name = multigranular_fusion
+        self.stage1_mixer_name = stage1_mixer
         half = embed_dim // 2
 
         first_fir = temporal_fir_kernel_size if temporal_fir else None
@@ -164,8 +172,19 @@ class MiniQKFormer(nn.Module):
             if multigranular and multigranular_fusion == "concat_residual"
             else None
         )
+        stage1_attention = (
+            TokenQKAttention(half, num_heads, lif_tau, lif_threshold, learnable_lif_tau)
+            if stage1_mixer == "token_qk"
+            else SpikingDepthwiseLocalMixer(
+                half,
+                stage1_depthwise_kernel_size,
+                lif_tau,
+                lif_threshold,
+                learnable_lif_tau,
+            )
+        )
         self.stage1 = SpikingBlock(
-            attention=TokenQKAttention(half, num_heads, lif_tau, lif_threshold, learnable_lif_tau),
+            attention=stage1_attention,
             dim=half,
             mlp_ratio=mlp_ratio,
             tau=lif_tau,

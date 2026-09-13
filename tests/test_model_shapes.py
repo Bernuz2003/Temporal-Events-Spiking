@@ -13,6 +13,7 @@ from etsr.models.layers import (
     PatchEmbeddingStage,
     PyramidalPatchEmbedding,
     SpikingBlock,
+    SpikingDepthwiseLocalMixer,
 )
 from etsr.models.mini_qkformer import MiniQKFormer
 from etsr.models.readout import DiagonalGatedReadout
@@ -355,6 +356,11 @@ def test_fir_learned_taps_match_step_execution_and_gradients_without_dtype_promo
         {"frontend": "pyramidal", "temporal_fir": True},
         {"readout": "diagonal_gated", "gated_initial_memory_steps": 20},
         {"temporal_channel_mixer": True},
+        {
+            "frontend": "pyramidal",
+            "temporal_channel_mixer": True,
+            "stage1_mixer": "depthwise_conv",
+        },
         {"learnable_lif_tau": True},
     ],
 )
@@ -477,6 +483,39 @@ def test_spiking_block_uses_direct_residual_additions():
     assert torch.equal(block(x), 4.0 * x)
 
 
+def test_stage1_depthwise_local_mixer_preserves_shape_and_has_expected_budget():
+    model = MiniQKFormer(
+        2,
+        100,
+        frontend="pyramidal",
+        temporal_channel_mixer=True,
+        temporal_channel_mixer_delays=(1, 2, 4),
+        stage1_mixer="depthwise_conv",
+        stage1_depthwise_kernel_size=3,
+    )
+    assert isinstance(model.stage1.attention, SpikingDepthwiseLocalMixer)
+    assert model.stage1.attention.conv.groups == 64
+    assert sum(parameter.numel() for parameter in model.parameters()) == 480_548
+
+    small = MiniQKFormer(
+        2,
+        6,
+        embed_dim=32,
+        num_heads=4,
+        frontend="pyramidal",
+        temporal_channel_mixer=True,
+        stage1_mixer="depthwise_conv",
+    )
+    frames = torch.rand(2, 4, 2, 32, 32)
+    logits = small(frames)
+    logits.square().mean().backward()
+    assert logits.shape == (2, 6)
+    assert all(
+        parameter.grad is not None and torch.isfinite(parameter.grad).all()
+        for parameter in small.stage1.attention.parameters()
+    )
+
+
 def test_speds_shortcuts_spike_each_branch_before_direct_addition():
     initial = InitialPatchEmbedding(in_channels=2, embed_dim=16, tau=2.0, threshold=1.0)
     stage = PatchEmbeddingStage(in_channels=8, out_channels=16, tau=2.0, threshold=1.0)
@@ -533,6 +572,13 @@ def test_dvslip_candidate_configs_change_only_the_declared_architecture():
             "frontend": "pyramidal",
             "temporal_channel_mixer": True,
             "temporal_channel_mixer_delays": [1, 2, 4],
+        },
+        "dvslip_f_tcap_stage1_dwc3.yaml": {
+            "frontend": "pyramidal",
+            "temporal_channel_mixer": True,
+            "temporal_channel_mixer_delays": [1, 2, 4],
+            "stage1_mixer": "depthwise_conv",
+            "stage1_depthwise_kernel_size": 3,
         },
         "dvslip_b_t.yaml": {
             "temporal_fir": True,

@@ -1,6 +1,6 @@
 # Operazioni riproducibili su SMILIES
 
-**Aggiornate:** 2026-09-12
+**Aggiornate:** 2026-09-13
 
 Ogni server fisico vede la propria GPU come indice locale `0`. I quattro nomi di sessione screen
 sono indipendenti perché vivono su macchine diverse. Prima del lancio, sincronizzare lo stesso
@@ -16,24 +16,39 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/dataset_workflow.sh dvslip check
 Il check esegue suite, lint, bytecode, shell syntax e test CUDA/AMP. Non avviare un candidato se
 fallisce. Il dataset gate completo non va ripetuto a ogni run.
 
-## Run MG-Cap+TCAP
+## Diagnostica checkpoint-only dei tap TCAP
 
-Dopo avere sincronizzato il commit ed eseguito il check, avviare il workflow registrato:
+Il comando valuta sequenzialmente checkpoint intatto, tap 1/2/4 azzerati singolarmente e tutta la
+storia azzerata. Non addestra e non modifica il checkpoint su disco.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-mg-tcap42 -- candidate --config configs/dvslip_f_multigranular_temporal_capacity.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-tcap-taps42 -- tcap-tap-diagnostic --config artifacts/dvslip_f_temporal_capacity__20260909_124154_088394__seed42/config_resolved.yaml --checkpoint checkpoints/dvslip_f_temporal_capacity__20260909_124154_088394__seed42/best.pt --output artifacts/dvslip_tcap_tap_diagnostic__20260913
 ```
 
-La configurazione riusa integralmente F, MG-Cap e TCAP: fine grid 32×32, riduzione MIMO, fusione
-appresa e ritardi TCAP 1/2/4. Il full parte da pesi nuovi soltanto se il gate standard passa. Non
-cambiare stride, larghezza, gruppi, ritardi, loss o soglia del gate.
+L'output centrale è `tcap_ablation_summary.json`; i CSV separano curva ogni 50 ms, risultati finali,
+predizioni appaiate e norme delle matrici di ritardo. `intact_minus_ablated.macro_f1` è il costo F1
+della rimozione: solo se `without_delay_4` vale almeno 0,01 e non è inferiore al tap 2 si autorizza
+il futuro run con ritardo 8.
+
+## Probe high-frequency F+TCAP
+
+Dopo il check sul commit pulito, avviare il candidato registrato:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tcap-dwc3-42 -- candidate --config configs/dvslip_f_tcap_stage1_dwc3.yaml
+```
+
+Il workflow esegue bounded overfit, full da pesi nuovi e profiling v4. La config sostituisce soltanto
+Token-QK nello stage 1 con il mixer depthwise 3×3; E0, F, TCAP 1/2/4, stage 2 e recipe restano
+invariati. Non cambiare kernel, ritardi o soglia del gate.
 
 ## Monitoraggio e ripresa
 
 ```bash
 screen -ls
-tail -f artifacts/screen/dvslip-f-mg-tcap42.log
-screen -r dvslip-f-mg-tcap42
+tail -f artifacts/screen/dvslip-tcap-taps42.log
+tail -f artifacts/screen/dvslip-f-tcap-dwc3-42.log
+screen -r dvslip-f-tcap-dwc3-42
 ```
 
 `overfit_gate.json` registra il gate; `candidate_workflow.json` collega gate, full e profilo. Se un

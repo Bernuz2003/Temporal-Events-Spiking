@@ -49,6 +49,18 @@ def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
             expected_representation.update({"lif_beta": 0.9, "lif_threshold": 1.1})
         if config["representation"] != expected_representation:
             raise ValueError("TBR discovery is fixed to the preregistered DVS-Lip paper settings")
+    elif config["model"].get("stage1_mixer", "token_qk") == "depthwise_conv":
+        reference = load_config("configs/dvslip_f_temporal_capacity.yaml")
+        for section in ("dataset", "representation", "augmentation", "training", "evaluation"):
+            if config.get(section) != reference.get(section):
+                raise ValueError(f"High-frequency discovery must preserve F+TCAP {section}")
+        expected_model = {
+            **reference["model"],
+            "stage1_mixer": "depthwise_conv",
+            "stage1_depthwise_kernel_size": 3,
+        }
+        if config["model"] != expected_model:
+            raise ValueError("High-frequency discovery is fixed to stage1 depthwise convolution 3x3")
     elif representation_name == "multigranular_count_frame":
         reference = load_config("configs/dvslip_f.yaml")
         for section in ("dataset", "augmentation", "training", "evaluation"):

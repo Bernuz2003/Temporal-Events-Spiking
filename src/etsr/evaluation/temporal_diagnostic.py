@@ -18,6 +18,7 @@ from etsr.evaluation.metrics import (
     trapezoidal_auc,
 )
 from etsr.models.spiking import MultiStepLIF
+from etsr.models.temporal import CausalTemporalChannelMixer
 from etsr.reproducibility import collect_environment, git_commit, git_is_dirty
 from etsr.training.engine import make_criterion
 from etsr.utils.io import ensure_dir, sha256_file, write_csv, write_json
@@ -487,4 +488,304 @@ def diagnose_baseline_plif_pair(
         "official_test_used": False,
     }
     write_json(summary, output / "temporal_diagnostic_pair_summary.json")
+    return summary
+
+
+def _tcap_modules(model: nn.Module) -> list[tuple[str, CausalTemporalChannelMixer]]:
+    modules = [
+        (name, module)
+        for name, module in model.named_modules()
+        if isinstance(module, CausalTemporalChannelMixer)
+    ]
+    if not modules:
+        raise ValueError("TCAP tap diagnostics require at least one temporal channel mixer")
+    delays = modules[0][1].delays
+    if any(module.delays != delays for _, module in modules):
+        raise ValueError("All temporal channel mixers must expose the same delay set")
+    return modules
+
+
+def _set_disabled_tcap_delays(
+    modules: list[tuple[str, CausalTemporalChannelMixer]],
+    original_weights: dict[str, torch.Tensor],
+    disabled_delays: tuple[int, ...],
+) -> None:
+    """Restore learned TCAP weights, then zero complete delay matrices for one ablation."""
+
+    known_delays = modules[0][1].delays
+    unknown = sorted(set(disabled_delays) - set(known_delays))
+    if unknown:
+        raise ValueError(f"Cannot disable delays absent from the checkpoint: {unknown}")
+    with torch.no_grad():
+        for name, module in modules:
+            module.weight.copy_(original_weights[name])
+            for delay in disabled_delays:
+                module.weight[known_delays.index(delay)].zero_()
+
+
+@torch.no_grad()
+def diagnose_tcap_taps(
+    config: dict[str, Any], checkpoint_path: str | Path, output_dir: str | Path
+) -> dict[str, Any]:
+    """Measure the inference-time contribution of every learned TCAP delay.
+
+    This is a checkpoint intervention, not a retrained architectural ablation. Every condition uses
+    the same weights and validation order; only complete learned delay matrices are set to zero.
+    """
+
+    # Imported lazily to avoid a runner/evaluation import cycle.
+    from etsr.runner import _dvslip_group_metrics, _load_checkpoint_context
+
+    config = copy.deepcopy(config)
+    checkpoint_path, checkpoint, bundle, model, device, dataset_metadata = (
+        _load_checkpoint_context(config, checkpoint_path)
+    )
+    if config["dataset"]["name"] != "dvslip":
+        raise ValueError("TCAP tap diagnostics currently require DVS-Lip")
+    if getattr(model, "readout_name", None) != "mean" or getattr(
+        model, "readout_time", None
+    ) != "fixed_window":
+        raise ValueError("TCAP tap diagnostics require fixed-window mean readout")
+    modules = _tcap_modules(model)
+    delays = modules[0][1].delays
+    original_weights = {name: module.weight.detach().clone() for name, module in modules}
+    conditions = [("intact", ())]
+    conditions.extend((f"without_delay_{delay}", (delay,)) for delay in delays)
+    conditions.append(("without_all_history", delays))
+
+    bin_width_us = int(config["representation"]["bin_width_us"])
+    total_steps = int(config["representation"]["window_us"]) // bin_width_us
+    configured_times = [
+        int(value) for value in config.get("evaluation", {}).get("absolute_prefix_times_us", [])
+    ]
+    configured_steps = {
+        max(1, min(total_steps, (time_us + bin_width_us - 1) // bin_width_us)): time_us
+        for time_us in configured_times
+    }
+    if len(configured_steps) < 2:
+        raise ValueError("TCAP diagnostics require at least two configured absolute prefixes")
+
+    loader = build_loader(bundle.validation, config["dataset"], shuffle=False)
+    criterion = make_criterion(config["training"])
+    num_classes = int(checkpoint["num_classes"])
+    curve_rows: list[dict[str, Any]] = []
+    final_rows: list[dict[str, Any]] = []
+    condition_summaries: dict[str, Any] = {}
+    prediction_columns: dict[str, dict[str, list[float | int]]] = {}
+    model.eval()
+
+    try:
+        for condition_name, disabled_delays in conditions:
+            _set_disabled_tcap_delays(modules, original_weights, disabled_delays)
+            accumulator = _TemporalMetricAccumulator(total_steps, num_classes)
+            prediction_columns[condition_name] = {
+                "indices": [],
+                "targets": [],
+                "predictions": [],
+                "margins": [],
+            }
+            for frames, targets, indices in loader:
+                if isinstance(frames, dict):
+                    frames = {
+                        key: value.to(device, non_blocking=True) for key, value in frames.items()
+                    }
+                else:
+                    frames = frames.to(device, non_blocking=True)
+                targets = targets.to(device, non_blocking=True)
+                encoded = model._encode(frames)
+                logits = temporal_readout_logits(encoded, model.head)["prefix_mean"]
+                accumulator.update(logits, targets, indices, criterion)
+
+                final_logits = logits[-1]
+                predictions = final_logits.argmax(dim=1)
+                true_logits = final_logits.gather(1, targets[:, None]).squeeze(1)
+                competitors = final_logits.clone()
+                competitors.scatter_(1, targets[:, None], float("-inf"))
+                margins = true_logits - competitors.max(dim=1).values
+                columns = prediction_columns[condition_name]
+                columns["indices"].extend(int(value) for value in indices.tolist())
+                columns["targets"].extend(int(value) for value in targets.cpu().tolist())
+                columns["predictions"].extend(int(value) for value in predictions.cpu().tolist())
+                columns["margins"].extend(float(value) for value in margins.cpu().tolist())
+
+            rows = accumulator.rows(bin_width_us)
+            curve_rows.extend(
+                {
+                    "condition": condition_name,
+                    "disabled_delays": ",".join(str(value) for value in disabled_delays),
+                    **row,
+                }
+                for row in rows
+            )
+            configured_rows = [row for row in rows if int(row["time_step"]) in configured_steps]
+            final_result = accumulator.metrics[-1].compute()
+            group_metrics = _dvslip_group_metrics(
+                config, bundle.classes, final_result.confusion_matrix
+            )
+            if group_metrics is None:
+                raise ValueError("TCAP diagnostics require the DVS-Lip class-group manifest")
+            condition_summary = {
+                "disabled_delays": list(disabled_delays),
+                "validation": {
+                    **final_result.to_dict(),
+                    "class_group_accuracies": group_metrics,
+                },
+                "every_bin_prefix_auc": _auc_summary(rows),
+                "configured_prefix_auc": _auc_summary(configured_rows),
+                "configured_prefixes": [
+                    {
+                        **row,
+                        "requested_us": configured_steps[int(row["time_step"])],
+                    }
+                    for row in configured_rows
+                ],
+            }
+            condition_summaries[condition_name] = condition_summary
+            final_rows.append(
+                {
+                    "condition": condition_name,
+                    "disabled_delays": ",".join(str(value) for value in disabled_delays),
+                    "accuracy": final_result.accuracy,
+                    "macro_f1": final_result.macro_f1,
+                    "loss": final_result.loss,
+                    "acc1": group_metrics["metrics"]["Acc1"]["accuracy"],
+                    "acc2": group_metrics["metrics"]["Acc2"]["accuracy"],
+                    "accuracy_prefix_auc": condition_summary["configured_prefix_auc"][
+                        "accuracy_auc_normalized"
+                    ],
+                    "macro_f1_prefix_auc": condition_summary["configured_prefix_auc"][
+                        "macro_f1_auc_normalized"
+                    ],
+                }
+            )
+    finally:
+        _set_disabled_tcap_delays(modules, original_weights, ())
+
+    intact = condition_summaries["intact"]
+    intact_predictions = prediction_columns["intact"]
+    prediction_rows = []
+    for position, (sample_index, target) in enumerate(
+        zip(intact_predictions["indices"], intact_predictions["targets"], strict=True)
+    ):
+        row: dict[str, Any] = {"sample_index": sample_index, "target": target}
+        for condition_name, _ in conditions:
+            columns = prediction_columns[condition_name]
+            if (
+                columns["indices"][position] != sample_index
+                or columns["targets"][position] != target
+            ):
+                raise ValueError("Validation order changed between TCAP ablation conditions")
+            row[f"{condition_name}_prediction"] = columns["predictions"][position]
+            row[f"{condition_name}_margin"] = columns["margins"][position]
+        prediction_rows.append(row)
+
+    ablation_effects: dict[str, Any] = {}
+    intact_targets = np.asarray(intact_predictions["targets"], dtype=np.int64)
+    intact_pred = np.asarray(intact_predictions["predictions"], dtype=np.int64)
+    intact_correct = intact_pred == intact_targets
+    for condition_name, disabled_delays in conditions[1:]:
+        ablated = condition_summaries[condition_name]
+        ablated_pred = np.asarray(
+            prediction_columns[condition_name]["predictions"], dtype=np.int64
+        )
+        ablated_correct = ablated_pred == intact_targets
+        ablation_effects[condition_name] = {
+            "disabled_delays": list(disabled_delays),
+            "intact_minus_ablated": {
+                "accuracy": float(
+                    intact["validation"]["accuracy"] - ablated["validation"]["accuracy"]
+                ),
+                "macro_f1": float(
+                    intact["validation"]["macro_f1"] - ablated["validation"]["macro_f1"]
+                ),
+                "acc1": float(
+                    intact["validation"]["class_group_accuracies"]["metrics"]["Acc1"][
+                        "accuracy"
+                    ]
+                    - ablated["validation"]["class_group_accuracies"]["metrics"]["Acc1"][
+                        "accuracy"
+                    ]
+                ),
+                "acc2": float(
+                    intact["validation"]["class_group_accuracies"]["metrics"]["Acc2"][
+                        "accuracy"
+                    ]
+                    - ablated["validation"]["class_group_accuracies"]["metrics"]["Acc2"][
+                        "accuracy"
+                    ]
+                ),
+                "macro_f1_prefix_auc": float(
+                    intact["configured_prefix_auc"]["macro_f1_auc_normalized"]
+                    - ablated["configured_prefix_auc"]["macro_f1_auc_normalized"]
+                ),
+            },
+            "paired_accuracy": {
+                "intact_only_correct": int((intact_correct & ~ablated_correct).sum()),
+                "ablated_only_correct": int((~intact_correct & ablated_correct).sum()),
+                "both_correct": int((intact_correct & ablated_correct).sum()),
+                "both_wrong": int((~intact_correct & ~ablated_correct).sum()),
+            },
+        }
+
+    tap_norm_rows = []
+    for name, module in modules:
+        weights = original_weights[name].float()
+        for index, delay in enumerate(module.delays):
+            matrix = weights[index]
+            tap_norm_rows.append(
+                {
+                    "module": name,
+                    "delay_steps": delay,
+                    "delay_us": delay * bin_width_us,
+                    "frobenius_norm": float(matrix.norm().item()),
+                    "mean_absolute_weight": float(matrix.abs().mean().item()),
+                    "maximum_absolute_weight": float(matrix.abs().max().item()),
+                }
+            )
+
+    output = ensure_dir(output_dir)
+    files = {
+        "curve": "tcap_ablation_curve_every_bin.csv",
+        "final": "tcap_ablation_final.csv",
+        "predictions": "tcap_ablation_predictions.csv",
+        "tap_norms": "tcap_tap_norms.csv",
+    }
+    write_csv(curve_rows, output / files["curve"])
+    write_csv(final_rows, output / files["final"])
+    write_csv(prediction_rows, output / files["predictions"])
+    write_csv(tap_norm_rows, output / files["tap_norms"])
+    save_config(config, output / "config_evaluated.yaml")
+    environment_path = output / "environment.json"
+    write_json(collect_environment(device), environment_path)
+    summary = {
+        "schema_version": 1,
+        "diagnostic": "tcap_delay_matrix_zero_ablation",
+        "interpretation": (
+            "checkpoint-only intervention: intact learned model versus complete delay matrices "
+            "zeroed without retraining; a negative effect does not estimate a retrained architecture"
+        ),
+        "checkpoint": str(checkpoint_path.resolve()),
+        "checkpoint_sha256": sha256_file(checkpoint_path),
+        "checkpoint_epoch": int(checkpoint["epoch"]),
+        "checkpoint_score": float(checkpoint["score"]),
+        "checkpoint_git_commit": checkpoint["config"].get("runtime", {}).get("git_commit"),
+        "diagnostic_git_commit": git_commit(),
+        "diagnostic_git_dirty": git_is_dirty(),
+        "device": str(device),
+        "samples": len(intact_predictions["targets"]),
+        "time_steps": total_steps,
+        "bin_width_us": bin_width_us,
+        "mixer_count": len(modules),
+        "mixer_names": [name for name, _ in modules],
+        "delays": list(delays),
+        "conditions": condition_summaries,
+        "ablation_effects": ablation_effects,
+        "tap_norms": tap_norm_rows,
+        "files": files,
+        "environment": str(environment_path.resolve()),
+        "environment_sha256": sha256_file(environment_path),
+        "official_test_used": False,
+        **dataset_metadata,
+    }
+    write_json(summary, output / "tcap_ablation_summary.json")
     return summary

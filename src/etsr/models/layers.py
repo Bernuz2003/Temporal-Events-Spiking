@@ -462,6 +462,44 @@ class TokenQKAttention(nn.Module):
         return output
 
 
+class SpikingDepthwiseLocalMixer(nn.Module):
+    """Local spatial token mixer for the early high-frequency probe.
+
+    The depthwise convolution acts independently on each spike channel at every timestep. Batch
+    normalization and the following LIF use the same ordering as the other convolutional blocks.
+    The enclosing :class:`SpikingBlock` owns the residual path.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        kernel_size: int,
+        tau: float,
+        threshold: float,
+        learnable_tau: bool = False,
+    ) -> None:
+        super().__init__()
+        if kernel_size < 3 or kernel_size % 2 == 0:
+            raise ValueError("depthwise local mixer kernel_size must be an odd integer >= 3")
+        self.dim = int(dim)
+        self.kernel_size = int(kernel_size)
+        self.conv = nn.Conv2d(
+            dim,
+            dim,
+            kernel_size=kernel_size,
+            padding=kernel_size // 2,
+            groups=dim,
+            bias=False,
+        )
+        self.bn = nn.BatchNorm2d(dim)
+        self.lif = _lif(dim, tau, threshold, learnable_tau)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = _time_distributed(self.conv, x)
+        x = _time_distributed(self.bn, x)
+        return self.lif(x)
+
+
 class SpikingSelfAttention(nn.Module):
     """Spike-form self-attention using K^T V followed by Q(K^T V).
 

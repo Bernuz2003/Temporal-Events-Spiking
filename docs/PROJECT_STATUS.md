@@ -33,10 +33,11 @@ adattivo basato sulla confidenza.
 
 Restano soltanto:
 
-- ablation checkpoint-only dei tap TCAP 1/2/4; il tap 8 riceve un run solo se il contributo del tap
+- comando `tcap-tap-diagnostic` per l'ablation checkpoint-only dei tap TCAP 1/2/4; il tap 8 riceve
+  un run solo se il contributo del tap
   4 è ancora almeno 1 pp e non inferiore a quello del tap 2;
-- un probe F+TCAP con mixer locale depthwise 3×3 nel primo stage, motivato dal collo residuo su Acc1
-  e dalla letteratura high-frequency.
+- config `dvslip_f_tcap_stage1_dwc3.yaml` per il probe F+TCAP con mixer locale depthwise 3×3 nel
+  primo stage, motivato dal collo residuo su Acc1 e dalla letteratura high-frequency.
 
 La promozione richiede +2 pp F1. Non si riaprono MG, TBR, Spike-TBR, PLIF, gated readout, altri
 neuron model o rappresentazioni.

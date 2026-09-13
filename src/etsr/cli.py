@@ -100,6 +100,14 @@ def build_parser() -> argparse.ArgumentParser:
     temporal_pair.add_argument("--plif-checkpoint", required=True)
     temporal_pair.add_argument("--output", required=True)
 
+    tcap_diagnostic = subparsers.add_parser(
+        "tcap-tap-diagnostic",
+        help="Ablate each learned TCAP delay matrix in one selected checkpoint",
+    )
+    tcap_diagnostic.add_argument("--config", required=True)
+    tcap_diagnostic.add_argument("--checkpoint", required=True)
+    tcap_diagnostic.add_argument("--output", required=True)
+
     preflight = subparsers.add_parser(
         "preflight-dvslip",
         help="Validate the prospective official-train DVS-Lip archive without opening test",
@@ -316,6 +324,22 @@ def main() -> None:
                 "plif_minus_baseline_prefix_auc": summary[
                     "plif_minus_baseline_prefix_auc"
                 ],
+                "official_test_used": summary["official_test_used"],
+            }
+        )
+    elif args.command == "tcap-tap-diagnostic":
+        from etsr.config import load_config
+        from etsr.evaluation.temporal_diagnostic import diagnose_tcap_taps
+
+        summary = diagnose_tcap_taps(
+            load_config(args.config), args.checkpoint, args.output
+        )
+        print(
+            {
+                "output": str(Path(args.output).resolve()),
+                "checkpoint_epoch": summary["checkpoint_epoch"],
+                "samples": summary["samples"],
+                "ablation_effects": summary["ablation_effects"],
                 "official_test_used": summary["official_test_used"],
             }
         )

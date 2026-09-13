@@ -37,4 +37,6 @@ def build_model(config: dict[str, Any], num_classes: int) -> nn.Module:
         multigranular_temporal_groups=config.get("multigranular_temporal_groups"),
         multigranular_fusion=str(config.get("multigranular_fusion", "add")),
         multigranular_micro_steps=int(config.get("multigranular_micro_steps", 8)),
+        stage1_mixer=str(config.get("stage1_mixer", "token_qk")),
+        stage1_depthwise_kernel_size=int(config.get("stage1_depthwise_kernel_size", 3)),
     )
