@@ -15,11 +15,30 @@ from etsr.utils.io import write_json
 def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
     """A failed overfit never launches a full run; full training starts from fresh weights."""
     validate_config(config)
-    if config["dataset"]["name"] != "dvslip" or config["training"].get("overfit"):
-        raise ValueError("candidate requires a full DVS-Lip configuration")
+    dataset_name = config["dataset"]["name"]
+    if dataset_name not in {"dvslip", "dvsgesture"} or config["training"].get("overfit"):
+        raise ValueError("candidate requires a full DVS-Lip or DVS-Gesture configuration")
+    if dataset_name == "dvsgesture":
+        reference = load_config("configs/dvsgesture_e0.yaml")
+        for section in ("dataset", "representation", "augmentation", "training", "evaluation"):
+            if config.get(section) != reference.get(section):
+                raise ValueError(f"DVS-Gesture transfer must preserve baseline {section}")
+        expected_model = {
+            **reference["model"],
+            "frontend": "pyramidal",
+            "temporal_channel_mixer": True,
+            "temporal_channel_mixer_delays": [1, 2, 4],
+        }
+        if config["model"] != expected_model:
+            raise ValueError("DVS-Gesture transfer is fixed to the F+TCAP topology")
+        gate_class_count = 11
+    else:
+        gate_class_count = 16
     reference = load_config("configs/dvslip_e0.yaml")
     representation_name = config["representation"]["name"]
-    if representation_name == "phase_count_frames_e1":
+    if dataset_name == "dvsgesture":
+        pass
+    elif representation_name == "phase_count_frames_e1":
         for section in ("dataset", "augmentation", "training", "evaluation"):
             if config.get(section) != reference.get(section):
                 raise ValueError(f"Representation discovery must preserve baseline {section}")
@@ -49,6 +68,22 @@ def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
             expected_representation.update({"lif_beta": 0.9, "lif_threshold": 1.1})
         if config["representation"] != expected_representation:
             raise ValueError("TBR discovery is fixed to the preregistered DVS-Lip paper settings")
+    elif (
+        representation_name == "count_frames_e0"
+        and config["model"].get("frontend") == "pyramidal"
+        and config["model"].get("temporal_channel_mixer") is True
+        and config["model"].get("temporal_channel_mixer_delays") != [1, 2, 4]
+    ):
+        reference = load_config("configs/dvslip_f_temporal_capacity.yaml")
+        for section in ("dataset", "representation", "augmentation", "training", "evaluation"):
+            if config.get(section) != reference.get(section):
+                raise ValueError(f"TCAP d8 discovery must preserve F+TCAP {section}")
+        expected_model = {
+            **reference["model"],
+            "temporal_channel_mixer_delays": [1, 2, 4, 8],
+        }
+        if config["model"] != expected_model:
+            raise ValueError("TCAP d8 discovery may add only delay 8")
     elif config["model"].get("stage1_mixer", "token_qk") == "depthwise_conv":
         reference = load_config("configs/dvslip_f_temporal_capacity.yaml")
         for section in ("dataset", "representation", "augmentation", "training", "evaluation"):
@@ -121,7 +156,11 @@ def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
         "epochs": 500,
         "amp": False,
         "select_metric": "accuracy",
-        "overfit": {"class_count": 16, "samples_per_class": 4, "stop_on_pass": True},
+        "overfit": {
+            "class_count": gate_class_count,
+            "samples_per_class": 4,
+            "stop_on_pass": True,
+        },
     })
     gate_config["training"]["recipe_id"] += "_overfit"
     # Avoid restarting worker processes twice per epoch for just 64 samples.
@@ -144,6 +183,37 @@ def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
     manifest.update({"profile": str(output), "status": "complete"})
     write_json(manifest, manifest_path)
     write_json(manifest, artifact_dir / "candidate_workflow.json")
+    return manifest
+
+
+def run_replication(config: dict[str, Any], seed: int) -> dict[str, Any]:
+    """Repeat one validated configuration from scratch and profile its selected best checkpoint."""
+
+    validate_config(config)
+    if config["dataset"]["name"] not in {"dvslip", "dvsgesture"}:
+        raise ValueError("replicate supports only DVS-Lip and DVS-Gesture")
+    if config["training"].get("overfit"):
+        raise ValueError("replicate requires a full training configuration")
+    if type(seed) is not int or seed < 0:
+        raise ValueError("replication seed must be a non-negative integer")
+
+    replication = copy.deepcopy(config)
+    replication["experiment"]["seed"] = seed
+    summary = train_experiment(replication)
+    artifact_dir = Path(summary["artifact_dir"])
+    manifest_path = artifact_dir / "replication_workflow.json"
+    manifest = {
+        "full": summary,
+        "source_experiment": config["experiment"]["name"],
+        "seed": seed,
+        "status": "profiling",
+        "official_test_used": False,
+    }
+    write_json(manifest, manifest_path)
+    output = artifact_dir / "hardware_profile_v4.json"
+    profile_checkpoint(load_config(artifact_dir / "config_resolved.yaml"), summary["checkpoint"], output)
+    manifest.update({"profile": str(output), "status": "complete"})
+    write_json(manifest, manifest_path)
     return manifest
 
 

@@ -30,6 +30,33 @@ predizioni appaiate e norme delle matrici di ritardo. `intact_minus_ablated.macr
 della rimozione: solo se `without_delay_4` vale almeno 0,01 e non è inferiore al tap 2 si autorizza
 il futuro run con ritardo 8.
 
+La diagnostica del 13 settembre soddisfa il criterio: rimuovere `d=4` costa 51,60 pp F1 contro
+49,79 pp per `d=2`. Il risultato autorizza un solo candidato `[1,2,4,8]`; resta una perturbazione
+checkpoint-only e non stima direttamente il guadagno del tap nuovo.
+
+## Ultima ondata prima del freeze
+
+Su tre server distinti si eseguono in parallelo le repliche F+TCAP seed 43/44 e il trasferimento
+strutturale F+TCAP su DVS-Gesture seed 42. `replicate` cambia soltanto seed, ordine dei batch e
+inizializzazione, poi profila il best senza ripetere il bounded-overfit già superato.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tcap-43 -- replicate --config configs/dvslip_f_temporal_capacity.yaml --seed 43
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tcap-44 -- replicate --config configs/dvslip_f_temporal_capacity.yaml --seed 44
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvsgesture-f-tcap-42 -- candidate --config configs/dvsgesture_f_temporal_capacity.yaml
+```
+
+Il run d8 rimane autorizzato come ultimo probe architetturale e può partire quando si libera un
+server:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tcap-d8-42 -- candidate --config configs/dvslip_f_temporal_capacity_d8.yaml
+```
+
+La baseline di confronto è `dvsgesture_e0__20260825_213021__seed42`: 84,47% accuracy e 83,62%
+Macro-F1. La config di trasferimento conserva split, E0, 100 step, recipe e assenza di flip; cambia
+soltanto la topologia in F+TCAP.
+
 ## Probe high-frequency F+TCAP
 
 Dopo il check sul commit pulito, avviare il candidato registrato:

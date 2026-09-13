@@ -59,6 +59,11 @@ L'apprendimento continuo/discreto dei ritardi, pur supportato su task speech da
 non entra ora: introduce un nuovo problema di ottimizzazione e non ha una verifica controllata su
 DVS-Lip o sul nostro backbone.
 
+**Esito diagnostico.** Sul checkpoint F+TCAP seed 42, l'azzeramento di `d=1/2/4` riduce il
+Macro-F1 rispettivamente di 40,17/49,79/51,60 pp; senza tutta la storia il calo è 52,16 pp. Il tap
+4 ha inoltre la norma maggiore in entrambi i mixer. Il criterio è soddisfatto e autorizza il solo
+run d8; l'ablation mostra co-adattamento e dipendenza, non garantisce un guadagno marginale.
+
 Se entrambi i probe superano la soglia, si consente una sola combinazione. Se nessuno la supera,
 la discovery termina senza altre varianti di MG, PLIF, neuron model, rappresentazione o readout.
 

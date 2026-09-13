@@ -573,6 +573,11 @@ def test_dvslip_candidate_configs_change_only_the_declared_architecture():
             "temporal_channel_mixer": True,
             "temporal_channel_mixer_delays": [1, 2, 4],
         },
+        "dvslip_f_temporal_capacity_d8.yaml": {
+            "frontend": "pyramidal",
+            "temporal_channel_mixer": True,
+            "temporal_channel_mixer_delays": [1, 2, 4, 8],
+        },
         "dvslip_f_tcap_stage1_dwc3.yaml": {
             "frontend": "pyramidal",
             "temporal_channel_mixer": True,

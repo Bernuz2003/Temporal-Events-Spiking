@@ -14,6 +14,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     candidate = subparsers.add_parser("candidate", help="Bounded overfit, gated full run, then profile")
     candidate.add_argument("--config", required=True)
+    replicate = subparsers.add_parser(
+        "replicate", help="Repeat a validated full configuration at one new seed, then profile"
+    )
+    replicate.add_argument("--config", required=True)
+    replicate.add_argument("--seed", required=True, type=int)
     backfill = subparsers.add_parser("profile-runs", help="Reprofile completed full runs, no training")
     backfill.add_argument("--artifact-root", default="artifacts")
     backfill.add_argument("--checkpoint-root", default="checkpoints")
@@ -188,6 +193,11 @@ def main() -> None:
         from etsr.workflows import run_candidate
 
         print(run_candidate(load_config(args.config)))
+    elif args.command == "replicate":
+        from etsr.config import load_config
+        from etsr.workflows import run_replication
+
+        print(run_replication(load_config(args.config), args.seed))
     elif args.command == "profile-runs":
         from etsr.workflows import profile_completed_runs
 

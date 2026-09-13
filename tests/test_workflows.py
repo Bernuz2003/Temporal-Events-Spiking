@@ -163,6 +163,64 @@ def test_candidate_accepts_only_preregistered_stage1_depthwise_probe(monkeypatch
         workflows.run_candidate(config)
 
 
+def test_candidate_accepts_only_preregistered_tcap_d8_probe(monkeypatch):
+    config = load_config("configs/dvslip_f_temporal_capacity_d8.yaml")
+    monkeypatch.setattr(
+        workflows,
+        "train_experiment",
+        lambda _config: (_ for _ in ()).throw(RuntimeError("gate reached")),
+    )
+    with pytest.raises(RuntimeError, match="gate reached"):
+        workflows.run_candidate(config)
+
+    config["model"]["temporal_channel_mixer_delays"] = [1, 2, 4, 8, 16]
+    with pytest.raises(ValueError, match="may add only delay 8"):
+        workflows.run_candidate(config)
+
+
+def test_candidate_accepts_only_preregistered_dvsgesture_transfer(monkeypatch):
+    config = load_config("configs/dvsgesture_f_temporal_capacity.yaml")
+    calls = []
+
+    def stop_at_gate(candidate):
+        calls.append(candidate)
+        raise RuntimeError("gate reached")
+
+    monkeypatch.setattr(workflows, "train_experiment", stop_at_gate)
+    with pytest.raises(RuntimeError, match="gate reached"):
+        workflows.run_candidate(config)
+    assert calls[0]["training"]["overfit"]["class_count"] == 11
+
+    config["model"]["temporal_channel_mixer_delays"] = [1, 2, 4, 8]
+    with pytest.raises(ValueError, match=r"fixed to the F\+TCAP topology"):
+        workflows.run_candidate(config)
+
+
+def test_replication_changes_only_seed_and_profiles_best(tmp_path, monkeypatch):
+    config = load_config("configs/dvslip_f_temporal_capacity.yaml")
+    original = copy.deepcopy(config)
+    calls = []
+
+    def train(replication):
+        calls.append(copy.deepcopy(replication))
+        directory = tmp_path / "replication"
+        directory.mkdir()
+        save_config(replication, directory / "config_resolved.yaml")
+        return {"artifact_dir": str(directory), "checkpoint": str(tmp_path / "best.pt")}
+
+    profiles = []
+    monkeypatch.setattr(workflows, "train_experiment", train)
+    monkeypatch.setattr(workflows, "profile_checkpoint", lambda *args: profiles.append(args))
+
+    result = workflows.run_replication(config, 43)
+
+    assert config == original
+    assert calls[0] == {**original, "experiment": {**original["experiment"], "seed": 43}}
+    assert len(profiles) == 1
+    assert result["status"] == "complete"
+    assert result["seed"] == 43
+
+
 def test_runner_overfit_early_stops_and_records_actual_subset(tmp_path, monkeypatch):
     frames = torch.tensor([[1., 0.], [1., 0.], [0., 1.], [0., 1.]])
     targets = torch.tensor([0, 0, 1, 1])

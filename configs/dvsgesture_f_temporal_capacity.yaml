@@ -1,0 +1,56 @@
+experiment:
+  name: dvsgesture_f_temporal_capacity
+  seed: 42
+  artifact_root: artifacts
+  checkpoint_root: checkpoints
+  deterministic: true
+
+dataset:
+  name: dvsgesture
+  root: data/DvsGesture/events/train
+  validation_subjects: [8, 11, 17, 19, 22]
+  batch_size: 8
+  num_workers: 4
+  pin_memory: true
+
+representation:
+  name: count_frames_e0
+  window_us: 20000000
+  bin_width_us: 200000
+  count_cap: 255
+
+augmentation:
+  horizontal_flip_probability: 0.0
+
+evaluation:
+  absolute_prefix_times_us: [2000000, 5000000, 10000000, 15000000, 20000000]
+  relative_prefix_fractions: [0.1, 0.25, 0.5, 0.75, 1.0]
+
+model:
+  name: mini_qkformer
+  in_channels: 2
+  embed_dim: 128
+  num_heads: 8
+  mlp_ratio: 2.0
+  lif_tau: 2.0
+  lif_threshold: 1.0
+  surrogate_alpha: 4.0
+  frontend: pyramidal
+  temporal_channel_mixer: true
+  temporal_channel_mixer_delays: [1, 2, 4]
+
+training:
+  recipe_id: dvsgesture_e0
+  epochs: 128
+  optimizer: adamw
+  learning_rate: 0.0003
+  min_learning_rate: 0.000001
+  scheduler: cosine
+  warmup_epochs: 4
+  warmup_start_factor: 0.01
+  weight_decay: 0.0005
+  label_smoothing: 0.1
+  gradient_clip_norm: 1.0
+  gradient_accumulation_steps: 4
+  amp: true
+  select_metric: macro_f1

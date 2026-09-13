@@ -33,9 +33,8 @@ adattivo basato sulla confidenza.
 
 Restano soltanto:
 
-- comando `tcap-tap-diagnostic` per l'ablation checkpoint-only dei tap TCAP 1/2/4; il tap 8 riceve
-  un run solo se il contributo del tap
-  4 è ancora almeno 1 pp e non inferiore a quello del tap 2;
+- un solo run F+TCAP `[1,2,4,8]`, autorizzato dalla diagnostica: rimuovere `d=4` costa 51,60 pp F1
+  contro 49,79 pp per `d=2`;
 - config `dvslip_f_tcap_stage1_dwc3.yaml` per il probe F+TCAP con mixer locale depthwise 3×3 nel
   primo stage, motivato dal collo residuo su Acc1 e dalla letteratura high-frequency.
 

@@ -25,6 +25,20 @@ def test_canonical_dvsgesture_config_follows_the_profiled_protocol():
     assert config["evaluation"]["relative_prefix_fractions"] == [0.1, 0.25, 0.5, 0.75, 1.0]
 
 
+def test_dvsgesture_f_tcap_transfer_changes_only_the_model_topology():
+    root = Path(__file__).parents[1]
+    baseline = load_config(root / "configs" / "dvsgesture_e0.yaml")
+    transfer = load_config(root / "configs" / "dvsgesture_f_temporal_capacity.yaml")
+    for section in ("dataset", "representation", "augmentation", "evaluation", "training"):
+        assert transfer[section] == baseline[section]
+    assert transfer["model"] == {
+        **baseline["model"],
+        "frontend": "pyramidal",
+        "temporal_channel_mixer": True,
+        "temporal_channel_mixer_delays": [1, 2, 4],
+    }
+
+
 def _write_recording(source_root, subject, *, invert_annotated_segment=False):
     stem = f"user{subject:02d}_lab"
     rows = []

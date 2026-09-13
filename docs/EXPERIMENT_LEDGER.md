@@ -222,6 +222,24 @@ attivo praticamente in ogni step, mentre gli overflow AMP sono trascurabili. Son
 studiare dopo il freeze con un confronto singolo e preregistrato, non ragioni per reinterpretare i
 delta architetturali già osservati.
 
+## TCAP: ablation checkpoint-only dei ritardi
+
+La diagnostica sul best F+TCAP seed 42 conserva gli stessi 2.995 sample e azzera una matrice di
+ritardo alla volta senza riaddestrare. Non misura il contributo additivo dei tap, perché i pesi sono
+co-adattati; verifica però che il modello usi effettivamente l'intero orizzonte configurato.
+
+| Condizione | Accuracy % | Macro-F1 % | ΔF1 vs intatto pp | F1-PrefixAUC | Intatto solo corretto | Ablato solo corretto |
+|---|---:|---:|---:|---:|---:|---:|
+| intatto | 52,79 | 52,36 | 0,00 | 0,2707 | – | – |
+| senza d1 | 13,52 | 12,19 | −40,17 | 0,0589 | 1.269 | 93 |
+| senza d2 | 4,37 | 2,57 | −49,79 | 0,0142 | 1.489 | 39 |
+| senza d4 | 1,80 | 0,76 | **−51,60** | 0,0070 | 1.553 | 26 |
+| senza storia | 1,30 | 0,20 | −52,16 | 0,0034 | 1.556 | 14 |
+
+Il tap d4 ha la norma Frobenius maggiore sia nel mixer a 64 canali (4,64 contro 2,68 per d2) sia
+in quello a 128 canali (8,27 contro 4,34). Poiché il danno di d4 supera 1 pp ed è maggiore di d2,
+il criterio preregistrato autorizza un unico training fresco con ritardi `[1,2,4,8]`.
+
 ## PLIF: diagnostica temporale checkpoint-only completata
 
 PLIF apprende scale temporali non banali. Il `stage2.attention.attn_lif` raggiunge τ medio 6,227,
