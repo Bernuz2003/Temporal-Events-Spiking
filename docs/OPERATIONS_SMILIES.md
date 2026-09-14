@@ -36,26 +36,17 @@ checkpoint-only e non stima direttamente il guadagno del tap nuovo.
 
 ## Ultima ondata prima del freeze
 
-Su tre server distinti si eseguono in parallelo le repliche F+TCAP seed 43/44 e il trasferimento
-strutturale F+TCAP su DVS-Gesture seed 42. `replicate` cambia soltanto seed, ordine dei batch e
-inizializzazione, poi profila il best senza ripetere il bounded-overfit già superato.
+Il run combinato DWC-3+d8 decide la struttura finale. In parallelo si replicano solo le baseline B
+ai seed 43/44, utili qualunque candidata venga selezionata. Il candidato passa prima dal bounded
+overfit; `replicate` esegue il full da zero e profila il best senza ripetere il gate già validato.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tcap-43 -- replicate --config configs/dvslip_f_temporal_capacity.yaml --seed 43
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tcap-44 -- replicate --config configs/dvslip_f_temporal_capacity.yaml --seed 44
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvsgesture-f-tcap-42 -- candidate --config configs/dvsgesture_f_temporal_capacity.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tcap-dwc3-d8-42 -- candidate --config configs/dvslip_f_tcap_stage1_dwc3_d8.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-b-43 -- replicate --config configs/dvslip_e0.yaml --seed 43
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-b-44 -- replicate --config configs/dvslip_e0.yaml --seed 44
 ```
 
-Il run d8 rimane autorizzato come ultimo probe architetturale e può partire quando si libera un
-server:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tcap-d8-42 -- candidate --config configs/dvslip_f_temporal_capacity_d8.yaml
-```
-
-La baseline di confronto è `dvsgesture_e0__20260825_213021__seed42`: 84,47% accuracy e 83,62%
-Macro-F1. La config di trasferimento conserva split, E0, 100 step, recipe e assenza di flip; cambia
-soltanto la topologia in F+TCAP.
+Le repliche del finalista e il trasferimento DVS-Gesture seguono la decisione sul combinato.
 
 ## Probe high-frequency F+TCAP
 

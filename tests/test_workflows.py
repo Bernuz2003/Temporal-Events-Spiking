@@ -178,6 +178,21 @@ def test_candidate_accepts_only_preregistered_tcap_d8_probe(monkeypatch):
         workflows.run_candidate(config)
 
 
+def test_candidate_accepts_only_registered_dwc3_d8_combination(monkeypatch):
+    config = load_config("configs/dvslip_f_tcap_stage1_dwc3_d8.yaml")
+    monkeypatch.setattr(
+        workflows,
+        "train_experiment",
+        lambda _config: (_ for _ in ()).throw(RuntimeError("gate reached")),
+    )
+    with pytest.raises(RuntimeError, match="gate reached"):
+        workflows.run_candidate(config)
+
+    config["model"]["stage1_depthwise_kernel_size"] = 5
+    with pytest.raises(ValueError, match="combine only the two registered changes"):
+        workflows.run_candidate(config)
+
+
 def test_candidate_accepts_only_preregistered_dvsgesture_transfer(monkeypatch):
     config = load_config("configs/dvsgesture_f_temporal_capacity.yaml")
     calls = []

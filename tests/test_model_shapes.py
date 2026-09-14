@@ -585,6 +585,13 @@ def test_dvslip_candidate_configs_change_only_the_declared_architecture():
             "stage1_mixer": "depthwise_conv",
             "stage1_depthwise_kernel_size": 3,
         },
+        "dvslip_f_tcap_stage1_dwc3_d8.yaml": {
+            "frontend": "pyramidal",
+            "temporal_channel_mixer": True,
+            "temporal_channel_mixer_delays": [1, 2, 4, 8],
+            "stage1_mixer": "depthwise_conv",
+            "stage1_depthwise_kernel_size": 3,
+        },
         "dvslip_b_t.yaml": {
             "temporal_fir": True,
             "temporal_fir_kernel_size": 3,

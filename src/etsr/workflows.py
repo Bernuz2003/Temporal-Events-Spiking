@@ -69,6 +69,22 @@ def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
         if config["representation"] != expected_representation:
             raise ValueError("TBR discovery is fixed to the preregistered DVS-Lip paper settings")
     elif (
+        config["model"].get("stage1_mixer") == "depthwise_conv"
+        and config["model"].get("temporal_channel_mixer_delays") == [1, 2, 4, 8]
+    ):
+        reference = load_config("configs/dvslip_f_temporal_capacity.yaml")
+        for section in ("dataset", "representation", "augmentation", "training", "evaluation"):
+            if config.get(section) != reference.get(section):
+                raise ValueError(f"DWC3+d8 discovery must preserve F+TCAP {section}")
+        expected_model = {
+            **reference["model"],
+            "temporal_channel_mixer_delays": [1, 2, 4, 8],
+            "stage1_mixer": "depthwise_conv",
+            "stage1_depthwise_kernel_size": 3,
+        }
+        if config["model"] != expected_model:
+            raise ValueError("DWC3+d8 discovery may combine only the two registered changes")
+    elif (
         representation_name == "count_frames_e0"
         and config["model"].get("frontend") == "pyramidal"
         and config["model"].get("temporal_channel_mixer") is True
