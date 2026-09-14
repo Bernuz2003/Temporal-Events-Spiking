@@ -60,7 +60,11 @@ non faceva parte dei due probe iniziali. Si ammette ora un solo confronto aggiun
 **DWC-3 + TCAP con quattro ritardi apprendibili per canale**, inizializzati a `[1,2,4,8]` e
 vincolati a `1..8` bin. Le matrici MIMO, la rappresentazione e la recipe restano quelle di
 DWC-3+d8; il confronto diretto è con quel run. Il training usa una distribuzione triangolare con
-temperatura decrescente; selezione del best, validation e profiling usano sempre i ritardi interi.
+temperatura decrescente `τ(p)=0,501+(4−0,501)[(1+cos(πp))/2]²`; selezione del best, validation e
+profiling usano sempre i ritardi interi. Il [supplementary MD-Mixer](https://openaccess.thecvf.com/content/CVPR2026/supplemental/Shi_Temporal_Interaction_in_CVPR_2026_supplemental.pdf)
+scrive un fattore `(1+cos)²/2`, incompatibile a `p=0` con il proprio `τmax`: qui si usa `/4` per
+conservare la forma quadratica e rispettare gli estremi dichiarati. La traiettoria dei ritardi è
+registrata a ogni epoca in `learned_delay_trajectory.csv`.
 La [ablazione MD-Mixer](https://openaccess.thecvf.com/content/CVPR2026/papers/Shi_Temporal_Interaction_in_Spiking_Transformers_with_Multi-Delay_Mixer_CVPR_2026_paper.pdf)
 motiva la prova, ma confronta i ritardi appresi con ritardi casuali, non con i nostri tap geometrici.
 Un solo risultato seed 42 resta esplorativo: non congela l'architettura senza conferma multi-seed.

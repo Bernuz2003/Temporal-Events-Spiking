@@ -136,12 +136,15 @@ class CausalTemporalChannelMixer(nn.Module):
         return self.delays[-1]
 
     def set_delay_progress(self, epoch: int, total_epochs: int) -> None:
-        """Paper-style squared-cosine annealing from Dmax/2 to approximately 0.5."""
+        """Normalized squared raised cosine from Dmax/2 to approximately 0.5."""
         if not self.learnable_delays:
             return
         if total_epochs <= 0 or not 1 <= epoch <= total_epochs:
             raise ValueError("epoch must be within the configured training horizon")
         progress = (epoch - 1) / max(1, total_epochs - 1)
+        # MD-Mixer supplementary Eq. 11 uses (1+cos)^2/2, which exceeds its stated
+        # tau_max at epoch zero. Dividing by four preserves the published squared
+        # shape while satisfying the stated endpoints tau_max and tau_min.
         fraction = ((1 + math.cos(math.pi * progress)) / 2) ** 2
         minimum = 0.501  # Keeps at least one integer delay in the triangular support.
         self.delay_temperature = minimum + (max(minimum, self.max_delay / 2) - minimum) * fraction

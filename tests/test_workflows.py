@@ -11,6 +11,7 @@ from torch.utils.data import TensorDataset
 from etsr import runner, workflows
 from etsr.config import load_config, save_config
 from etsr.data.common import DatasetBundle
+from etsr.models.temporal import CausalTemporalChannelMixer
 from etsr.training.gates import overfit_gate
 
 
@@ -20,6 +21,18 @@ def healthy_row(**overrides):
         "gradient_norm_mean": 0.5, "gradient_nonfinite_fraction": 0.0,
         "amp_overflow_fraction": 0.0, **overrides,
     }
+
+
+def test_delay_trajectory_records_continuous_motion_before_hard_change():
+    mixer = CausalTemporalChannelMixer(2, delays=(1, 2, 4, 8), learnable_delays=True)
+    with torch.no_grad():
+        mixer.delay_centers[1].copy_(torch.tensor([2.2, 2.8]))
+    rows = runner._delay_trajectory_rows({"test_mixer": mixer}, epoch=7)
+    assert len(rows) == 4
+    assert rows[1]["mean_center"] == pytest.approx(2.5)
+    assert rows[1]["mean_absolute_shift_bins"] == pytest.approx(0.5)
+    assert rows[1]["fraction_hard_changed"] == pytest.approx(0.5)
+    assert rows[1]["module"] == "test_mixer"
 
 
 def test_overfit_gate_requires_stable_final_performance_and_finite_history():

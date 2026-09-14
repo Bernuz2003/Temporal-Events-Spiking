@@ -94,6 +94,9 @@ def test_learnable_delay_tcap_has_causal_soft_gradients_and_hard_streaming():
 
     mixer.set_delay_progress(1, 128)
     assert mixer.delay_temperature == pytest.approx(4.0)
+    mixer.set_delay_progress(65, 129)
+    assert mixer.delay_temperature == pytest.approx(0.501 + (4.0 - 0.501) / 4)
+    mixer.set_delay_progress(1, 128)
     probabilities = mixer.delay_distribution()
     assert torch.allclose(probabilities.sum(dim=1), torch.ones(4, 3))
     soft = mixer(sequence)

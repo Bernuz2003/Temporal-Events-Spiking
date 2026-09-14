@@ -19,8 +19,8 @@ più grandi. Le fonti motivano i meccanismi da testare; non forniscono una sogli
   readout. T isola il nucleo utile come FIR causale depthwise, senza adottare l'intero sistema.
 - [Multi-Delay Mixer, CVPR 2026](https://openaccess.thecvf.com/content/CVPR2026/html/Shi_Temporal_Interaction_in_Spiking_Transformers_with_Multi-Delay_Mixer_CVPR_2026_paper.html):
   supporta interazioni temporali esplicite a ritardi multipli. L'apprendimento discreto dei ritardi
-  resta fuori dal primo test; tre tap fissi nella geometria e apprendibili nei pesi sono più facili
-  da attribuire e profilare.
+  è escluso dal primo test a tre tap fissi; un solo confronto successivo con quattro tap inizializzati
+  a `[1,2,4,8]` verifica l'utilità di scegliere i ritardi per canale senza cambiare il mixing MIMO.
 
 Il FIR depthwise T da 576 coefficienti resta una candidata di compressione, ma è troppo vincolato
 per rigettare da solo l'utilità di una memoria esplicita: ogni canale può soltanto filtrare la
@@ -175,7 +175,7 @@ dei due riceve un full mentre sono disponibili TBR e Spike-TBR.
 |---|---|---|
 | High-frequency local mixing | [MaxFormer](https://papers.neurips.cc/paper_files/paper/2025/hash/956834836f36dd07df7064ff42ca69f2-Abstract-Conference.html) mostra che MaxPool e depthwise convolution contrastano il bias low-pass delle SNN; [HFR-Lip](https://doi.org/10.1016/j.ins.2025.123026) individua direttamente su DVS-Lip la perdita di bordi e micro-deformazioni | **unico probe architetturale ammesso** nel primo stage di F+TCAP; MG+TCAP non ha raggiunto la soglia |
 | PMSN | [NSA](https://www.ijcai.org/proceedings/2025/0544.pdf) riporta su DVS-Lip 57,43% contro 17,83% del LIF nello stesso MLP | non trasferibile come singola ablation: usa 200 bin, crop 88×88, last-step readout e sostituisce la dinamica neuronale dell'intera rete; inoltre la proxy pubblicata costa 6,8× il LIF |
-| chwPSN / MD-Mixer | evidenza diretta o forte sul mixing temporale esplicito | TCAP ha già validato il principio; la versione depthwise appartiene alla compressione, mentre ritardi discreti soft-to-hard aprirebbero un nuovo tuning |
+| chwPSN / MD-Mixer | evidenza diretta o forte sul mixing temporale esplicito | TCAP ha già validato il principio; la versione depthwise appartiene alla compressione. Un solo run soft-to-hard è ammesso contro DWC-3+d8, senza sweep. |
 | SpikGRU2+ | forte risultato DVS-Lip | backbone, 90 bin, readout bidirezionale e augmentation cambiano insieme; gated-v2 locale è negativo |
 | MTGA, graph, TORE/TAF, EST, Matrix-LSTM | preservano timing fine | richiedono una nuova rappresentazione e nuovi iperparametri; MG ha già fornito il probe positivo a minor costo di sviluppo |
 | LMU, Mamba, S4D/GSU | forti su sequenze lunghe | nessun confronto controllato nello stesso backbone DVS-Lip e integrazione non minimale; rinviati |

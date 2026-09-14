@@ -54,6 +54,37 @@ def _run_id(config: dict[str, Any], seed: int) -> str:
     return f"{config['experiment']['name']}__{timestamp}__seed{seed}"
 
 
+def _delay_trajectory_rows(
+    modules: dict[str, CausalTemporalChannelMixer], epoch: int
+) -> list[dict[str, float | int | str]]:
+    rows = []
+    for name, module in modules.items():
+        centers = module.delay_centers.detach().cpu()
+        hard = module.discrete_delays().cpu()
+        for branch, initial_delay in enumerate(module.delays):
+            branch_centers = centers[branch]
+            rows.append(
+                {
+                    "epoch": epoch,
+                    "module": name,
+                    "branch": branch,
+                    "temperature": module.delay_temperature,
+                    "initial_delay": initial_delay,
+                    "mean_center": float(branch_centers.mean().item()),
+                    "mean_absolute_shift_bins": float(
+                        (branch_centers - initial_delay).abs().mean().item()
+                    ),
+                    "fraction_hard_changed": float(
+                        (hard[branch] != initial_delay).float().mean().item()
+                    ),
+                    "mean_rounding_distance_bins": float(
+                        (branch_centers - hard[branch]).abs().mean().item()
+                    ),
+                }
+            )
+    return rows
+
+
 def _readout_metadata(config: dict[str, Any]) -> dict[str, str]:
     readout_time = str(config["model"].get("readout_time", "fixed_window"))
     return {
@@ -649,6 +680,9 @@ def train_experiment(
         if delay_modules:
             row["delay_temperature"] = next(iter(delay_modules.values())).delay_temperature
         append_csv(row, artifact_dir / "history.csv")
+        if delay_modules:
+            for delay_row in _delay_trajectory_rows(delay_modules, epoch):
+                append_csv(delay_row, artifact_dir / "learned_delay_trajectory.csv")
         logger.info(
             "Epoch %03d | train %.4f/%.4f | val %.4f/%.4f | %.1fs",
             epoch,
@@ -735,8 +769,7 @@ def train_experiment(
         summary["prefix_evaluation"] = prefix_evaluation
     if delay_modules:
         summary["learned_delays"] = {
-            name: module.learned_delay_summary()
-            for name, module in delay_modules.items()
+            name: module.learned_delay_summary() for name, module in delay_modules.items()
         }
     write_json(summary, artifact_dir / "summary.json")
     logger.info("Artifacts: %s", artifact_dir)
