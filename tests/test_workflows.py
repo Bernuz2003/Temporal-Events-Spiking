@@ -193,6 +193,29 @@ def test_candidate_accepts_only_registered_dwc3_d8_combination(monkeypatch):
         workflows.run_candidate(config)
 
 
+def test_candidate_learnable_delays_changes_only_delay_locations(monkeypatch):
+    config = load_config("configs/dvslip_f_tcap_stage1_dwc3_learnable_delays.yaml")
+    calls = []
+
+    def stop_at_gate(gate):
+        calls.append(gate)
+        raise RuntimeError("gate reached")
+
+    monkeypatch.setattr(
+        workflows,
+        "train_experiment",
+        stop_at_gate,
+    )
+    with pytest.raises(RuntimeError, match="gate reached"):
+        workflows.run_candidate(config)
+    assert calls[0]["training"]["epochs"] == 500
+    assert calls[0]["training"]["delay_anneal_epochs"] == 128
+
+    config["model"]["temporal_channel_mixer_delays"] = [1, 2, 4, 9]
+    with pytest.raises(ValueError, match="learn only the four existing TCAP taps"):
+        workflows.run_candidate(config)
+
+
 def test_candidate_accepts_only_preregistered_dvsgesture_transfer(monkeypatch):
     config = load_config("configs/dvsgesture_f_temporal_capacity.yaml")
     calls = []

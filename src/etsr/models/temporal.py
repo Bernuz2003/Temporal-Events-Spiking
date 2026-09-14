@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+from collections.abc import Callable, Iterator
+
 import torch
 from torch import nn
 
@@ -101,7 +104,12 @@ class CausalTemporalChannelMixer(nn.Module):
     transform. The state API defines the corresponding streaming implementation.
     """
 
-    def __init__(self, channels: int, delays: tuple[int, ...] = (1, 2, 4)) -> None:
+    def __init__(
+        self,
+        channels: int,
+        delays: tuple[int, ...] = (1, 2, 4),
+        learnable_delays: bool = False,
+    ) -> None:
         super().__init__()
         if channels <= 0:
             raise ValueError("channels must be positive")
@@ -109,13 +117,121 @@ class CausalTemporalChannelMixer(nn.Module):
             raise ValueError("delays must contain positive integers")
         if tuple(sorted(set(delays))) != delays:
             raise ValueError("delays must be strictly increasing and unique")
+        if type(learnable_delays) is not bool:
+            raise ValueError("learnable_delays must be boolean")
         self.channels = int(channels)
         self.delays = tuple(delays)
+        self.learnable_delays = learnable_delays
         self.weight = nn.Parameter(torch.zeros(len(delays), channels, channels))
+        if learnable_delays:
+            centers = torch.tensor(delays, dtype=torch.float32)[:, None].repeat(1, channels)
+            self.delay_centers = nn.Parameter(centers)
+        else:
+            self.register_parameter("delay_centers", None)
+        # Training uses a triangular distribution; evaluation always uses integer delays.
+        self.delay_temperature = max(0.501, self.max_delay / 2)
 
     @property
     def max_delay(self) -> int:
         return self.delays[-1]
+
+    def set_delay_progress(self, epoch: int, total_epochs: int) -> None:
+        """Paper-style squared-cosine annealing from Dmax/2 to approximately 0.5."""
+        if not self.learnable_delays:
+            return
+        if total_epochs <= 0 or not 1 <= epoch <= total_epochs:
+            raise ValueError("epoch must be within the configured training horizon")
+        progress = (epoch - 1) / max(1, total_epochs - 1)
+        fraction = ((1 + math.cos(math.pi * progress)) / 2) ** 2
+        minimum = 0.501  # Keeps at least one integer delay in the triangular support.
+        self.delay_temperature = minimum + (max(minimum, self.max_delay / 2) - minimum) * fraction
+
+    @torch.no_grad()
+    def project_delay_centers_(self) -> None:
+        if self.delay_centers is not None:
+            self.delay_centers.clamp_(1, self.max_delay)
+
+    @torch.no_grad()
+    def discrete_delays(self) -> torch.Tensor:
+        if self.delay_centers is None:
+            return (
+                torch.tensor(self.delays, dtype=torch.long).unsqueeze(1).expand(-1, self.channels)
+            )
+        return torch.floor(self.delay_centers.clamp(1, self.max_delay) + 0.5).long()
+
+    def delay_distribution(self, *, hard: bool | None = None) -> torch.Tensor:
+        """Return [branch, delay, input channel] coefficients in float32."""
+        if self.delay_centers is None:
+            raise ValueError("Fixed-delay TCAP has no trainable delay distribution")
+        if hard is None:
+            hard = not self.training
+        if hard:
+            return (
+                torch.nn.functional.one_hot(self.discrete_delays() - 1, num_classes=self.max_delay)
+                .permute(0, 2, 1)
+                .float()
+            )
+        grid = torch.arange(
+            1, self.max_delay + 1, device=self.delay_centers.device, dtype=torch.float32
+        )
+        centers = self.delay_centers.float().clamp(1, self.max_delay)
+        unnormalized = torch.relu(
+            1 - (grid[None, :, None] - centers[:, None, :]).abs() / self.delay_temperature
+        )
+        return unnormalized / unnormalized.sum(dim=1, keepdim=True)
+
+    @torch.no_grad()
+    def learned_delay_summary(self) -> dict:
+        if self.delay_centers is None:
+            raise ValueError("Fixed-delay TCAP has no learned delay summary")
+        centers = self.delay_centers.detach().cpu()
+        hard = self.discrete_delays().cpu()
+        rounding_distance = (centers - hard).abs()
+        distinct_by_channel = [
+            len(set(hard[:, channel].tolist())) for channel in range(self.channels)
+        ]
+        return {
+            "initial_delays": list(self.delays),
+            "maximum_delay": self.max_delay,
+            "centers_mean_by_branch": centers.mean(dim=1).tolist(),
+            "discrete_histogram_by_branch": [
+                torch.bincount(row, minlength=self.max_delay + 1)[1:].tolist() for row in hard
+            ],
+            "mean_rounding_distance_bins": rounding_distance.mean().item(),
+            "maximum_rounding_distance_bins": rounding_distance.max().item(),
+            "mean_distinct_delays_per_channel": sum(distinct_by_channel) / self.channels,
+            "evaluation_mode": "hard_discrete",
+        }
+
+    def _learned_history_inputs(
+        self,
+        current: torch.Tensor,
+        read_delay: Callable[[int], torch.Tensor],
+        channel_axis: int,
+    ) -> Iterator[torch.Tensor]:
+        if not self.training:
+            # Evaluation performs actual integer channel-wise selection, not soft interpolation.
+            selected_delays = self.discrete_delays()
+            for branch in range(len(self.delays)):
+                mixed = torch.empty_like(current)
+                for delay in range(1, self.max_delay + 1):
+                    channels = selected_delays[branch] == delay
+                    if channel_axis == 1:
+                        mixed[:, channels] = read_delay(delay)[:, channels]
+                    else:
+                        mixed[:, :, channels] = read_delay(delay)[:, :, channels]
+                yield mixed
+            return
+
+        coefficients = self.delay_distribution(hard=False).to(dtype=current.dtype)
+        shape = [1] * current.ndim
+        shape[channel_axis] = self.channels
+        for branch in range(len(self.delays)):
+            mixed = None
+            for delay in range(1, self.max_delay + 1):
+                contribution = read_delay(delay) * coefficients[branch, delay - 1].reshape(shape)
+                mixed = contribution if mixed is None else mixed + contribution
+            yield mixed
 
     def _validate_step(self, current: torch.Tensor) -> None:
         if current.ndim < 2 or current.shape[1] != self.channels:
@@ -139,9 +255,16 @@ class CausalTemporalChannelMixer(nn.Module):
         if state.dtype != current.dtype or state.device != current.device:
             raise ValueError("Temporal mixer state must match current dtype and device.")
         weights = self.weight.to(dtype=current.dtype)
-        output = current
-        for index, delay in enumerate(self.delays):
-            output = output + torch.einsum("oc,bc...->bo...", weights[index], state[-delay])
+        if self.learnable_delays:
+            output = current
+            for branch, mixed in enumerate(
+                self._learned_history_inputs(current, lambda delay: state[-delay], 1)
+            ):
+                output = output + torch.einsum("oc,bc...->bo...", weights[branch], mixed)
+        else:
+            output = current
+            for index, delay in enumerate(self.delays):
+                output = output + torch.einsum("oc,bc...->bo...", weights[index], state[-delay])
         next_state = torch.cat((state[1:], current.unsqueeze(0)), dim=0)
         return output, next_state
 
@@ -159,11 +282,24 @@ class CausalTemporalChannelMixer(nn.Module):
             raise ValueError("Temporal mixer state must match sequence dtype and device.")
         history = torch.cat((state, sequence), dim=0)
         weights = self.weight.to(dtype=sequence.dtype)
-        output = sequence
-        for index, delay in enumerate(self.delays):
-            start = self.max_delay - delay
-            delayed = history[start : start + sequence.shape[0]]
-            output = output + torch.einsum("oc,tbc...->tbo...", weights[index], delayed)
+        if self.learnable_delays:
+            output = sequence
+            for branch, mixed in enumerate(
+                self._learned_history_inputs(
+                    sequence,
+                    lambda delay: history[
+                        self.max_delay - delay : self.max_delay - delay + sequence.shape[0]
+                    ],
+                    2,
+                )
+            ):
+                output = output + torch.einsum("oc,tbc...->tbo...", weights[branch], mixed)
+        else:
+            output = sequence
+            for index, delay in enumerate(self.delays):
+                start = self.max_delay - delay
+                delayed = history[start : start + sequence.shape[0]]
+                output = output + torch.einsum("oc,tbc...->tbo...", weights[index], delayed)
         return output, history[-self.max_delay :].clone()
 
     def forward(self, sequence: torch.Tensor) -> torch.Tensor:

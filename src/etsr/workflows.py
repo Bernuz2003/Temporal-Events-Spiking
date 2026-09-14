@@ -68,6 +68,17 @@ def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
             expected_representation.update({"lif_beta": 0.9, "lif_threshold": 1.1})
         if config["representation"] != expected_representation:
             raise ValueError("TBR discovery is fixed to the preregistered DVS-Lip paper settings")
+    elif config["model"].get("temporal_channel_mixer_learnable_delays") is True:
+        reference = load_config("configs/dvslip_f_tcap_stage1_dwc3_d8.yaml")
+        for section in ("dataset", "representation", "augmentation", "training", "evaluation"):
+            if config.get(section) != reference.get(section):
+                raise ValueError(f"Learnable-delay discovery must preserve DWC3+d8 {section}")
+        expected_model = {
+            **reference["model"],
+            "temporal_channel_mixer_learnable_delays": True,
+        }
+        if config["model"] != expected_model:
+            raise ValueError("Learnable-delay discovery may learn only the four existing TCAP taps")
     elif (
         config["model"].get("stage1_mixer") == "depthwise_conv"
         and config["model"].get("temporal_channel_mixer_delays") == [1, 2, 4, 8]
@@ -179,6 +190,9 @@ def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
         },
     })
     gate_config["training"]["recipe_id"] += "_overfit"
+    if config["model"].get("temporal_channel_mixer_learnable_delays"):
+        # The 500-epoch gate is a ceiling, not a slower annealing recipe than the full run.
+        gate_config["training"]["delay_anneal_epochs"] = int(config["training"]["epochs"])
     # Avoid restarting worker processes twice per epoch for just 64 samples.
     gate_config["dataset"]["num_workers"] = 0
     gate_summary = train_experiment(gate_config)

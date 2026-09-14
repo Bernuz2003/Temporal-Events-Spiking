@@ -19,12 +19,26 @@ from etsr.data.events import (
     slice_encoded_time,
 )
 from etsr.evaluation.metrics import ClassificationAccumulator, ClassificationResult
+from etsr.models.temporal import CausalTemporalChannelMixer
 from etsr.training.checkpointing import load_model_state
 
 
 def make_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Optimizer:
+    delay_centers = [
+        module.delay_centers
+        for module in model.modules()
+        if isinstance(module, CausalTemporalChannelMixer) and module.delay_centers is not None
+    ]
+    if delay_centers:
+        delay_ids = {id(parameter) for parameter in delay_centers}
+        parameters = [
+            {"params": [p for p in model.parameters() if id(p) not in delay_ids]},
+            {"params": delay_centers, "weight_decay": 0.0},
+        ]
+    else:
+        parameters = model.parameters()
     return torch.optim.AdamW(
-        model.parameters(),
+        parameters,
         lr=float(config.get("learning_rate", 1e-3)),
         weight_decay=float(config.get("weight_decay", 0.0)),
     )
@@ -94,6 +108,11 @@ def train_one_epoch(
     clipped_steps = 0
     optimizer_steps = 0
     optimizer.zero_grad(set_to_none=True)
+    delay_modules = tuple(
+        module
+        for module in model.modules()
+        if isinstance(module, CausalTemporalChannelMixer) and module.learnable_delays
+    )
 
     for batch_index, (frames, targets, _indices) in enumerate(loader):
         frames = move_encoded_input(frames, device)
@@ -136,6 +155,8 @@ def train_one_epoch(
             scale_before = float(scaler.get_scale()) if amp_enabled else None
             scaler.step(optimizer)
             scaler.update()
+            for module in delay_modules:
+                module.project_delay_centers_()
             overflow = (
                 amp_enabled
                 and scale_before is not None

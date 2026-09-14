@@ -310,6 +310,11 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError("model.temporal_fir must be boolean")
     if type(model.get("temporal_channel_mixer", False)) is not bool:
         raise ConfigError("model.temporal_channel_mixer must be boolean")
+    learnable_delays = model.get("temporal_channel_mixer_learnable_delays", False)
+    if type(learnable_delays) is not bool:
+        raise ConfigError("model.temporal_channel_mixer_learnable_delays must be boolean")
+    if learnable_delays and not model.get("temporal_channel_mixer", False):
+        raise ConfigError("Learnable delays require model.temporal_channel_mixer=true")
     if type(model.get("learnable_lif_tau", False)) is not bool:
         raise ConfigError("model.learnable_lif_tau must be boolean")
     if model.get("temporal_fir", False) and model.get("temporal_channel_mixer", False):
@@ -391,6 +396,13 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
     if type(minimum_lr) not in (int, float) or not 0.0 <= minimum_lr < learning_rate:
         raise ConfigError("training.min_learning_rate must be in [0, learning_rate)")
     epochs = int(training["epochs"])
+    delay_anneal_epochs = training.get("delay_anneal_epochs")
+    if delay_anneal_epochs is not None and (
+        not learnable_delays
+        or type(delay_anneal_epochs) is not int
+        or not 1 <= delay_anneal_epochs <= epochs
+    ):
+        raise ConfigError("training.delay_anneal_epochs requires learnable delays and must fit epochs")
     warmup_epochs = training.get("warmup_epochs")
     if type(warmup_epochs) is not int or not 0 <= warmup_epochs < epochs:
         raise ConfigError("training.warmup_epochs must be an integer in [0, epochs)")

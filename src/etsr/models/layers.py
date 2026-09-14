@@ -37,6 +37,7 @@ class ConvBNLIF2d(nn.Module):
         temporal_fir_kernel_size: int | None = None,
         temporal_fir_dilation: int = 1,
         temporal_channel_mixer_delays: tuple[int, ...] | None = None,
+        temporal_channel_mixer_learnable_delays: bool = False,
         learnable_tau: bool = False,
     ) -> None:
         super().__init__()
@@ -59,7 +60,11 @@ class ConvBNLIF2d(nn.Module):
             else None
         )
         self.temporal_channel_mixer = (
-            CausalTemporalChannelMixer(out_channels, temporal_channel_mixer_delays)
+            CausalTemporalChannelMixer(
+                out_channels,
+                temporal_channel_mixer_delays,
+                learnable_delays=temporal_channel_mixer_learnable_delays,
+            )
             if temporal_channel_mixer_delays is not None
             else None
         )
@@ -89,6 +94,7 @@ class ConvBNMaxPoolLIF2d(nn.Module):
         temporal_fir_kernel_size: int | None = None,
         temporal_fir_dilation: int = 1,
         temporal_channel_mixer_delays: tuple[int, ...] | None = None,
+        temporal_channel_mixer_learnable_delays: bool = False,
         learnable_tau: bool = False,
     ) -> None:
         super().__init__()
@@ -107,7 +113,11 @@ class ConvBNMaxPoolLIF2d(nn.Module):
             else None
         )
         self.temporal_channel_mixer = (
-            CausalTemporalChannelMixer(out_channels, temporal_channel_mixer_delays)
+            CausalTemporalChannelMixer(
+                out_channels,
+                temporal_channel_mixer_delays,
+                learnable_delays=temporal_channel_mixer_learnable_delays,
+            )
             if temporal_channel_mixer_delays is not None
             else None
         )
@@ -138,6 +148,7 @@ class InitialPatchEmbedding(nn.Module):
         temporal_fir_kernel_size: int | None = None,
         temporal_fir_dilation: int = 1,
         temporal_channel_mixer_delays: tuple[int, ...] | None = None,
+        temporal_channel_mixer_learnable_delays: bool = False,
         learnable_tau: bool = False,
     ):
         super().__init__()
@@ -184,6 +195,7 @@ class InitialPatchEmbedding(nn.Module):
             temporal_fir_kernel_size=temporal_fir_kernel_size,
             temporal_fir_dilation=temporal_fir_dilation,
             temporal_channel_mixer_delays=temporal_channel_mixer_delays,
+            temporal_channel_mixer_learnable_delays=temporal_channel_mixer_learnable_delays,
             learnable_tau=learnable_tau,
         )
         self.shortcut = ConvBNLIF2d(
@@ -212,6 +224,7 @@ class PyramidalPatchEmbedding(nn.Module):
         temporal_fir_kernel_size: int | None = None,
         temporal_fir_dilation: int = 1,
         temporal_channel_mixer_delays: tuple[int, ...] | None = None,
+        temporal_channel_mixer_learnable_delays: bool = False,
         learnable_tau: bool = False,
     ) -> None:
         super().__init__()
@@ -244,6 +257,7 @@ class PyramidalPatchEmbedding(nn.Module):
             temporal_fir_kernel_size=temporal_fir_kernel_size,
             temporal_fir_dilation=temporal_fir_dilation,
             temporal_channel_mixer_delays=temporal_channel_mixer_delays,
+            temporal_channel_mixer_learnable_delays=temporal_channel_mixer_learnable_delays,
             learnable_tau=learnable_tau,
         )
         self.shortcut = ConvBNLIF2d(
@@ -379,6 +393,7 @@ class PatchEmbeddingStage(nn.Module):
         temporal_fir_kernel_size: int | None = None,
         temporal_fir_dilation: int = 1,
         temporal_channel_mixer_delays: tuple[int, ...] | None = None,
+        temporal_channel_mixer_learnable_delays: bool = False,
         learnable_tau: bool = False,
     ):
         super().__init__()
@@ -403,6 +418,7 @@ class PatchEmbeddingStage(nn.Module):
             temporal_fir_kernel_size=temporal_fir_kernel_size,
             temporal_fir_dilation=temporal_fir_dilation,
             temporal_channel_mixer_delays=temporal_channel_mixer_delays,
+            temporal_channel_mixer_learnable_delays=temporal_channel_mixer_learnable_delays,
             learnable_tau=learnable_tau,
         )
         self.shortcut = ConvBNLIF2d(

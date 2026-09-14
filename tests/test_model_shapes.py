@@ -19,6 +19,7 @@ from etsr.models.mini_qkformer import MiniQKFormer
 from etsr.models.readout import DiagonalGatedReadout
 from etsr.models.spiking import MultiStepLIF
 from etsr.models.temporal import CausalTemporalChannelMixer, CausalTemporalFIR
+from etsr.training.engine import make_optimizer
 
 
 def test_mini_qkformer_output_shape_and_backward():
@@ -82,6 +83,142 @@ def test_temporal_channel_mixer_is_identity_initialized_causal_and_streamable():
     full.sum().backward()
     assert sequence.grad is not None
     assert mixer.weight.grad is not None and torch.count_nonzero(mixer.weight.grad) > 0
+
+
+def test_learnable_delay_tcap_has_causal_soft_gradients_and_hard_streaming():
+    mixer = CausalTemporalChannelMixer(3, delays=(1, 2, 4, 8), learnable_delays=True)
+    sequence = torch.randn(12, 2, 3, 2, 2, requires_grad=True)
+    assert torch.equal(mixer(sequence), sequence)  # Zero MIMO weights preserve identity.
+    with torch.no_grad():
+        mixer.weight.copy_(torch.randn_like(mixer.weight) * 0.2)
+
+    mixer.set_delay_progress(1, 128)
+    assert mixer.delay_temperature == pytest.approx(4.0)
+    probabilities = mixer.delay_distribution()
+    assert torch.allclose(probabilities.sum(dim=1), torch.ones(4, 3))
+    soft = mixer(sequence)
+    soft_first, soft_state = mixer.forward_sequence(sequence[:5])
+    soft_second, _ = mixer.forward_sequence(sequence[5:], soft_state)
+    assert torch.allclose(torch.cat((soft_first, soft_second)), soft, atol=1e-6)
+    soft.square().mean().backward()
+    assert mixer.delay_centers.grad is not None
+    assert torch.isfinite(mixer.delay_centers.grad).all()
+    assert torch.count_nonzero(mixer.delay_centers.grad) > 0
+
+    fixed = CausalTemporalChannelMixer(3, delays=(1, 2, 4, 8)).eval()
+    with torch.no_grad():
+        fixed.weight.copy_(mixer.weight)
+    mixer.eval()
+    assert torch.equal(mixer(sequence.detach()), fixed(sequence.detach()))
+    mixer.train()
+
+    with torch.no_grad():
+        mixer.delay_centers[0, 0] = -1
+        mixer.delay_centers[3, 2] = 20
+    mixer.project_delay_centers_()
+    assert mixer.delay_centers.min() >= 1
+    assert mixer.delay_centers.max() <= 8
+    mixer.set_delay_progress(128, 128)
+    assert mixer.delay_temperature == pytest.approx(0.501)
+
+    mixer.eval()
+    assert torch.equal(mixer.delay_distribution().sum(dim=1), torch.ones(4, 3))
+    full, full_state = mixer.forward_sequence(sequence.detach())
+    first, state = mixer.forward_sequence(sequence[:5].detach())
+    second, state = mixer.forward_sequence(sequence[5:].detach(), state)
+    assert torch.allclose(torch.cat((first, second)), full, atol=1e-6)
+    assert torch.equal(state, full_state)
+    perturbed = sequence.detach().clone()
+    perturbed[9:] += 20
+    assert torch.equal(mixer(sequence.detach())[:9], mixer(perturbed)[:9])
+    state = mixer.reset_state(sequence[0].detach())
+    step_outputs = []
+    for step in sequence.detach():
+        output, state = mixer.transition(step, state)
+        step_outputs.append(output)
+    assert torch.allclose(torch.stack(step_outputs), full, atol=1e-6)
+    restored = CausalTemporalChannelMixer(3, delays=(1, 2, 4, 8), learnable_delays=True)
+    restored.load_state_dict(mixer.state_dict())
+    restored.eval()
+    assert torch.equal(restored.discrete_delays(), mixer.discrete_delays())
+    assert torch.equal(restored(sequence.detach()), full)
+
+
+def test_learnable_delay_tcap_hard_mode_selects_per_channel_integer_history():
+    mixer = CausalTemporalChannelMixer(2, delays=(1, 4), learnable_delays=True).eval()
+    with torch.no_grad():
+        mixer.delay_centers.copy_(torch.tensor([[1.1, 3.9], [2.6, 1.4]]))
+        mixer.weight.copy_(torch.tensor([[[0.2, 0.3], [0.4, 0.5]], [[0.7, 0.8], [0.9, 1.0]]]))
+    assert mixer.discrete_delays().tolist() == [[1, 4], [3, 1]]
+    sequence = torch.arange(12, dtype=torch.float32).reshape(6, 1, 2, 1, 1)
+    observed = mixer(sequence)
+    expected = sequence.clone()
+    for t in range(6):
+        for branch in range(2):
+            inputs = []
+            for channel in range(2):
+                source = t - int(mixer.discrete_delays()[branch, channel])
+                inputs.append(sequence[source, 0, channel, 0, 0] if source >= 0 else 0.0)
+            expected[t, 0, :, 0, 0] += mixer.weight[branch] @ torch.tensor(inputs)
+    assert torch.allclose(observed, expected)
+    assert "delay_centers" not in CausalTemporalChannelMixer(2).state_dict()
+
+
+def test_zero_initialized_mimo_does_not_prevent_later_delay_learning():
+    torch.manual_seed(5)
+    mixer = CausalTemporalChannelMixer(2, delays=(1, 2, 4, 8), learnable_delays=True)
+    initial = mixer.delay_centers.detach().clone()
+    optimizer = torch.optim.AdamW(mixer.parameters(), lr=0.01, weight_decay=0.0)
+    sequence = torch.randn(12, 1, 2, 2, 2)
+    for _ in range(3):
+        optimizer.zero_grad(set_to_none=True)
+        mixer(sequence).square().mean().backward()
+        optimizer.step()
+        mixer.project_delay_centers_()
+    assert not torch.equal(mixer.delay_centers, initial)
+
+
+def test_learnable_delay_candidate_adds_only_768_parameters_to_fixed_dwc3_d8():
+    fixed = load_config("configs/dvslip_f_tcap_stage1_dwc3_d8.yaml")
+    adaptive = load_config("configs/dvslip_f_tcap_stage1_dwc3_learnable_delays.yaml")
+    assert adaptive["model"] == {
+        **fixed["model"],
+        "temporal_channel_mixer_learnable_delays": True,
+    }
+    fixed_count = sum(parameter.numel() for parameter in build_model(fixed["model"], 100).parameters())
+    adaptive_count = sum(
+        parameter.numel() for parameter in build_model(adaptive["model"], 100).parameters()
+    )
+    assert fixed_count == 501_028
+    assert adaptive_count == fixed_count + 4 * (64 + 128)
+
+    small = MiniQKFormer(
+        2,
+        4,
+        embed_dim=32,
+        num_heads=4,
+        frontend="pyramidal",
+        temporal_channel_mixer=True,
+        temporal_channel_mixer_delays=(1, 2, 4, 8),
+        temporal_channel_mixer_learnable_delays=True,
+        stage1_mixer="depthwise_conv",
+    ).train()
+    optimizer = make_optimizer(small, {"learning_rate": 3e-4, "weight_decay": 5e-4})
+    assert len(optimizer.param_groups) == 2
+    assert optimizer.param_groups[1]["weight_decay"] == 0.0
+    with torch.no_grad():
+        for module in small.modules():
+            if isinstance(module, CausalTemporalChannelMixer):
+                module.weight.normal_(std=0.01)
+    loss = small(torch.rand(2, 10, 2, 32, 32)).square().mean()
+    loss.backward()
+    delay_grads = [
+        module.delay_centers.grad
+        for module in small.modules()
+        if isinstance(module, CausalTemporalChannelMixer)
+    ]
+    assert all(grad is not None and torch.isfinite(grad).all() for grad in delay_grads)
+    assert sum(torch.count_nonzero(grad) for grad in delay_grads) > 0
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
@@ -361,11 +498,23 @@ def test_fir_learned_taps_match_step_execution_and_gradients_without_dtype_promo
             "temporal_channel_mixer": True,
             "stage1_mixer": "depthwise_conv",
         },
+        {
+            "frontend": "pyramidal",
+            "temporal_channel_mixer": True,
+            "temporal_channel_mixer_delays": (1, 2, 4, 8),
+            "temporal_channel_mixer_learnable_delays": True,
+            "stage1_mixer": "depthwise_conv",
+        },
         {"learnable_lif_tau": True},
     ],
 )
 def test_cuda_amp_candidate_backward_at_dvslip_shape(model_kwargs):
     model = MiniQKFormer(2, 100, **model_kwargs).cuda().train()
+    if model_kwargs.get("temporal_channel_mixer_learnable_delays"):
+        with torch.no_grad():
+            for module in model.modules():
+                if isinstance(module, CausalTemporalChannelMixer):
+                    module.weight.normal_(std=0.01)
     frames = torch.rand(1, 40, 2, 128, 128, device="cuda")
     with torch.autocast("cuda", dtype=torch.float16):
         logits = model(frames)
@@ -589,6 +738,14 @@ def test_dvslip_candidate_configs_change_only_the_declared_architecture():
             "frontend": "pyramidal",
             "temporal_channel_mixer": True,
             "temporal_channel_mixer_delays": [1, 2, 4, 8],
+            "stage1_mixer": "depthwise_conv",
+            "stage1_depthwise_kernel_size": 3,
+        },
+        "dvslip_f_tcap_stage1_dwc3_learnable_delays.yaml": {
+            "frontend": "pyramidal",
+            "temporal_channel_mixer": True,
+            "temporal_channel_mixer_delays": [1, 2, 4, 8],
+            "temporal_channel_mixer_learnable_delays": True,
             "stage1_mixer": "depthwise_conv",
             "stage1_depthwise_kernel_size": 3,
         },

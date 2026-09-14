@@ -56,8 +56,14 @@ non è inferiore a quello di `d=2`. Il nuovo tap corrisponde a 400 ms, intervall
 persistenza osservata nella diagnostica PLIF. Si applica la stessa soglia di promozione di +2 pp.
 L'apprendimento continuo/discreto dei ritardi, pur supportato su task speech da
 [DCLS](https://proceedings.iclr.cc/paper_files/paper/2024/hash/4df1cc5a7528b7197ad8ae76ff30107a-Abstract-Conference.html),
-non entra ora: introduce un nuovo problema di ottimizzazione e non ha una verifica controllata su
-DVS-Lip o sul nostro backbone.
+non faceva parte dei due probe iniziali. Si ammette ora un solo confronto aggiuntivo,
+**DWC-3 + TCAP con quattro ritardi apprendibili per canale**, inizializzati a `[1,2,4,8]` e
+vincolati a `1..8` bin. Le matrici MIMO, la rappresentazione e la recipe restano quelle di
+DWC-3+d8; il confronto diretto è con quel run. Il training usa una distribuzione triangolare con
+temperatura decrescente; selezione del best, validation e profiling usano sempre i ritardi interi.
+La [ablazione MD-Mixer](https://openaccess.thecvf.com/content/CVPR2026/papers/Shi_Temporal_Interaction_in_Spiking_Transformers_with_Multi-Delay_Mixer_CVPR_2026_paper.pdf)
+motiva la prova, ma confronta i ritardi appresi con ritardi casuali, non con i nostri tap geometrici.
+Un solo risultato seed 42 resta esplorativo: non congela l'architettura senza conferma multi-seed.
 
 **Esito diagnostico.** Sul checkpoint F+TCAP seed 42, l'azzeramento di `d=1/2/4` riduce il
 Macro-F1 rispettivamente di 40,17/49,79/51,60 pp; senza tutta la storia il calo è 52,16 pp. Il tap

@@ -155,6 +155,30 @@ def test_hardware_profile_counts_temporal_capacity_and_plif_separately():
     )
 
 
+def test_learnable_delay_profile_uses_discrete_inference_and_counts_address_selection():
+    frames = torch.rand(1, 4, 2, 32, 32)
+    loader = DataLoader(TensorDataset(frames, torch.tensor([0]), torch.arange(1)))
+    model = MiniQKFormer(
+        2,
+        4,
+        embed_dim=32,
+        num_heads=4,
+        temporal_channel_mixer=True,
+        temporal_channel_mixer_delays=(1, 2, 4, 8),
+        temporal_channel_mixer_learnable_delays=True,
+    )
+    profile = profile_model(model, loader, torch.device("cpu"), 1)
+    assert profile["operations_per_sample"]["delay_address_select"] > 0
+    assert profile["learned_temporal_delays"]
+    assert all(
+        details["mean_rounding_distance_bins"] == 0.0
+        for details in profile["learned_temporal_delays"].values()
+    )
+    first = profile["layers"]["patch_embed1.main4.temporal_channel_mixer"]
+    assert "delays" not in first
+    assert first["persistent_state_elements"] == 8 * 16 * 4 * 4
+
+
 def test_hardware_profile_accepts_multigranular_batches_and_counts_reducer_state():
     class TwoRateDataset(Dataset):
         def __len__(self):

@@ -36,7 +36,7 @@ checkpoint-only e non stima direttamente il guadagno del tap nuovo.
 
 ## Ultima ondata prima del freeze
 
-Il run combinato DWC-3+d8 decide la struttura finale. In parallelo si replicano solo le baseline B
+Il run combinato DWC-3+d8 è il controllo diretto dell'ultimo probe a ritardi apprendibili. In parallelo si replicano le baseline B
 ai seed 43/44, utili qualunque candidata venga selezionata. Il candidato passa prima dal bounded
 overfit; `replicate` esegue il full da zero e profila il best senza ripetere il gate già validato.
 
@@ -46,7 +46,15 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-b-43 -- replic
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-b-44 -- replicate --config configs/dvslip_e0.yaml --seed 44
 ```
 
-Le repliche del finalista e il trasferimento DVS-Gesture seguono la decisione sul combinato.
+Per l'unico probe DWC-3+TCAP con quattro ritardi apprendibili per canale, eseguire il check CUDA
+prima del gate. Il best e il profilo usano i ritardi interi; il full parte soltanto se passa l'overfit.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/dataset_workflow.sh dvslip check
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tcap-dwc3-learned-42 -- candidate --config configs/dvslip_f_tcap_stage1_dwc3_learnable_delays.yaml
+```
+
+Le repliche del finalista e il trasferimento DVS-Gesture seguono il confronto fra i candidati.
 
 ## Probe high-frequency F+TCAP
 

@@ -45,6 +45,7 @@ class MiniQKFormer(nn.Module):
         temporal_fir_dilations: tuple[int, int] = (1, 2),
         temporal_channel_mixer: bool = False,
         temporal_channel_mixer_delays: tuple[int, ...] = (1, 2, 4),
+        temporal_channel_mixer_learnable_delays: bool = False,
         learnable_lif_tau: bool = False,
         gated_initial_memory_steps: float | None = None,
         multigranular: bool = False,
@@ -75,6 +76,10 @@ class MiniQKFormer(nn.Module):
             raise ValueError("temporal_fir must be boolean")
         if type(temporal_channel_mixer) is not bool:
             raise ValueError("temporal_channel_mixer must be boolean")
+        if type(temporal_channel_mixer_learnable_delays) is not bool:
+            raise ValueError("temporal_channel_mixer_learnable_delays must be boolean")
+        if temporal_channel_mixer_learnable_delays and not temporal_channel_mixer:
+            raise ValueError("learnable delays require the temporal channel mixer")
         if type(learnable_lif_tau) is not bool:
             raise ValueError("learnable_lif_tau must be boolean")
         if temporal_fir and temporal_channel_mixer:
@@ -126,6 +131,7 @@ class MiniQKFormer(nn.Module):
         self.frontend_name = frontend
         self.temporal_fir_enabled = temporal_fir
         self.temporal_channel_mixer_enabled = temporal_channel_mixer
+        self.temporal_channel_mixer_learnable_delays = temporal_channel_mixer_learnable_delays
         self.learnable_lif_tau_enabled = learnable_lif_tau
         self.multigranular_enabled = multigranular
         self.multigranular_fusion_name = multigranular_fusion
@@ -145,6 +151,7 @@ class MiniQKFormer(nn.Module):
             temporal_fir_kernel_size=first_fir,
             temporal_fir_dilation=temporal_fir_dilations[0],
             temporal_channel_mixer_delays=channel_mixer_delays,
+            temporal_channel_mixer_learnable_delays=temporal_channel_mixer_learnable_delays,
             learnable_tau=learnable_lif_tau,
         )
         self.fine_temporal_branch = (
@@ -199,6 +206,7 @@ class MiniQKFormer(nn.Module):
             temporal_fir_kernel_size=first_fir,
             temporal_fir_dilation=temporal_fir_dilations[1],
             temporal_channel_mixer_delays=channel_mixer_delays,
+            temporal_channel_mixer_learnable_delays=temporal_channel_mixer_learnable_delays,
             learnable_tau=learnable_lif_tau,
         )
         self.stage2 = SpikingBlock(

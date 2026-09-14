@@ -24,6 +24,7 @@ from etsr.evaluation.metrics import (
     trapezoidal_auc,
 )
 from etsr.models.factory import build_model
+from etsr.models.temporal import CausalTemporalChannelMixer
 from etsr.reproducibility import (
     collect_environment,
     git_commit,
@@ -513,6 +514,11 @@ def train_experiment(
 
     num_classes = len(bundle.classes)
     model = build_model(config["model"], num_classes).to(device)
+    delay_modules = {
+        name: module
+        for name, module in model.named_modules()
+        if isinstance(module, CausalTemporalChannelMixer) and module.learnable_delays
+    }
     parameter_count = sum(
         parameter.numel() for parameter in model.parameters() if parameter.requires_grad
     )
@@ -590,6 +596,9 @@ def train_experiment(
         logger.info("Resuming run %s from epoch %d", run_id, start_epoch)
 
     total_epochs = int(config["training"]["epochs"])
+    delay_anneal_epochs = int(config["training"].get("delay_anneal_epochs", total_epochs))
+    if delay_modules and not 1 <= delay_anneal_epochs <= total_epochs:
+        raise ValueError("delay_anneal_epochs must fit the training horizon")
     if start_epoch > total_epochs:
         raise ValueError(
             f"Checkpoint already reached epoch {start_epoch - 1}; configured total is {total_epochs}."
@@ -599,6 +608,8 @@ def train_experiment(
         with (artifact_dir / "history.csv").open(newline="") as handle:
             gate_rows = [row for row in csv.DictReader(handle) if int(row["epoch"]) < start_epoch]
     for epoch in range(start_epoch, total_epochs + 1):
+        for module in delay_modules.values():
+            module.set_delay_progress(min(epoch, delay_anneal_epochs), delay_anneal_epochs)
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
         learning_rate = optimizer.param_groups[0]["lr"]
@@ -635,6 +646,8 @@ def train_experiment(
             "amp_overflow_fraction": train_metrics["amp_overflow_fraction"],
             "peak_cuda_memory_bytes": epoch_peak_memory,
         }
+        if delay_modules:
+            row["delay_temperature"] = next(iter(delay_modules.values())).delay_temperature
         append_csv(row, artifact_dir / "history.csv")
         logger.info(
             "Epoch %03d | train %.4f/%.4f | val %.4f/%.4f | %.1fs",
@@ -720,6 +733,11 @@ def train_experiment(
         summary["validation_shortcut_correlations"] = shortcut_correlations
     if prefix_evaluation is not None:
         summary["prefix_evaluation"] = prefix_evaluation
+    if delay_modules:
+        summary["learned_delays"] = {
+            name: module.learned_delay_summary()
+            for name, module in delay_modules.items()
+        }
     write_json(summary, artifact_dir / "summary.json")
     logger.info("Artifacts: %s", artifact_dir)
     logger.info("Checkpoint: %s", checkpoint_path)

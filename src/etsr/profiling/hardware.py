@@ -200,7 +200,11 @@ class _HardwareProfiler:
             layer["temporal_channel_mixer_mac"] += macs
             layer["state_reads"] += history_reads
             layer["state_writes"] += output.numel()
-            layer["delays"] = module.delays
+            if module.learnable_delays:
+                layer["delay_address_select"] += history_reads
+                self.totals["delay_address_select"] += history_reads
+            else:
+                layer["delays"] = module.delays
             self.totals["temporal_channel_mixer_mac"] += macs
             self.totals["multivalued_mac_potential"] += macs
             self.totals["state_reads"] += history_reads
@@ -344,6 +348,7 @@ class _HardwareProfiler:
                 "temporal_fir_multiply",
                 "temporal_fir_add",
                 "temporal_channel_mixer_mac",
+                "delay_address_select",
                 "maxpool_comparison",
                 "elementwise_add",
                 "elementwise_multiply",
@@ -401,7 +406,10 @@ class _HardwareProfiler:
         state_elements = sum(elements for elements, _bits in self.state_shapes.values())
         state_bits = sum(elements * bits for elements, bits in self.state_shapes.values())
         plif_layers = {}
+        learned_delay_layers = {}
         for name, module in self.model.named_modules():
+            if isinstance(module, CausalTemporalChannelMixer) and module.learnable_delays:
+                learned_delay_layers[name] = module.learned_delay_summary()
             if isinstance(module, MultiStepLIF) and module.learnable_tau:
                 effective_tau = module.effective_tau().detach().cpu()
                 plif_layers[name] = {
@@ -453,6 +461,7 @@ class _HardwareProfiler:
                     else None
                 ),
             },
+            "learned_temporal_delays": learned_delay_layers,
             "energy_reference": horowitz_reference(per_sample),
             "state": {
                 "persistent_state_elements": state_elements,
@@ -501,6 +510,7 @@ class _HardwareProfiler:
                 "Energy reference covers only specified arithmetic, not total hardware energy.",
                 "FIR traffic assumes a ring-buffer hardware schedule, not PyTorch copy traffic.",
                 "Channel-mixer traffic also assumes a ring-buffer schedule; MACs are dense potential.",
+                "Learned-delay address selection is counted, but its routing energy is excluded from Horowitz.",
                 "Max-pool comparisons include padded positions (potential upper bound).",
                 "Causality holds in eval mode; training BatchNorm aggregates time and batch.",
                 "Scheduled buffers, BRAM/DSP mapping and feedback timing remain unresolved.",
