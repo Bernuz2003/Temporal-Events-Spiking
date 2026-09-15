@@ -31,6 +31,7 @@ from etsr.reproducibility import (
     git_is_dirty,
     seed_everything,
 )
+from etsr.training.augmentation import build_batch_augmentation
 from etsr.training.checkpointing import (
     load_training_state,
     save_checkpoint,
@@ -505,6 +506,7 @@ def train_experiment(
             "spatial_erasing_max_pixels",
         ):
             config["augmentation"][field] = 0
+        config["augmentation"]["event_mix_probability"] = 0.0
 
     seed = int(config["experiment"]["seed"] if seed is None else seed)
     config["experiment"]["seed"] = seed
@@ -564,6 +566,7 @@ def train_experiment(
     optimizer = make_optimizer(model, config["training"])
     scheduler = make_scheduler(optimizer, config["training"])
     criterion = make_criterion(config["training"])
+    batch_augmentation = build_batch_augmentation(config["augmentation"])
     amp_enabled = bool(config["training"].get("amp", False) and device.type == "cuda")
     try:
         scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
@@ -654,6 +657,7 @@ def train_experiment(
             amp_enabled,
             config["training"].get("gradient_clip_norm"),
             int(config["training"].get("gradient_accumulation_steps", 1)),
+            batch_augmentation,
         )
         validation, _ = evaluate(model, validation_loader, criterion, device, num_classes)
         epoch_peak_memory = (

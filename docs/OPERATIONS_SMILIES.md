@@ -78,6 +78,18 @@ bounded overfit, full training da pesi nuovi e profiling del best checkpoint.
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvsgesture-f-tcap-dwc3-d8-42 -- candidate --config configs/dvsgesture_f_tcap_stage1_dwc3_d8.yaml
 ```
 
+## Fase C — screening augmentation su DVS-Gesture
+
+I due run isolano EventMix e Temporal Maskout sul medesimo finalista seed 42. EventMix usa i
+parametri pubblicati `p=0,5`, `Beta(1,1)` e tre componenti GMM; le scelte non specificate dal paper
+sono dichiarate nella config. Maskout applica otto intervalli da uno a cinque bin DVS-Gesture,
+ossia 200–1.000 ms. Entrambi si confrontano con il frozen seed 42 senza augmentation.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvsgesture-final-eventmix-42 -- refine --config configs/dvsgesture_f_tcap_stage1_dwc3_d8_event_mix.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvsgesture-final-maskout-42 -- refine --config configs/dvsgesture_f_tcap_stage1_dwc3_d8_temporal_maskout.yaml
+```
+
 ## Probe high-frequency F+TCAP
 
 Dopo il check sul commit pulito, avviare il candidato registrato:

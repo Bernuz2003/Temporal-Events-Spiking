@@ -20,6 +20,7 @@ from etsr.data.events import (
 )
 from etsr.evaluation.metrics import ClassificationAccumulator, ClassificationResult
 from etsr.models.temporal import CausalTemporalChannelMixer
+from etsr.training.augmentation import EventMix
 from etsr.training.checkpointing import load_model_state
 
 
@@ -90,13 +91,14 @@ def train_one_epoch(
     amp_enabled: bool,
     gradient_clip_norm: float | None,
     gradient_accumulation_steps: int = 1,
+    batch_augmentation: EventMix | None = None,
 ) -> dict[str, float | None]:
     if gradient_accumulation_steps <= 0:
         raise ValueError("gradient_accumulation_steps must be positive")
 
     model.train()
     loss_sum = 0.0
-    correct = 0
+    correct = 0.0
     samples = 0
     start = time.perf_counter()
     total_batches = len(loader)
@@ -117,10 +119,37 @@ def train_one_epoch(
     for batch_index, (frames, targets, _indices) in enumerate(loader):
         frames = move_encoded_input(frames, device)
         targets = targets.to(device, non_blocking=True)
+        mixed_batch = batch_augmentation(frames, targets) if batch_augmentation else None
+        if mixed_batch is not None:
+            frames = mixed_batch.frames
 
         with torch.autocast(device_type=device.type, enabled=amp_enabled):
             logits = model(frames)
-            loss = criterion(logits, targets)
+            if mixed_batch is None:
+                loss = criterion(logits, targets)
+            else:
+                if not isinstance(criterion, nn.CrossEntropyLoss):
+                    raise TypeError("EventMix requires CrossEntropyLoss")
+                primary_loss = nn.functional.cross_entropy(
+                    logits,
+                    targets,
+                    weight=criterion.weight,
+                    ignore_index=criterion.ignore_index,
+                    reduction="none",
+                    label_smoothing=criterion.label_smoothing,
+                )
+                secondary_loss = nn.functional.cross_entropy(
+                    logits,
+                    mixed_batch.secondary_targets,
+                    weight=criterion.weight,
+                    ignore_index=criterion.ignore_index,
+                    reduction="none",
+                    label_smoothing=criterion.label_smoothing,
+                )
+                loss = (
+                    mixed_batch.primary_weights * primary_loss
+                    + (1.0 - mixed_batch.primary_weights) * secondary_loss
+                ).mean()
         if not bool(torch.isfinite(loss).item()):
             raise FloatingPointError(f"Non-finite training loss at batch {batch_index}.")
 
@@ -172,7 +201,19 @@ def train_one_epoch(
             optimizer_steps += 1
 
         loss_sum += float(loss.detach().item()) * batch_size
-        correct += int((logits.argmax(1) == targets).sum().item())
+        predictions = logits.argmax(1)
+        if mixed_batch is None:
+            correct += float((predictions == targets).sum().item())
+        else:
+            correct += float(
+                (
+                    mixed_batch.primary_weights * (predictions == targets)
+                    + (1.0 - mixed_batch.primary_weights)
+                    * (predictions == mixed_batch.secondary_targets)
+                )
+                .sum()
+                .item()
+            )
         samples += batch_size
 
     return {

@@ -15,13 +15,23 @@ _AUGMENTATION_FAMILIES = {
     "horizontal_flip": ("horizontal_flip_probability",),
     "temporal_mask": ("temporal_mask_count", "temporal_mask_max_steps"),
     "spatial_erasing": ("spatial_erasing_count", "spatial_erasing_max_pixels"),
+    "event_mix": (
+        "event_mix_probability",
+        "event_mix_beta",
+        "event_mix_components",
+        "event_mix_label_mode",
+        "event_mix_gmm_scale_min",
+        "event_mix_gmm_scale_max",
+        "event_mix_mask_grid_size",
+        "event_mix_distance_spatial_pool",
+    ),
 }
 
 
 def _changed_augmentation_families(
     reference: dict[str, Any], candidate: dict[str, Any]
 ) -> tuple[str, ...]:
-    def value(config: dict[str, Any], field: str) -> int | float:
+    def value(config: dict[str, Any], field: str) -> Any:
         return config.get(field, 0.0 if field == "horizontal_flip_probability" else 0)
 
     return tuple(

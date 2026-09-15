@@ -283,13 +283,21 @@ def test_replication_changes_only_seed_and_profiles_best(tmp_path, monkeypatch):
             "configs/dvslip_f_tcap_stage1_dwc3_d8_spatial_erasing.yaml",
             "spatial_erasing",
         ),
+        (
+            "configs/dvsgesture_f_tcap_stage1_dwc3_d8_temporal_maskout.yaml",
+            "temporal_mask",
+        ),
+        (
+            "configs/dvsgesture_f_tcap_stage1_dwc3_d8_event_mix.yaml",
+            "event_mix",
+        ),
     ],
 )
 def test_supervised_refinement_accepts_single_augmentation_configs(
     tmp_path, monkeypatch, config_path, expected_family
 ):
-    reference_name = "dvslip_f_tcap_stage1_dwc3_d8"
     config = load_config(config_path)
+    reference_name = load_config(config["refinement"]["reference_config"])["experiment"]["name"]
     original = copy.deepcopy(config)
     calls = []
 
