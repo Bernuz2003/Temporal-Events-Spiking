@@ -230,7 +230,7 @@ def test_candidate_learnable_delays_changes_only_delay_locations(monkeypatch):
 
 
 def test_candidate_accepts_only_preregistered_dvsgesture_transfer(monkeypatch):
-    config = load_config("configs/dvsgesture_f_temporal_capacity.yaml")
+    config = load_config("configs/dvsgesture_f_tcap_stage1_dwc3_d8.yaml")
     calls = []
 
     def stop_at_gate(candidate):
@@ -242,8 +242,8 @@ def test_candidate_accepts_only_preregistered_dvsgesture_transfer(monkeypatch):
         workflows.run_candidate(config)
     assert calls[0]["training"]["overfit"]["class_count"] == 11
 
-    config["model"]["temporal_channel_mixer_delays"] = [1, 2, 4, 8]
-    with pytest.raises(ValueError, match=r"fixed to the F\+TCAP topology"):
+    config["model"]["temporal_channel_mixer_delays"] = [1, 2, 4]
+    with pytest.raises(ValueError, match=r"fixed to the frozen DWC3\+TCAP-d8 topology"):
         workflows.run_candidate(config)
 
 

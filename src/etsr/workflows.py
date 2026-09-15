@@ -27,10 +27,12 @@ def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
             **reference["model"],
             "frontend": "pyramidal",
             "temporal_channel_mixer": True,
-            "temporal_channel_mixer_delays": [1, 2, 4],
+            "temporal_channel_mixer_delays": [1, 2, 4, 8],
+            "stage1_mixer": "depthwise_conv",
+            "stage1_depthwise_kernel_size": 3,
         }
         if config["model"] != expected_model:
-            raise ValueError("DVS-Gesture transfer is fixed to the F+TCAP topology")
+            raise ValueError("DVS-Gesture transfer is fixed to the frozen DWC3+TCAP-d8 topology")
         gate_class_count = 11
     else:
         gate_class_count = 16

@@ -1,6 +1,6 @@
 # Operazioni riproducibili su SMILIES
 
-**Aggiornate:** 2026-09-13
+**Aggiornate:** 2026-09-15
 
 Ogni server fisico vede la propria GPU come indice locale `0`. I quattro nomi di sessione screen
 sono indipendenti perché vivono su macchine diverse. Prima del lancio, sincronizzare lo stesso
@@ -55,6 +55,16 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tcap-dwc3-le
 ```
 
 Le repliche del finalista e il trasferimento DVS-Gesture seguono il confronto fra i candidati.
+
+## Trasferimento strutturale su DVS-Gesture
+
+Il primo confronto trasferisce a seed 42 l'intera architettura congelata F+DWC-3+TCAP-d8,
+mantenendo il protocollo DVS-Gesture e i ritardi `[1,2,4,8]` in unità di bin. Il workflow esegue
+bounded overfit, full training da pesi nuovi e profiling del best checkpoint.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvsgesture-f-tcap-dwc3-d8-42 -- candidate --config configs/dvsgesture_f_tcap_stage1_dwc3_d8.yaml
+```
 
 ## Probe high-frequency F+TCAP
 

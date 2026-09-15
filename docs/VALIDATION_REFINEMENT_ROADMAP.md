@@ -99,8 +99,9 @@ vantaggio F1 cambia segno in almeno due seed, la struttura non è congelata come
 
 DVS-Gesture è il benchmark di trasferimento già implementato. Si conserva la topologia scelta;
 si adattano soltanto head, finestra/binning e augmentation imposti dal protocollo del dataset. I
-ritardi restano `[1,2,4]` in unità di bin: non si esegue un tuning specifico per il dataset. Il flip
-orizzontale resta disabilitato perché cambia le classi sinistra/destra.
+ritardi restano `[1,2,4,8]` in unità di bin, come nell'architettura congelata
+**F+DWC-3+TCAP-d8**: non si esegue un tuning specifico per il dataset. Il flip orizzontale resta
+disabilitato perché cambia le classi sinistra/destra.
 
 Il primo confronto usa seed 42 contro la baseline DVS-Gesture esistente. Se il delta è positivo,
 si completano i seed 43 e 44 per B e candidata; se è negativo, si registra la mancata
