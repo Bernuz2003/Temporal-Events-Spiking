@@ -272,6 +272,111 @@ def test_replication_changes_only_seed_and_profiles_best(tmp_path, monkeypatch):
     assert result["seed"] == 43
 
 
+@pytest.mark.parametrize(
+    "config_path,expected_family",
+    [
+        (
+            "configs/dvslip_f_tcap_stage1_dwc3_d8_temporal_maskout.yaml",
+            "temporal_mask",
+        ),
+        (
+            "configs/dvslip_f_tcap_stage1_dwc3_d8_spatial_erasing.yaml",
+            "spatial_erasing",
+        ),
+    ],
+)
+def test_supervised_refinement_accepts_single_augmentation_configs(
+    tmp_path, monkeypatch, config_path, expected_family
+):
+    reference_name = "dvslip_f_tcap_stage1_dwc3_d8"
+    config = load_config(config_path)
+    original = copy.deepcopy(config)
+    calls = []
+
+    def train(refinement):
+        calls.append(copy.deepcopy(refinement))
+        directory = tmp_path / expected_family
+        directory.mkdir()
+        save_config(refinement, directory / "config_resolved.yaml")
+        return {"artifact_dir": str(directory), "checkpoint": str(directory / "best.pt")}
+
+    profiles = []
+    monkeypatch.setattr(workflows, "train_experiment", train)
+    monkeypatch.setattr(workflows, "profile_checkpoint", lambda *args: profiles.append(args))
+
+    result = workflows.run_supervised_refinement(config)
+
+    assert config == original
+    assert calls == [original]
+    assert len(profiles) == 1
+    assert result["reference_experiment"] == reference_name
+    assert result["refinement"] == original["refinement"]
+    assert result["changed_augmentation_families"] == (expected_family,)
+    assert result["status"] == "complete"
+
+    config["training"]["learning_rate"] = 1e-4
+    with pytest.raises(ValueError, match="recipe identifier"):
+        workflows.run_supervised_refinement(config)
+
+    if expected_family == "temporal_mask":
+        two_families = copy.deepcopy(original)
+        two_families["augmentation"].update(
+            {"spatial_erasing_count": 1, "spatial_erasing_max_pixels": 8}
+        )
+        with pytest.raises(ValueError, match="exactly one family"):
+            workflows.run_supervised_refinement(two_families)
+
+
+def test_supervised_refinement_workflow_is_dataset_independent(tmp_path, monkeypatch):
+    config = load_config("configs/dvsgesture_f_tcap_stage1_dwc3_d8.yaml")
+    config["experiment"]["name"] += "_temporal_maskout"
+    config["training"]["recipe_id"] += "_tm4x5"
+    config["augmentation"].update(
+        {"temporal_mask_count": 4, "temporal_mask_max_steps": 5}
+    )
+    config["refinement"] = {
+        "kind": "augmentation",
+        "stage": "single",
+        "reference_config": "configs/dvsgesture_f_tcap_stage1_dwc3_d8.yaml",
+    }
+
+    def train(refinement):
+        directory = tmp_path / "dvsgesture_refinement"
+        directory.mkdir()
+        save_config(refinement, directory / "config_resolved.yaml")
+        return {"artifact_dir": str(directory), "checkpoint": str(directory / "best.pt")}
+
+    monkeypatch.setattr(workflows, "train_experiment", train)
+    monkeypatch.setattr(workflows, "profile_checkpoint", lambda *_args: None)
+
+    result = workflows.run_supervised_refinement(config)
+
+    assert result["reference_experiment"] == "dvsgesture_f_tcap_stage1_dwc3_d8"
+    assert result["changed_augmentation_families"] == ("temporal_mask",)
+
+
+def test_supervised_refinement_accepts_only_declared_multi_family_combinations(monkeypatch):
+    config = load_config("configs/dvslip_f_tcap_stage1_dwc3_d8_temporal_maskout.yaml")
+    config["experiment"]["name"] = "dvslip_f_tcap_stage1_dwc3_d8_tm8x4_se4x20"
+    config["training"]["recipe_id"] = "dvslip_e0_128_tm8x4_se4x20"
+    config["augmentation"].update(
+        {"spatial_erasing_count": 4, "spatial_erasing_max_pixels": 20}
+    )
+    config["refinement"]["stage"] = "combination"
+    monkeypatch.setattr(
+        workflows,
+        "train_experiment",
+        lambda _config: (_ for _ in ()).throw(RuntimeError("training reached")),
+    )
+
+    with pytest.raises(RuntimeError, match="training reached"):
+        workflows.run_supervised_refinement(config)
+
+    config["refinement"]["stage"] = "single"
+    with pytest.raises(ValueError, match="exactly one family"):
+        workflows.run_supervised_refinement(config)
+
+
 def test_runner_overfit_early_stops_and_records_actual_subset(tmp_path, monkeypatch):
     frames = torch.tensor([[1., 0.], [1., 0.], [0., 1.], [0., 1.]])
     targets = torch.tensor([0, 0, 1, 1])

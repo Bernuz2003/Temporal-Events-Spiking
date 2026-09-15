@@ -11,6 +11,25 @@ from etsr.config import load_config, validate_config
 from etsr.runner import profile_checkpoint, train_experiment
 from etsr.utils.io import write_json
 
+_AUGMENTATION_FAMILIES = {
+    "horizontal_flip": ("horizontal_flip_probability",),
+    "temporal_mask": ("temporal_mask_count", "temporal_mask_max_steps"),
+    "spatial_erasing": ("spatial_erasing_count", "spatial_erasing_max_pixels"),
+}
+
+
+def _changed_augmentation_families(
+    reference: dict[str, Any], candidate: dict[str, Any]
+) -> tuple[str, ...]:
+    def value(config: dict[str, Any], field: str) -> int | float:
+        return config.get(field, 0.0 if field == "horizontal_flip_probability" else 0)
+
+    return tuple(
+        family
+        for family, fields in _AUGMENTATION_FAMILIES.items()
+        if any(value(reference, field) != value(candidate, field) for field in fields)
+    )
+
 
 def run_candidate(config: dict[str, Any]) -> dict[str, Any]:
     """A failed overfit never launches a full run; full training starts from fresh weights."""
@@ -238,6 +257,74 @@ def run_replication(config: dict[str, Any], seed: int) -> dict[str, Any]:
         "full": summary,
         "source_experiment": config["experiment"]["name"],
         "seed": seed,
+        "status": "profiling",
+        "official_test_used": False,
+    }
+    write_json(manifest, manifest_path)
+    output = artifact_dir / "hardware_profile_v4.json"
+    profile_checkpoint(load_config(artifact_dir / "config_resolved.yaml"), summary["checkpoint"], output)
+    manifest.update({"profile": str(output), "status": "complete"})
+    write_json(manifest, manifest_path)
+    return manifest
+
+
+def run_supervised_refinement(config: dict[str, Any]) -> dict[str, Any]:
+    """Run a config-declared augmentation screen and profile its selected best."""
+
+    validate_config(config)
+    if config["training"].get("overfit"):
+        raise ValueError("supervised refinement requires a full training configuration")
+    refinement = config.get("refinement")
+    if not isinstance(refinement, dict) or set(refinement) != {
+        "kind",
+        "stage",
+        "reference_config",
+    }:
+        raise ValueError("refinement must declare kind, stage and reference_config")
+    if refinement["kind"] != "augmentation":
+        raise ValueError("refine currently supports augmentation experiments")
+    if refinement["stage"] not in {"single", "combination"}:
+        raise ValueError("augmentation refinement stage must be single or combination")
+    if not isinstance(refinement["reference_config"], str):
+        raise ValueError("refinement.reference_config must be a configuration path")
+
+    reference = load_config(refinement["reference_config"])
+    if reference["dataset"]["name"] != config["dataset"]["name"]:
+        raise ValueError("augmentation screening cannot change dataset")
+    for section in ("dataset", "representation", "evaluation", "model"):
+        if config.get(section) != reference.get(section):
+            raise ValueError(f"augmentation screening must preserve reference {section}")
+
+    expected_training = {**reference["training"], "recipe_id": config["training"]["recipe_id"]}
+    if config["training"] != expected_training or (
+        config["training"]["recipe_id"] == reference["training"]["recipe_id"]
+    ):
+        raise ValueError("augmentation screening may change only the non-empty recipe identifier")
+    expected_experiment = {**reference["experiment"], "name": config["experiment"]["name"]}
+    if config["experiment"] != expected_experiment or (
+        config["experiment"]["name"] == reference["experiment"]["name"]
+    ):
+        raise ValueError("augmentation screening may change only the experiment name")
+
+    changed_families = _changed_augmentation_families(
+        reference["augmentation"], config["augmentation"]
+    )
+    expected_family_count = 1 if refinement["stage"] == "single" else 2
+    if len(changed_families) < expected_family_count:
+        requirement = "exactly one" if refinement["stage"] == "single" else "at least two"
+        raise ValueError(f"{refinement['stage']} augmentation screening requires {requirement} family")
+    if refinement["stage"] == "single" and len(changed_families) != 1:
+        raise ValueError("single augmentation screening requires exactly one family")
+
+    summary = train_experiment(copy.deepcopy(config))
+    artifact_dir = Path(summary["artifact_dir"])
+    manifest_path = artifact_dir / "refinement_workflow.json"
+    manifest = {
+        "full": summary,
+        "reference_experiment": reference["experiment"]["name"],
+        "refinement": refinement,
+        "changed_augmentation_families": changed_families,
+        "augmentation": config["augmentation"],
         "status": "profiling",
         "official_test_used": False,
     }

@@ -102,6 +102,19 @@ def test_train_cli_accepts_generic_overfit_and_epoch_overrides():
     assert args.spatial_erasing == [4, 20]
 
 
+def test_refinement_cli_requires_an_explicit_config():
+    args = build_parser().parse_args(
+        [
+            "refine",
+            "--config",
+            "configs/dvslip_f_tcap_stage1_dwc3_d8_temporal_maskout.yaml",
+        ]
+    )
+
+    assert args.command == "refine"
+    assert args.config.endswith("dvslip_f_tcap_stage1_dwc3_d8_temporal_maskout.yaml")
+
+
 def test_readout_metadata_marks_last_event_as_a_causal_snapshot_policy():
     config = {"model": {"readout": "last", "readout_time": "last_event"}}
 

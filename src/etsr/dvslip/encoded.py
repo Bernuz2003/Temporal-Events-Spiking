@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from etsr.data.common import DatasetBundle
-from etsr.data.events import EncodedEventDataset
+from etsr.data.events import EncodedEventDataset, encoded_augmentation_kwargs
 from etsr.dvslip.dataset import DvsLipDataset, load_dvslip_index
 from etsr.encoders.count import (
     CountFrameEncoder,
@@ -67,13 +67,7 @@ def build_dvslip_bundle(
     train = EncodedEventDataset(
         raw_train,
         encoder,
-        horizontal_flip_probability=float(augmentation_config["horizontal_flip_probability"]),
-        temporal_mask_count=int(augmentation_config.get("temporal_mask_count", 0)),
-        temporal_mask_max_steps=int(augmentation_config.get("temporal_mask_max_steps", 0)),
-        spatial_erasing_count=int(augmentation_config.get("spatial_erasing_count", 0)),
-        spatial_erasing_max_pixels=int(
-            augmentation_config.get("spatial_erasing_max_pixels", 0)
-        ),
+        **encoded_augmentation_kwargs(augmentation_config),
     )
     validation = EncodedEventDataset(raw_validation, encoder)
     return DatasetBundle(

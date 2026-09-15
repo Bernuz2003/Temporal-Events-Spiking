@@ -56,6 +56,18 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-f-tcap-dwc3-le
 
 Le repliche del finalista e il trasferimento DVS-Gesture seguono il confronto fra i candidati.
 
+## Fase C1 — screening parallelo delle augmentation
+
+Il primo raffinamento supervisionato applica soltanto al modello congelato seed 42 otto maschere
+temporali lunghe da uno a quattro bin da 50 ms. Validation e profiling restano senza augmentation;
+il confronto diretto è con lo stesso modello seed 42 già addestrato senza Maskout. Il secondo run
+isola lo spatial erasing usato nella pipeline DVS-Lip pubblica, senza aggiungere altre trasformazioni.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-final-maskout-42 -- refine --config configs/dvslip_f_tcap_stage1_dwc3_d8_temporal_maskout.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-final-spatial-erasing-42 -- refine --config configs/dvslip_f_tcap_stage1_dwc3_d8_spatial_erasing.yaml
+```
+
 ## Trasferimento strutturale su DVS-Gesture
 
 Il primo confronto trasferisce a seed 42 l'intera architettura congelata F+DWC-3+TCAP-d8,

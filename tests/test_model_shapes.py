@@ -766,6 +766,40 @@ def test_dvslip_candidate_configs_change_only_the_declared_architecture():
         assert config["model"] == {**baseline["model"], **model_delta}
 
 
+@pytest.mark.parametrize(
+    "refinement_name,augmentation_delta,recipe_suffix",
+    [
+        (
+            "dvslip_f_tcap_stage1_dwc3_d8_temporal_maskout.yaml",
+            {"temporal_mask_count": 8, "temporal_mask_max_steps": 4},
+            "_tm8x4",
+        ),
+        (
+            "dvslip_f_tcap_stage1_dwc3_d8_spatial_erasing.yaml",
+            {"spatial_erasing_count": 4, "spatial_erasing_max_pixels": 20},
+            "_se4x20",
+        ),
+    ],
+)
+def test_single_augmentation_configs_change_only_the_registered_family(
+    refinement_name, augmentation_delta, recipe_suffix
+):
+    root = Path(__file__).parents[1]
+    reference = load_config(root / "configs" / "dvslip_f_tcap_stage1_dwc3_d8.yaml")
+    refinement = load_config(root / "configs" / refinement_name)
+
+    for section in ("dataset", "representation", "evaluation", "model"):
+        assert refinement[section] == reference[section]
+    assert refinement["augmentation"] == {
+        **reference["augmentation"],
+        **augmentation_delta,
+    }
+    assert refinement["training"] == {
+        **reference["training"],
+        "recipe_id": f"{reference['training']['recipe_id']}{recipe_suffix}",
+    }
+
+
 def test_dvslip_phase_representation_changes_only_input_measurement_and_channels():
     root = Path(__file__).parents[1]
     baseline = load_config(root / "configs" / "dvslip_e0.yaml")

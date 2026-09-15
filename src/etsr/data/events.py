@@ -12,6 +12,18 @@ from torch.utils.data import Dataset
 EncodedInput = torch.Tensor | dict[str, torch.Tensor]
 
 
+def encoded_augmentation_kwargs(config: dict[str, Any]) -> dict[str, int | float]:
+    """Translate the dataset-independent augmentation config into wrapper arguments."""
+
+    return {
+        "horizontal_flip_probability": float(config.get("horizontal_flip_probability", 0.0)),
+        "temporal_mask_count": int(config.get("temporal_mask_count", 0)),
+        "temporal_mask_max_steps": int(config.get("temporal_mask_max_steps", 0)),
+        "spatial_erasing_count": int(config.get("spatial_erasing_count", 0)),
+        "spatial_erasing_max_pixels": int(config.get("spatial_erasing_max_pixels", 0)),
+    }
+
+
 def move_encoded_input(frames: EncodedInput, device: torch.device) -> EncodedInput:
     if isinstance(frames, torch.Tensor):
         return frames.to(device, non_blocking=True)

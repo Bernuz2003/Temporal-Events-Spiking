@@ -19,6 +19,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     replicate.add_argument("--config", required=True)
     replicate.add_argument("--seed", required=True, type=int)
+    refinement = subparsers.add_parser(
+        "refine", help="Run one preregistered supervised refinement, then profile"
+    )
+    refinement.add_argument("--config", required=True)
     backfill = subparsers.add_parser("profile-runs", help="Reprofile completed full runs, no training")
     backfill.add_argument("--artifact-root", default="artifacts")
     backfill.add_argument("--checkpoint-root", default="checkpoints")
@@ -198,6 +202,11 @@ def main() -> None:
         from etsr.workflows import run_replication
 
         print(run_replication(load_config(args.config), args.seed))
+    elif args.command == "refine":
+        from etsr.config import load_config
+        from etsr.workflows import run_supervised_refinement
+
+        print(run_supervised_refinement(load_config(args.config)))
     elif args.command == "profile-runs":
         from etsr.workflows import profile_completed_runs
 

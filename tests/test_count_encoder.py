@@ -7,7 +7,7 @@ import torch
 
 from etsr.config import ConfigError, load_config
 from etsr.data.common import build_loader
-from etsr.data.events import EncodedEventDataset, EventSample
+from etsr.data.events import EncodedEventDataset, EventSample, encoded_augmentation_kwargs
 from etsr.encoders.count import (
     CountFrameEncoder,
     MultiGranularCountFrameEncoder,
@@ -39,6 +39,22 @@ def _encoder() -> CountFrameEncoder:
         bin_width_us=50_000,
         count_cap=255,
     )
+
+
+def test_augmentation_config_adapter_has_dataset_independent_defaults():
+    assert encoded_augmentation_kwargs(
+        {
+            "horizontal_flip_probability": 0.5,
+            "temporal_mask_count": 8,
+            "temporal_mask_max_steps": 4,
+        }
+    ) == {
+        "horizontal_flip_probability": 0.5,
+        "temporal_mask_count": 8,
+        "temporal_mask_max_steps": 4,
+        "spatial_erasing_count": 0,
+        "spatial_erasing_max_pixels": 0,
+    }
 
 
 def test_e0_count_encoder_preserves_counts_and_physical_time_contract():

@@ -1,6 +1,6 @@
 # Ricetta di training congelata
 
-**Aggiornata:** 2026-09-09
+**Aggiornata:** 2026-09-15
 
 **Recipe ID base:** `dvslip_e0_128`
 
@@ -41,9 +41,16 @@ un controllo capace di separarla dalla modifica architetturale.
 
 ## Fase post-freeze
 
-Dopo la conferma multi-seed si crea un nuovo `recipe_id`. La prima verifica ammessa confronta la
-stessa augmentation sulla baseline e sulla candidata congelata. Ulteriore tuning avviene in modo
-sequenziale e si arresta appena il risultato non cambia la conclusione.
+Dopo la conferma multi-seed si crea un nuovo `recipe_id`. Ogni raffinamento viene applicato alla
+sola candidata congelata e confrontato con il run della stessa struttura e dello stesso seed senza
+la modifica; B non viene riaddestrata. Ulteriore tuning avviene in modo sequenziale e si arresta
+appena il risultato non cambia la conclusione.
+
+Il primo screen usa `recipe_id=dvslip_e0_128_tm8x4`: otto maschere temporali indipendenti, ciascuna
+lunga uniformemente da uno a quattro bin da 50 ms. Le maschere possono sovrapporsi e sono applicate
+solo al training; validation, curve a prefisso e profiling ricevono l'input integro. La relativa
+config seleziona il modello congelato seed 42. Il workflow `refine` è comune ai dataset: legge dalla
+config il riferimento, verifica che ogni altra sezione sia invariata e profila il best.
 
 
 ## Diagnostiche senza training

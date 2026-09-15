@@ -113,26 +113,47 @@ generale da un vantaggio specifico per la dinamica del labiale.
 Le modifiche si provano in sequenza. Ogni stadio usa il vincitore dello stadio precedente e viene
 scartato al primo delta negativo replicato. Nessuna griglia di iperparametri.
 
+All'interno di uno stadio, le augmentation candidate possono essere valutate singolarmente e in
+parallelo con lo stesso seed, split, modello e budget. Solo quelle con delta positivo materiale
+accedono a una combinazione forward controllata; non si enumerano tutte le combinazioni. La policy
+finale viene poi confermata multi-seed. Parametri e compatibilità semantica restano specifici del
+dataset, mentre implementazione e workflow sono condivisi.
+
+Per lo screening DVS-Lip, “positivo materiale” significa almeno `+1,0 pp` Macro-F1 sul seed 42 e
+nessuna perdita di accuracy superiore a `0,5 pp`. Se entrambi i fattori passano, si prova una sola
+unione Maskout+spatial erasing; deve migliorare il migliore singolo di almeno `0,5 pp` Macro-F1.
+Solo la policy selezionata viene replicata sui seed 43/44.
+
 ### C1. Temporal Maskout
 
-È la prima priorità. [G2N2](https://proceedings.bmvc2023.org/660/) riporta su DVS-Lip guadagni
-tra 4,8 e 7,4 pp cancellando intervalli temporali; la configurazione migliore usa otto maschere
-lunghe fino a 200 ms. Il codice locale implementa già la stessa semantica sui frame.
+È la prima priorità. Nell'ablazione di [G2N2](https://proceedings.bmvc2023.org/660/) su DVS-Lip,
+Maskout porta lo stesso modello da 58,7% a 66,1% accuracy; la configurazione migliore usa otto
+maschere lunghe da uno a sei intervalli da 33 ms, quindi fino a circa 200 ms. Il codice locale
+implementa la stessa semantica sui frame, inclusa la possibilità di sovrapposizione.
 
 La prova fissata è `temporal_mask_count=8`, `temporal_mask_max_steps=4`: otto intervalli casuali
-da 50–200 ms, con possibili sovrapposizioni. Si confronta la stessa augmentation su B e candidata,
-così il guadagno della recipe non viene attribuito alla struttura. È il test con evidenza più
-diretta e il miglior rapporto beneficio/costo.
+da 50–200 ms, con possibili sovrapposizioni. Si addestra soltanto la struttura congelata e la si
+confronta con il proprio run seed 42 senza Maskout; B resta il riferimento della fase architetturale
+e non viene riaddestrata per ogni raffinamento. È il test con evidenza più diretta e il miglior
+rapporto beneficio/costo. Il protocollo locale usa il development split e non replica la selezione
+sul test riportata dal paper.
 
 ### C2. Augmentation geometrica neuromorfica
 
-Solo se C1 è positivo si aggiunge una policy moderata e unica, senza ricerca automatica. La
+In parallelo a C1 si isola un solo spatial erasing: quattro regioni quadrate con lato casuale fino
+a 20 pixel, configurazione usata nel codice pubblico SpikGRU su DVS-Lip. La
 [Neuromorphic Data Augmentation](https://www.ecva.net/papers/eccv_2022/papers_ECCV/papers/136670623.pdf)
-mostra che flip, piccoli roll/rotazioni, cutout e shear applicati coerentemente a tutti i timestep
-stabilizzano la generalizzazione su più benchmark DVS. Per DVS-Lip si mantiene il flip già usato e
-si usa la policy di intensità più bassa del paper; trasformazioni che spostano la bocca fuori dal
-campo vengono rifiutate nel test di integrità. CutMix viene lasciato a un'eventuale prova separata,
-per non confondere subito invarianti geometriche e target misti.
+mostra che le trasformazioni geometriche applicate coerentemente a tutti i timestep sono molto più
+efficaci di quelle fotometriche su CIFAR10-DVS. Non si importa subito l'intera policy NDA, che rende
+sempre attivi flip e CutMix e campiona inoltre roll, rotazione, cutout o shear: non isolerebbe il
+fattore responsabile su DVS-Lip. Se Maskout e spatial erasing sono entrambi positivi, si esegue una
+sola combinazione dei due; altrimenti prosegue soltanto il vincitore.
+
+Per i dataset successivi non si replica automaticamente lo screening DVS-Lip. Su DVS-Gesture si
+prioritizzano Maskout ed EventMix dopo la conferma del trasferimento strutturale; su CIFAR10-DVS si
+confrontano la policy NDA-M1N2 e EventMix, entrambe supportate direttamente su quel benchmark.
+Daily-DVS riceverà solo le policy risultate robuste sui task dinamici e semanticamente compatibili
+con le sue classi.
 
 ### C3. Supervisione temporale tardiva
 
@@ -205,7 +226,7 @@ valutate in un'unica campagna, senza usare l'esito del test per scegliere fra va
 | 1 | high-frequency DWC-3; eventuale TCAP `[1,2,4,8]` solo se autorizzato | 1–2 |
 | 2 | B e finalista, seed 43/44 | 4 |
 | 3 | trasferimento DVS-Gesture, prima seed 42 | 1, poi 4 solo se positivo |
-| 4 | Maskout su B e finalista | 2 totali sul seed di screening |
+| 4 | Maskout e spatial erasing, isolati sul finalista | 2 paralleli sul seed di screening |
 | 5 | augmentation geometrica, late-prefix loss, 192 epoche | 1 stadio alla volta |
 | 6 | JEPA-like/predictive pretraining | 1 pretraining + fine-tuning controllato |
 | 7 | compressione/quantizzazione e campagna official-test | dopo il modello prestazionale |
