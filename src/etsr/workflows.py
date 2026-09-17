@@ -20,10 +20,6 @@ _AUGMENTATION_FAMILIES = {
         "event_mix_beta",
         "event_mix_components",
         "event_mix_label_mode",
-        "event_mix_gmm_scale_min",
-        "event_mix_gmm_scale_max",
-        "event_mix_mask_grid_size",
-        "event_mix_distance_spatial_pool",
     ),
 }
 
@@ -320,11 +316,11 @@ def run_supervised_refinement(config: dict[str, Any]) -> dict[str, Any]:
         reference["augmentation"], config["augmentation"]
     )
     expected_family_count = 1 if refinement["stage"] == "single" else 2
-    if len(changed_families) < expected_family_count:
-        requirement = "exactly one" if refinement["stage"] == "single" else "at least two"
-        raise ValueError(f"{refinement['stage']} augmentation screening requires {requirement} family")
-    if refinement["stage"] == "single" and len(changed_families) != 1:
-        raise ValueError("single augmentation screening requires exactly one family")
+    if len(changed_families) != expected_family_count:
+        requirement = "one family" if refinement["stage"] == "single" else "two families"
+        raise ValueError(
+            f"{refinement['stage']} augmentation screening requires exactly {requirement}"
+        )
 
     summary = train_experiment(copy.deepcopy(config))
     artifact_dir = Path(summary["artifact_dir"])

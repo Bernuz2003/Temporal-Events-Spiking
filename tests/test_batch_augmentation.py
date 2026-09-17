@@ -2,6 +2,7 @@ import copy
 
 import pytest
 import torch
+import torch.nn.functional as functional
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -29,10 +30,6 @@ def _event_mix(probability: float = 1.0) -> EventMix:
         probability=probability,
         beta=1.0,
         components=3,
-        gmm_scale_min=0.08,
-        gmm_scale_max=0.35,
-        mask_grid_size=8,
-        distance_spatial_pool=2,
     )
 
 
@@ -86,17 +83,42 @@ def test_event_mix_integrates_soft_targets_with_label_smoothing_and_backward():
     assert not torch.equal(model[1].weight, original)
 
 
-def test_event_mix_config_is_explicit_and_zero_probability_disables_it():
+def test_event_mix_relative_distance_matches_the_published_spatial_smoothing():
+    primary = torch.arange(2 * 2 * 5 * 5, dtype=torch.float32).reshape(1, 2, 2, 5, 5)
+    secondary = primary.flip(-1)
+    mixed = torch.where(
+        torch.arange(5)[None, None, None, None, :] < 2,
+        secondary,
+        primary,
+    )
+
+    def published_distance(left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:
+        batch, time, channels, height, width = left.shape
+        left = functional.avg_pool2d(
+            left.reshape(batch * time, channels, height, width), 3, 1, 1
+        )
+        right = functional.avg_pool2d(
+            right.reshape(batch * time, channels, height, width), 3, 1, 1
+        )
+        return (left - right).square().mean(dim=(1, 2, 3)).reshape(batch, time).mean(1)
+
+    distance_primary = published_distance(primary, mixed)
+    distance_secondary = published_distance(secondary, mixed)
+    expected = distance_secondary.square() / (
+        distance_primary.square() + distance_secondary.square()
+    )
+
+    torch.testing.assert_close(
+        _event_mix()._relative_distance_weights(primary, secondary, mixed), expected
+    )
+
+
+def test_event_mix_config_uses_paper_parameters_and_zero_probability_disables_it():
     reference = load_config("configs/dvsgesture_f_tcap_stage1_dwc3_d8.yaml")
     assert build_batch_augmentation(reference["augmentation"]) is None
 
     candidate = load_config("configs/dvsgesture_f_tcap_stage1_dwc3_d8_event_mix.yaml")
     assert isinstance(build_batch_augmentation(candidate["augmentation"]), EventMix)
-
-    invalid = copy.deepcopy(candidate)
-    invalid["augmentation"]["event_mix_gmm_scale_max"] = 1.5
-    with pytest.raises(ConfigError, match="GMM scales"):
-        validate_config(invalid)
 
     invalid = copy.deepcopy(candidate)
     invalid["augmentation"]["event_mix_label_mode"] = "area"
@@ -109,16 +131,16 @@ def test_event_mix_runs_on_cuda_at_dvsgesture_shape():
     torch.manual_seed(11)
     frames = torch.rand(2, 100, 2, 128, 128, device="cuda")
     targets = torch.tensor([0, 1], device="cuda")
-
-    mixed = EventMix(
-        probability=1.0,
-        beta=1.0,
-        components=3,
-        gmm_scale_min=0.08,
-        gmm_scale_max=0.35,
-        mask_grid_size=32,
-        distance_spatial_pool=4,
-    )(frames, targets)
+    deterministic_before = torch.are_deterministic_algorithms_enabled()
+    try:
+        torch.use_deterministic_algorithms(True)
+        mixed = EventMix(
+            probability=1.0,
+            beta=1.0,
+            components=3,
+        )(frames, targets)
+    finally:
+        torch.use_deterministic_algorithms(deterministic_before)
 
     assert mixed.frames.shape == frames.shape
     assert mixed.frames.device.type == "cuda"

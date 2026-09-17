@@ -21,11 +21,12 @@ class MixedBatch:
 
 
 class EventMix:
-    """Paper-aligned EventMix with an explicit diagonal-GMM reconstruction.
+    """EventMix using the paper defaults and the authors' public GMM realization.
 
-    The paper fixes probability, beta area distribution, component count and distance-based
-    labels, but does not fully specify how random GMM covariance or pooling resolution are drawn.
-    Those choices are therefore explicit configuration values in this implementation.
+    The public BrainCog code supplies the details omitted by the paper: component means are
+    sampled on the encoded grid, diagonal scales follow ``0.5 * max(U(0, 1), 0.1)`` per axis,
+    and unnormalised Gaussian kernels define a full-resolution mask.  We retain the paper's
+    relative-distance labels, which outperform count- and area-based labels in its ablation.
     """
 
     def __init__(
@@ -34,30 +35,22 @@ class EventMix:
         probability: float,
         beta: float,
         components: int,
-        gmm_scale_min: float,
-        gmm_scale_max: float,
-        mask_grid_size: int,
-        distance_spatial_pool: int,
     ) -> None:
         self.probability = float(probability)
         self.beta = float(beta)
         self.components = int(components)
-        self.gmm_scale_min = float(gmm_scale_min)
-        self.gmm_scale_max = float(gmm_scale_max)
-        self.mask_grid_size = int(mask_grid_size)
-        self.distance_spatial_pool = int(distance_spatial_pool)
-        self._grid_cache: dict[tuple[int, int, str, int | None], tuple[torch.Tensor, ...]] = {}
+        self._grid_cache: dict[tuple[int, int, int, str, int | None], tuple[torch.Tensor, ...]] = {}
 
     def _coordinate_grid(
-        self, time_steps: int, grid_size: int, device: torch.device
+        self, time_steps: int, height: int, width: int, device: torch.device
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        key = (time_steps, grid_size, device.type, device.index)
+        key = (time_steps, height, width, device.type, device.index)
         cached = self._grid_cache.get(key)
         if cached is not None:
             return cached
-        temporal = torch.linspace(0.0, 1.0, time_steps, device=device).view(1, 1, -1, 1, 1)
-        vertical = torch.linspace(0.0, 1.0, grid_size, device=device).view(1, 1, 1, -1, 1)
-        horizontal = torch.linspace(0.0, 1.0, grid_size, device=device).view(1, 1, 1, 1, -1)
+        temporal = torch.arange(time_steps, device=device, dtype=torch.float32).view(1, -1, 1, 1)
+        vertical = torch.arange(height, device=device, dtype=torch.float32).view(1, 1, -1, 1)
+        horizontal = torch.arange(width, device=device, dtype=torch.float32).view(1, 1, 1, -1)
         self._grid_cache[key] = (temporal, vertical, horizontal)
         return temporal, vertical, horizontal
 
@@ -69,49 +62,71 @@ class EventMix:
         width: int,
         device: torch.device,
     ) -> torch.Tensor:
-        grid_size = min(self.mask_grid_size, height, width)
-        temporal, vertical, horizontal = self._coordinate_grid(time_steps, grid_size, device)
-        means = torch.rand(samples, self.components, 3, device=device)
-        scales = self.gmm_scale_min + (
-            self.gmm_scale_max - self.gmm_scale_min
-        ) * torch.rand(samples, self.components, 3, device=device)
+        temporal, vertical, horizontal = self._coordinate_grid(time_steps, height, width, device)
+        axis_sizes = torch.tensor([time_steps, height, width], device=device, dtype=torch.float32)
+        means = torch.stack(
+            [
+                torch.randint(time_steps, (samples, self.components), device=device),
+                torch.randint(height, (samples, self.components), device=device),
+                torch.randint(width, (samples, self.components), device=device),
+            ],
+            dim=-1,
+        ).to(torch.float32)
+        scales = (
+            torch.rand(samples, self.components, 3, device=device).clamp_min(0.1) * axis_sizes * 0.5
+        )
         weights = torch.rand(samples, self.components, device=device)
-        weights = weights / weights.sum(dim=1, keepdim=True)
 
-        squared_distance = (
-            ((temporal - means[:, :, 0, None, None, None]) / scales[:, :, 0, None, None, None])
-            .square()
-            .add(
-                ((vertical - means[:, :, 1, None, None, None]) / scales[:, :, 1, None, None, None])
-                .square()
-            )
-            .add(
-                ((horizontal - means[:, :, 2, None, None, None]) / scales[:, :, 2, None, None, None])
-                .square()
-            )
+        # Accumulate one component at a time.  This preserves the full T x H x W mask without
+        # materialising an additional samples x components x T x H x W tensor.
+        scores = torch.full(
+            (samples, time_steps, height, width),
+            -torch.inf,
+            device=device,
+            dtype=torch.float32,
         )
-        component_log_scores = (
-            -0.5 * squared_distance
-            - scales.prod(dim=2).log()[:, :, None, None, None]
-            + weights.log()[:, :, None, None, None]
-        )
-        scores = torch.logsumexp(component_log_scores, dim=1)
+        for component in range(self.components):
+            squared_distance = (
+                (
+                    (temporal - means[:, component, 0, None, None, None])
+                    / scales[:, component, 0, None, None, None]
+                )
+                .square()
+                .add(
+                    (
+                        (vertical - means[:, component, 1, None, None, None])
+                        / scales[:, component, 1, None, None, None]
+                    ).square()
+                )
+                .add(
+                    (
+                        (horizontal - means[:, component, 2, None, None, None])
+                        / scales[:, component, 2, None, None, None]
+                    ).square()
+                )
+            )
+            component_scores = (
+                -0.5 * squared_distance
+                + weights[:, component, None, None, None]
+                .clamp_min(torch.finfo(torch.float32).tiny)
+                .log()
+            )
+            scores = torch.logaddexp(scores, component_scores)
 
         concentration = torch.full((samples,), self.beta, device=device)
         fractions = torch.distributions.Beta(concentration, concentration).sample()
         flattened = scores.flatten(1)
-        ordered_indices = flattened.argsort(dim=1)
-        selected_counts = (fractions * flattened.shape[1]).round().long()
-        selected_counts.clamp_(1, flattened.shape[1] - 1)
-        ranked_mask = torch.arange(flattened.shape[1], device=device)[None] < selected_counts[:, None]
-        low_resolution = torch.zeros_like(flattened, dtype=torch.bool)
-        low_resolution.scatter_(1, ordered_indices, ranked_mask)
-        low_resolution = low_resolution.reshape_as(scores)
-        return functional.interpolate(
-            low_resolution[:, None].to(torch.float32),
-            size=(time_steps, height, width),
-            mode="nearest",
-        ).squeeze(1).bool()
+        primary_counts = (fractions * flattened.shape[1]).round().long()
+        primary_counts.clamp_(1, flattened.shape[1] - 1)
+        masks = []
+        for sample_index, primary_count in enumerate(primary_counts.tolist()):
+            # CUDA kthvalue is incompatible with the repository's deterministic mode. topk
+            # still avoids a complete argsort and selects the requested area exactly.
+            selected = flattened[sample_index].topk(primary_count, sorted=False).indices
+            mask = torch.zeros_like(flattened[sample_index], dtype=torch.bool)
+            mask.scatter_(0, selected, True)
+            masks.append(mask)
+        return torch.stack(masks).reshape_as(scores)
 
     @staticmethod
     def _partner_indices(batch_size: int, device: torch.device) -> torch.Tensor:
@@ -126,16 +141,11 @@ class EventMix:
         secondary: torch.Tensor,
         mixed: torch.Tensor,
     ) -> torch.Tensor:
-        pool = min(self.distance_spatial_pool, primary.shape[-2], primary.shape[-1])
-
         def spatial_average(frames: torch.Tensor) -> torch.Tensor:
-            channels_first = frames.permute(0, 2, 1, 3, 4)
-            return functional.avg_pool3d(
-                channels_first,
-                kernel_size=(1, pool, pool),
-                stride=(1, pool, pool),
-                ceil_mode=True,
-            )
+            batch_size, time_steps, channels, height, width = frames.shape
+            flattened = frames.reshape(batch_size * time_steps, channels, height, width)
+            averaged = functional.avg_pool2d(flattened, kernel_size=3, stride=1, padding=1)
+            return averaged.reshape(batch_size, time_steps, channels, height, width)
 
         pooled_primary = spatial_average(primary)
         pooled_secondary = spatial_average(secondary)
@@ -146,7 +156,9 @@ class EventMix:
         numerator = distance_secondary.square()
         denominator = distance_primary.square() + numerator
         fallback = torch.full_like(denominator, 0.5)
-        return torch.where(denominator > torch.finfo(denominator.dtype).eps, numerator / denominator, fallback)
+        return torch.where(
+            denominator > torch.finfo(denominator.dtype).eps, numerator / denominator, fallback
+        )
 
     @torch.no_grad()
     def __call__(self, frames: EncodedInput, targets: torch.Tensor) -> MixedBatch:
@@ -163,9 +175,9 @@ class EventMix:
         primary_weights = torch.ones(batch_size, device=frames.device, dtype=frames.dtype)
         selected = apply.nonzero(as_tuple=False).flatten()
         if selected.numel():
-            mask = self._gmm_mask(
-                int(selected.numel()), time_steps, height, width, frames.device
-            )[:, :, None]
+            mask = self._gmm_mask(int(selected.numel()), time_steps, height, width, frames.device)[
+                :, :, None
+            ]
             selected_primary = frames.index_select(0, selected)
             selected_secondary = secondary.index_select(0, selected)
             selected_mixed = torch.where(mask, selected_primary, selected_secondary)
@@ -190,8 +202,4 @@ def build_batch_augmentation(config: dict[str, Any]) -> EventMix | None:
         probability=probability,
         beta=float(config["event_mix_beta"]),
         components=int(config["event_mix_components"]),
-        gmm_scale_min=float(config["event_mix_gmm_scale_min"]),
-        gmm_scale_max=float(config["event_mix_gmm_scale_max"]),
-        mask_grid_size=int(config["event_mix_mask_grid_size"]),
-        distance_spatial_pool=int(config["event_mix_distance_spatial_pool"]),
     )

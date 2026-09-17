@@ -239,9 +239,11 @@ combinazione. L'augmentation viene disabilitata in validation e nelle valutazion
 
 EventMix è implementato una sola volta nel training engine: genera maschere GMM 3D, usa partner
 senza self-mixing e combina le due cross-entropy per sample con il peso derivato dalla distanza fra
-event stream mediati spazialmente. I parametri non completamente specificati dall'articolo
-(intervallo delle scale GMM, griglia della maschera e pooling della distanza) sono salvati nella
-config risolta.
+event stream mediati spazialmente. Il paper non specifica tutti i dettagli di campionamento della
+GMM; il codice BrainCog pubblico degli autori fornisce una realizzazione concreta, adottata qui:
+maschera alla risoluzione completa, kernel Gaussiani non normalizzati e smoothing spaziale 3×3
+senza downsampling per le relative-distance label. Restano espliciti nella config i parametri
+sperimentali pubblicati `p`, `Beta`, numero di componenti e modalità di label.
 
 Le estensioni future devono rispettare la stessa separazione:
 

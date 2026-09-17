@@ -384,6 +384,11 @@ def test_supervised_refinement_accepts_only_declared_multi_family_combinations(m
     with pytest.raises(ValueError, match="exactly one family"):
         workflows.run_supervised_refinement(config)
 
+    config["refinement"]["stage"] = "combination"
+    config["augmentation"]["horizontal_flip_probability"] = 0.0
+    with pytest.raises(ValueError, match="exactly two families"):
+        workflows.run_supervised_refinement(config)
+
 
 def test_runner_overfit_early_stops_and_records_actual_subset(tmp_path, monkeypatch):
     frames = torch.tensor([[1., 0.], [1., 0.], [0., 1.], [0., 1.]])

@@ -365,10 +365,6 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         "event_mix_beta",
         "event_mix_components",
         "event_mix_label_mode",
-        "event_mix_gmm_scale_min",
-        "event_mix_gmm_scale_max",
-        "event_mix_mask_grid_size",
-        "event_mix_distance_spatial_pool",
     }
     unsupported_augmentations = set(augmentation) - supported_augmentations
     if unsupported_augmentations:
@@ -400,30 +396,12 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         beta = augmentation.get("event_mix_beta")
         components = augmentation.get("event_mix_components")
         label_mode = augmentation.get("event_mix_label_mode")
-        scale_minimum = augmentation.get("event_mix_gmm_scale_min")
-        scale_maximum = augmentation.get("event_mix_gmm_scale_max")
-        mask_grid_size = augmentation.get("event_mix_mask_grid_size")
-        distance_pool = augmentation.get("event_mix_distance_spatial_pool")
         if type(beta) not in (int, float) or isinstance(beta, bool) or beta <= 0.0:
             raise ConfigError("augmentation.event_mix_beta must be positive")
         if type(components) is not int or components <= 0:
             raise ConfigError("augmentation.event_mix_components must be a positive integer")
         if label_mode != "relative_distance":
             raise ConfigError("augmentation.event_mix_label_mode must be relative_distance")
-        if (
-            type(scale_minimum) not in (int, float)
-            or isinstance(scale_minimum, bool)
-            or type(scale_maximum) not in (int, float)
-            or isinstance(scale_maximum, bool)
-            or not 0.0 < scale_minimum < scale_maximum <= 1.0
-        ):
-            raise ConfigError("EventMix GMM scales must satisfy 0 < minimum < maximum <= 1")
-        if type(mask_grid_size) is not int or mask_grid_size < 2:
-            raise ConfigError("augmentation.event_mix_mask_grid_size must be at least two")
-        if type(distance_pool) is not int or distance_pool <= 0:
-            raise ConfigError(
-                "augmentation.event_mix_distance_spatial_pool must be a positive integer"
-            )
         if is_multigranular:
             raise ConfigError("EventMix currently requires a single encoded tensor stream")
 

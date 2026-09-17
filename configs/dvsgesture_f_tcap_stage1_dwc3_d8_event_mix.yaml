@@ -25,10 +25,6 @@ augmentation:
   event_mix_beta: 1.0
   event_mix_components: 3
   event_mix_label_mode: relative_distance
-  event_mix_gmm_scale_min: 0.08
-  event_mix_gmm_scale_max: 0.35
-  event_mix_mask_grid_size: 32
-  event_mix_distance_spatial_pool: 4
 
 evaluation:
   absolute_prefix_times_us: [2000000, 5000000, 10000000, 15000000, 20000000]
