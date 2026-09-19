@@ -314,8 +314,13 @@ def test_cross_resolution_objective_trains_only_student_predictor():
     assert result.metrics["predictive_pair_coverage"] > 0
     result.total_loss.backward()
     assert student.predictive_head is not None
-    assert student.predictive_head.weight.grad is not None
-    assert torch.isfinite(student.predictive_head.weight.grad).all()
+    predictor_gradients = [
+        parameter.grad for parameter in student.predictive_head.parameters()
+    ]
+    assert predictor_gradients
+    assert all(gradient is not None for gradient in predictor_gradients)
+    assert all(torch.isfinite(gradient).all() for gradient in predictor_gradients)
+    assert sum(float(gradient.abs().sum()) for gradient in predictor_gradients) > 0.0
     assert all(parameter.grad is None for parameter in teacher.parameters())
 
 
@@ -363,5 +368,10 @@ def test_cuda_amp_cross_resolution_objective_at_dvslip_shape():
         )
     result.total_loss.backward()
     assert student.predictive_head is not None
-    assert student.predictive_head.weight.grad is not None
-    assert torch.isfinite(student.predictive_head.weight.grad).all()
+    predictor_gradients = [
+        parameter.grad for parameter in student.predictive_head.parameters()
+    ]
+    assert predictor_gradients
+    assert all(gradient is not None for gradient in predictor_gradients)
+    assert all(torch.isfinite(gradient).all() for gradient in predictor_gradients)
+    assert sum(float(gradient.abs().sum()) for gradient in predictor_gradients) > 0.0
