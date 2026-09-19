@@ -107,7 +107,7 @@ invariati. Non cambiare kernel, ritardi o soglia del gate.
 
 Questa fase usa esclusivamente `predictive-continuation`: il workflow carica C0, esegue
 automaticamente il preflight di equivalenza/causalità/gradienti, applica il bounded overfit e
-avvia le 32 epoche solo se il gate passa. Il best di training conserva i moduli ausiliari;
+avvia le 64 epoche solo se il gate passa. Il best di training conserva i moduli ausiliari;
 `deployment.pt` e `deployment_config_resolved.yaml` rimuovono predictor cross-resolution e ogni
 predittore TCAP non usato in inferenza. Prima di ogni campagna eseguire sul commit scelto:
 
@@ -117,14 +117,16 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/dataset_workflow.sh dvslip check
 
 Le due diagnostiche P0 non addestrano il classificatore. Il probe fine usa due sottoinsiemi
 disgiunti del development-train e scrive anche la normalizzazione per canale richiesta da P-F.
-La diagnostica TCAP fitta soltanto i coefficienti convessi del probe e valuta storia/errore.
+La diagnostica TCAP fitta i coefficienti convessi della baseline compressa e valuta storia/errore;
+non sostituisce il test addestrato del predictor MIMO/spaziale configurato nei bracci S.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-p0-fine -- predictive-probe --config configs/dvslip_predictive_fine_future.yaml --output artifacts/predictive_diagnostics/fine_future_probe.json --train-samples 512 --validation-samples 256
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-p0-tcap -- tcap-predictive-probe --config configs/dvslip_f_tcap_stage1_dwc3_d8.yaml --checkpoint checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt --output artifacts/predictive_diagnostics/tcap_predictive_probe.json --fit-samples 256 --holdout-samples 256
 ```
 
-Se P0 è valido, avviare prima il solo controllo R0. P-F e D possono partire in parallelo soltanto
+Se P0 è valido, avviare prima il solo controllo R0. P-F usa il predictor spaziale training-only;
+D usa il router locale `C→C/2→4`. Possono partire in parallelo soltanto
 dopo che R0 ha confermato la ricetta comune; il file prodotto dal probe fine è un input tracciato
 di P-F.
 
@@ -147,6 +149,7 @@ altrimenti usare S0/S1 senza router di contenuto. Non eseguire entrambe le coppi
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-p0-coarse -- predictive-probe --config configs/dvslip_predictive_coarse_future.yaml --output artifacts/predictive_diagnostics/coarse_future_probe.json --train-samples 512 --validation-samples 256
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-p0-fine-same -- predictive-probe --config configs/dvslip_predictive_fine_same.yaml --output artifacts/predictive_diagnostics/fine_same_probe.json --train-samples 512 --validation-samples 256
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-fine-same -- predictive-continuation --config configs/dvslip_predictive_fine_same.yaml
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-coarse-future -- predictive-continuation --config configs/dvslip_predictive_coarse_future.yaml
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-late-prefix -- predictive-continuation --config configs/dvslip_predictive_late_prefix.yaml

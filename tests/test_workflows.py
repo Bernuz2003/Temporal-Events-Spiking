@@ -416,6 +416,18 @@ def test_predictive_continuation_failure_blocks_the_full_run(tmp_path, monkeypat
     assert calls[0]["training"]["epochs"] == 50
 
 
+def test_predictive_continuation_rejects_recipe_and_representation_drift():
+    config = load_config("configs/dvslip_predictive_r0.yaml")
+    config["training"]["learning_rate"] = 2e-4
+    with pytest.raises(ValueError, match="canonical training"):
+        workflows.run_predictive_continuation(config)
+
+    config = load_config("configs/dvslip_predictive_r0.yaml")
+    config["representation"]["bin_width_us"] = 25_000
+    with pytest.raises(ValueError, match="preregistered representation"):
+        workflows.run_predictive_continuation(config)
+
+
 def test_runner_overfit_early_stops_and_records_actual_subset(tmp_path, monkeypatch):
     frames = torch.tensor([[1., 0.], [1., 0.], [0., 1.], [0., 1.]])
     targets = torch.tensor([0, 0, 1, 1])

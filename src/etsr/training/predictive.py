@@ -12,6 +12,8 @@ from torch import nn
 
 from etsr.data.events import EncodedInput, slice_encoded_time
 from etsr.models.mini_qkformer import MiniQKFormer
+from etsr.reproducibility import git_commit
+from etsr.utils.io import sha256_file
 
 
 def freeze_batchnorm_running_statistics(module: nn.Module) -> None:
@@ -33,21 +35,16 @@ def last_occupied_steps(frames: EncodedInput) -> torch.Tensor:
 def _balanced_masked_loss(
     prediction: torch.Tensor,
     target: torch.Tensor,
-    valid_target_steps: torch.Tensor,
-    target_offset: int,
+    valid_context_steps: torch.Tensor,
 ) -> tuple[torch.Tensor, float]:
-    """Smooth-L1 with equal sample weight over target steps preceding each endpoint."""
+    """Smooth-L1 with equal sample weight over one matched set of context indices."""
 
     if prediction.shape != target.shape:
         raise ValueError("Predictive target and prediction shapes differ.")
     per_step = nn.functional.smooth_l1_loss(prediction, target.detach(), reduction="none")
     per_step = per_step.flatten(2).mean(2)  # [T, B]
-    target_positions = torch.arange(
-        target_offset,
-        target_offset + prediction.shape[0],
-        device=prediction.device,
-    ).unsqueeze(1)
-    mask = target_positions < valid_target_steps.unsqueeze(0)
+    context_positions = torch.arange(prediction.shape[0], device=prediction.device).unsqueeze(1)
+    mask = context_positions < valid_context_steps.unsqueeze(0)
     counts = mask.sum(0)
     valid_samples = counts > 0
     if not bool(valid_samples.any().item()):
@@ -69,7 +66,12 @@ class PredictiveTrainingObjective:
 
     MODES = {"none", "fine_future", "fine_same", "coarse_future", "late_prefix"}
 
-    def __init__(self, config: dict[str, Any], teacher: MiniQKFormer | None = None) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        teacher: MiniQKFormer | None = None,
+        provenance: dict[str, Any] | None = None,
+    ) -> None:
         self.config = config
         self.mode = str(config.get("mode", "none"))
         if self.mode not in self.MODES:
@@ -86,6 +88,26 @@ class PredictiveTrainingObjective:
         normalization_report = config.get("normalization_report")
         if normalization_report is not None:
             report = json.loads(Path(normalization_report).read_text(encoding="utf-8"))
+            if provenance is None:
+                raise ValueError("Normalization report validation requires continuation provenance.")
+            expected = {
+                "schema_version": 2,
+                "mode": self.mode,
+                "horizon_steps": self.horizon,
+                "alignment_horizon_steps": self.alignment_horizon,
+                "probe_geometry": "shared_dense_affine_1x1_per_spatial_position",
+                "probe_git_commit": git_commit(),
+                "student_checkpoint_sha256": sha256_file(provenance["parent_checkpoint"]),
+                "teacher_checkpoint_sha256": sha256_file(provenance["teacher_checkpoint"]),
+                "representation": provenance["representation"],
+            }
+            mismatches = {
+                key: (report.get(key), value)
+                for key, value in expected.items()
+                if report.get(key) != value
+            }
+            if mismatches:
+                raise ValueError(f"Normalization report provenance mismatch: {mismatches}")
             standardization = report["target_standardization"]
             self.target_mean = torch.tensor(
                 standardization["mean_by_channel"], dtype=torch.float32
@@ -154,8 +176,7 @@ class PredictiveTrainingObjective:
             auxiliary, coverage = _balanced_masked_loss(
                 prediction,
                 target,
-                last_occupied_steps(frames),
-                target_offset,
+                (last_occupied_steps(frames) - self.alignment_horizon).clamp_min(0),
             )
             auxiliary_terms.append(auxiliary)
             metrics.update(

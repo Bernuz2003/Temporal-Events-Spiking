@@ -48,9 +48,15 @@ e un aumento di PrefixAUC non equivale a un aumento di accuracy finale.
 
 ## 3. Scelta di budget: continuazione controllata, non nuovi full da 128 epoche
 
-La prima ricerca usa **32 epoche aggiuntive** dal medesimo C0, senza modificare la durata per
+La discovery usa **64 epoche aggiuntive** dal medesimo C0, senza modificare la durata per
 salvare un candidato. Ogni braccio parte nuovamente da C0, mai dal best di un altro braccio,
 incluse le fusioni. Così una combinazione non riceve più aggiornamenti dei singoli componenti.
+
+La capacità aggiuntiva viene assegnata al meccanismo studiato prima della compressione:
+predictor cross-resolution spaziale training-only, router TCAP locale e predictor surprise
+MIMO. Backbone, classificatore, embedding e matrici TCAP restano invariati. Le formulazioni
+lineari, globali e depthwise restano ablation future di compressione, non l'unico test con cui
+rigettare l'ipotesi.
 
 Questo è uno studio di fine-tuning dopo pretraining supervisionato comune. Un risultato negativo
 chiude questa formulazione nel budget assegnato; non dimostra che il metodo non possa funzionare
@@ -59,11 +65,11 @@ fra architetture addestrate tutte da zero.
 
 | Elemento | Scelta fissata per tutti i bracci |
 |---|---|
-| Recipe di fase | `dvslip_predictive_continuation_32_v1`, implementata e vincolata dal workflow dedicato |
+| Recipe di fase | `dvslip_predictive_continuation_64_v1`, implementata e vincolata dal workflow dedicato |
 | Dati e input deployato | split development esistente; E0, 40×50 ms; mean/fixed-window |
 | Augmentation | solo flip orizzontale 0,5 già presente in C0; niente nuove augmentation |
 | Ottimizzazione | AdamW nuovo, senza momenti ereditati; batch 16, accumulo 2 |
-| Schedule | 32 epoche; LR massimo `1e-4`, minimo `1e-6`, cosine; warmup 2 epoche da fattore 0,01 |
+| Schedule | 64 epoche; LR massimo `1e-4`, minimo `1e-6`, cosine; warmup 2 epoche da fattore 0,01 |
 | Altri parametri | weight decay `5e-4`, label smoothing 0,1, clipping 1,0, AMP |
 | BatchNorm student | running mean/variance di C0 fisse in tutti i bracci; affine apprendibile |
 | Teacher | pesi e statistiche fissi; modalità eval; nessuna augmentation indipendente |
@@ -73,6 +79,10 @@ fra architetture addestrate tutte da zero.
 Le scelte numeriche sono convenzioni pragmatiche preregistrate, non ottimi garantiti dalla
 letteratura. Il LR è ridotto rispetto alla discovery perché si parte da un modello allenato.
 Non si trasferisce questo LR come tuning universale ad altri dataset.
+
+Non si prolunga post-hoc un candidato negativo. Un'estensione comune a 96/128 epoche può essere
+preregistrata solo dopo lo screen per un candidato già positivo la cui curva a epoca 64 sia ancora
+crescente, insieme al controllo R0 con identico orizzonte. Non fa parte degli otto screening.
 
 **R0, controllo obbligatorio:** stessa continuazione senza auxiliary loss né router.
 L'epoca 0 viene valutata e registrata separatamente: deve riprodurre C0 entro tolleranza numerica.
@@ -117,13 +127,15 @@ nessun dato holdout entra in fit o normalizzazione. Questo holdout serve al prob
 nuova validation per selezionare decine di varianti; dopo il probe i training usano l'intero train.
 
 Si riportano errore normalizzato, varianza dei target e skill rispetto ai riferimenti banali,
-separati per attività e coda. Un probe che non batte la media non falsifica il principio, ma
-non giustifica questo teacher nel nostro budget: il ramo CRP si ferma prima del training e
-può subentrare il fallback PLIF-informed del §8. Un esito positivo è solo fattibilità.
+separati per attività e coda. Il probe è un lower bound affine `1×1`, mentre il predictor
+discovery può compensare movimento locale: un risultato debole non falsifica il principio.
+Target degenerati, leakage o allineamento errato fermano P-F; skill affine positiva lo rafforza,
+ma non è più un veto contro l'unica prova preregistrata. Un esito positivo resta solo fattibilità.
 
 ### P0.3 Errore predittivo e valore della storia
 
-Agli ingressi TCAP, confrontare un predittore causale depthwise con persistenza e media dei tap.
+Agli ingressi TCAP, confrontare il predittore causale convesso depthwise con persistenza e media
+dei tap come baseline diagnostica compressa.
 Usare errori normalizzati per scala dei canali, stimata sul train; valutare anche attività,
 transizioni e coda. Il confronto deve restare favorevole anche fuori dalla sola coda.
 
@@ -132,13 +144,15 @@ rimozione della storia, valutato sui sample di holdout. Il danno è diagnostico:
 una rete co-adattata non è il controfattuale di una rete riaddestrata. Le etichette di training
 possono servire a questa analisi, mai al router a inference.
 
-Se il predittore non supera i riferimenti banali o il segnale coincide soltanto con l'ampiezza,
-non si apre Surprise-TCAP. Non cerchiamo nuove soglie, tau o predittori per superare il gate.
+Il suo fallimento non rigetta il predictor MIMO/spaziale usato da S: segnala quanto costa la
+formulazione compressa. S0 è il controllo addestrato che stabilisce se il predictor capace
+apprende un residuo utile. Target degenerati o leakage fermano comunque il ramo.
 
 ## 5. P — supervisione predittiva, primo asse
 
-**P-F:** CE finale più predizione del target fine a t+2. Il predictor è una proiezione condivisa
-nel tempo, training-only; dimensione e costo vengono fissati prima del run. Non si tenta di
+**P-F:** CE finale più predizione del target fine a t+2. Il predictor training-only condiviso
+nel tempo usa `DWConv 3×3 → Conv 64→128 → GELU → Conv 128→64` (17.152 parametri), così può
+modellare movimento locale senza aumentare il modello deployato. Non si tenta di
 ricostruire eventi singoli o spike binari. Target e predizione sono confrontati nello spazio
 pre-LIF standardizzato per canale con statistiche del training e scala minima dichiarata.
 
@@ -172,17 +186,19 @@ Se P-0 è migliore, resta una distillazione utile, ma la tesi non attribuisce il
 
 ## 6. D — TCAP dinamico, secondo asse indipendente
 
-**D:** mantenere tap e matrici TCAP; introdurre soltanto pesi per tap dipendenti dal contenuto
-corrente. Nessun delay apprendibile e nessun routing spaziale per pixel.
+**D:** mantenere tap e matrici TCAP; introdurre pesi per tap dipendenti dal contenuto corrente
+alla risoluzione della feature TCAP. Nessun delay apprendibile.
 
 \[
-y_t=x_t+\sum_d g_{t,d}W_dx_{t-d},\qquad
-g_{t,d}=2\sigma([A\,\mathrm{GAP}(x_t)+b]_d).
+y_t=x_t+\sum_d g_{t,d,h,w}W_dx_{t-d},\qquad
+g_{t,d,h,w}=2\sigma(R(x_{t,:,h,w})_d).
 \]
 
-A e b iniziano a zero: sul checkpoint allenato la funzione iniziale coincide con C0, con gate
-unitari. Per i due mixer, il router aggiunge 776 parametri; operazioni e traffico vanno comunque
-misurati. P-F e D possono procedere in parallelo dopo R0: entrambi partono da C0.
+`R` è un MLP locale `C→C/2→4` implementato con convoluzioni `1×1`. L'ultimo affine
+inizia a zero: sul checkpoint allenato la funzione iniziale coincide con C0, con gate unitari.
+I due router aggiungono 10.728 parametri. La decisione locale evita che GAP diluisca una
+transizione confinata alla bocca; operazioni e traffico vengono profilati. P-F e D possono
+procedere in parallelo dopo R0: entrambi partono da C0.
 
 Sul best di D, confrontare senza riaddestrare gate dinamici e gate costanti pari alla media
 stimata sul train. Registrare distribuzioni dei gate e contributi effettivi `g*W*x`, non soltanto
@@ -197,20 +213,22 @@ Questo asse si apre solo dopo P0.3 e l'esito di D. Il residuo non viene interpre
 come «passato sbagliato»; non imponiamo che alta sorpresa sopprima la memoria.
 
 Si confrontano **S0 e S1**, entrambi da C0 con lo stesso predittore, la stessa loss predittiva e
-lo stesso budget. Il predittore depthwise usa i quattro tap, con coefficienti normalizzati
-non negativi: è una combinazione convessa del passato, non un modello generale del movimento.
-Il suo limite resta esplicito. La loss ricostruisce x corrente con target stop-gradient;
+lo stesso budget. Per ogni tap il predictor applica una depthwise `3×3` causale e una proiezione
+MIMO `C→C`; somma poi i quattro contributi. Aggiunge 88.832 parametri e può modellare movimento
+locale e dinamiche cross-channel. I kernel spaziali partono come identità e le proiezioni come
+media diagonale dei tap. La loss ricostruisce x corrente con target stop-gradient;
 scala, peso 0,1 e ramp-up sono fissati come nel ramo P. Non si sommano ancora le loss P e S.
 
 | Braccio | Accesso del router all'errore | Ruolo |
 |---|---|---|
 | S0 | nessuno | controllo del beneficio della sola auxiliary loss/predittore |
-| S1 | un residuo normalizzato aggiuntivo | misura il valore dell'errore per il routing |
+| S1 | residuo normalizzato per canale `C→4` | misura il valore dell'errore per il routing |
 
-Se D ha superato lo screen, entrambi contengono il router di contenuto D; altrimenti si usa un
-router per tap con bias e ingresso di errore, senza introdurre anche il termine di contenuto.
+Se D ha superato lo screen, entrambi contengono il router di contenuto D; altrimenti S1 usa solo
+coefficienti per tap moltiplicati per l'errore, senza bias né termine di contenuto.
 Questa diramazione è decisa dall'esito di D, non scegliendo dopo quale variante S funzioni meglio.
-In S1 i coefficienti dell'errore sono inizialmente zero e possono apprendere entrambi i segni.
+In S1 la proiezione lineare dell'errore per canale aggiunge 768 parametri; parte da zero e può
+apprendere entrambi i segni.
 Non si sovrappongono due gate moltiplicativi con scale non identificabili.
 
 Il residuo passato al router è staccato dal gradiente: la classificazione allena i coefficienti
@@ -287,7 +305,7 @@ compatibile con i controlli. Nessuna soglia o budget viene abbassata dopo un ris
 Si sceglie un vincitore della supervisione (P-F, P-0, P-C, oppure L) e uno del routing (D oppure
 S1, che può già contenere D). Se solo uno è positivo, non si forza la combinazione.
 
-**FUS:** i due vincitori insieme, da C0 per le stesse 32 epoche. Per conservare la forza delle
+**FUS:** i due vincitori insieme, da C0 per le stesse 64 epoche. Per conservare la forza delle
 singole loss, i pesi già fissati non cambiano; qualora siano presenti due auxiliary loss si
 registrano separatamente anche le norme del gradiente totale. L'aumento dell'obiettivo ausiliario
 è un'interazione da dichiarare, non prova automatica di sinergia. Non si aggiunge una griglia di
@@ -331,15 +349,16 @@ Non si promette quindi generalizzazione dell'intera pipeline prima di poterla va
 | 6 | vincitore + R0, seed 43/44 | 4 | candidato seed 42 scelto |
 | 7 | trasferimento possibile + controllo Gesture seed 42 | fino a 2 | conferma Lip, teacher disponibili |
 
-**Massimo screening: 8 training da 32 epoche**, non otto full da 128; spesso meno perché i rami
+**Massimo screening: 8 training da 64 epoche**, non otto full da 128; spesso meno perché i rami
 sono condizionali. Massimo fino a conferma Lip: 12 continuazioni; con trasferimento: 14.
-Otto continuazioni hanno 256 epoche student totali, nominalmente due full storici; non sono
+Otto continuazioni hanno 512 epoche student totali, nominalmente quattro full storici; non sono
 equivalenti in ore GPU perché il teacher può aggiungere costo significativo.
 
 Prima del primo run P si converte il throughput misurato in un preventivo e si registra un tetto
-in GPU-ore. **Tetto discovery: tre volte il tempo di training del full C0 seed 42**, comprensivo
-di controllo, teacher online, probe, gate e fusioni; conferma e trasferimento hanno budget
-separato. La somma di `epoch_seconds` del C0 è 8,972 ore: il tetto è quindi **26,92 GPU-ore**;
+in GPU-ore. Il budget discovery pianificato è **cinque volte** il training del full C0 seed 42;
+il limite invalicabile è **sei volte**, comprensivo di controllo, teacher online, probe, gate e
+fusioni. Conferma e trasferimento hanno budget separato. Con 8,972 ore per C0, i due valori sono
+**44,86** e **53,83 GPU-ore**;
 il budget dei nuovi run include anche le valutazioni necessarie, non soltanto gli optimizer step.
 Non basta restare entro il numero di run. Se il preventivo non rientra, si sospende
 per primo S, poi la fusione; non si tagliano i controlli necessari per attribuire P o D.

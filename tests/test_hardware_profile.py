@@ -119,6 +119,56 @@ def test_hardware_profile_counts_pyramidal_pooling_and_temporal_fir_state():
     assert first["state_reads"] > first["state_writes"]
 
 
+def test_conditional_tcap_profile_counts_router_once_and_surprise_primitives():
+    frames = torch.rand(1, 4, 2, 32, 32)
+    loader = DataLoader(TensorDataset(frames, torch.tensor([0]), torch.arange(1)))
+    common = {
+        "in_channels": 2,
+        "num_classes": 4,
+        "embed_dim": 32,
+        "num_heads": 4,
+        "frontend": "pyramidal",
+        "temporal_channel_mixer": True,
+        "temporal_channel_mixer_delays": (1, 2),
+        "stage1_mixer": "depthwise_conv",
+    }
+    fixed = MiniQKFormer(**common).eval()
+    dynamic = MiniQKFormer(
+        **common, temporal_channel_mixer_dynamic_routing=True
+    ).eval()
+    dynamic.load_state_dict(fixed.state_dict(), strict=False)
+    fixed_profile = profile_model(fixed, loader, torch.device("cpu"), 1)
+    dynamic_profile = profile_model(dynamic, loader, torch.device("cpu"), 1)
+    router_macs = sum(
+        layer.get("multivalued_mac_potential", 0)
+        for name, layer in dynamic_profile["layers"].items()
+        if name.endswith("content_router")
+    )
+    assert (
+        dynamic_profile["operations_per_sample"]["multivalued_mac_potential"]
+        - fixed_profile["operations_per_sample"]["multivalued_mac_potential"]
+    ) == pytest.approx(router_macs)
+
+    surprise = MiniQKFormer(
+        **common,
+        temporal_channel_mixer_predictive_auxiliary=True,
+        temporal_channel_mixer_surprise_routing=True,
+    ).eval()
+    surprise.load_state_dict(fixed.state_dict(), strict=False)
+    surprise_profile = profile_model(surprise, loader, torch.device("cpu"), 1)
+    operations = surprise_profile["operations_per_sample"]
+    for field in (
+        "surprise_error_subtract",
+        "surprise_absolute_value",
+        "surprise_square",
+        "surprise_reduction_add",
+        "surprise_mean_scale_multiply",
+        "surprise_sqrt",
+        "surprise_divide",
+    ):
+        assert operations[field] > 0
+
+
 def test_hardware_profile_counts_temporal_capacity_and_plif_separately():
     frames = torch.rand(1, 4, 2, 32, 32)
     loader = DataLoader(TensorDataset(frames, torch.tensor([0]), torch.arange(1)))

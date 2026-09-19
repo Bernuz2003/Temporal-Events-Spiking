@@ -5,6 +5,8 @@ experiment:
 
 model:
   predictive_head: true
+  predictive_head_spatial_kernel_size: 3
+  predictive_head_hidden_channels: 128
 
 continuation:
   teacher_config: configs/dvslip_f_tcap_stage1_dwc3_d8.yaml

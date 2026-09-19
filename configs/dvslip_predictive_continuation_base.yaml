@@ -4,8 +4,8 @@ experiment:
   name: dvslip_predictive_continuation_base
 
 training:
-  recipe_id: dvslip_predictive_continuation_32_v1
-  epochs: 32
+  recipe_id: dvslip_predictive_continuation_64_v1
+  epochs: 64
   learning_rate: 0.0001
   min_learning_rate: 0.000001
   warmup_epochs: 2

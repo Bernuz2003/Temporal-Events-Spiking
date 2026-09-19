@@ -343,19 +343,33 @@ def run_supervised_refinement(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_predictive_continuation(config: dict[str, Any]) -> dict[str, Any]:
-    """Gate, run and profile one preregistered 32-epoch continuation."""
+    """Gate, run and profile one preregistered matched continuation."""
 
     validate_config(config)
     requested = copy.deepcopy(config)
     continuation = requested.get("continuation")
     if not isinstance(continuation, dict):
         raise ValueError("Predictive continuation requires a continuation section.")
-    if requested["training"].get("recipe_id") != "dvslip_predictive_continuation_32_v1":
-        raise ValueError("Predictive continuation requires the frozen 32-epoch recipe identifier.")
-    if int(requested["training"].get("epochs", 0)) != 32:
-        raise ValueError("Predictive continuation is fixed to 32 epochs.")
-    if requested["augmentation"] != {"horizontal_flip_probability": 0.5}:
-        raise ValueError("Predictive continuation must preserve the C0 flip-only augmentation.")
+    canonical = load_config("configs/dvslip_predictive_continuation_base.yaml")
+    for section in ("dataset", "augmentation", "evaluation", "training"):
+        if requested[section] != canonical[section]:
+            raise ValueError(
+                f"Predictive continuation must exactly preserve canonical {section}."
+            )
+    for field in ("parent_config", "parent_checkpoint", "freeze_batchnorm_statistics"):
+        if continuation.get(field) != canonical["continuation"].get(field):
+            raise ValueError(f"Predictive continuation must preserve canonical {field}.")
+
+    objective_mode = str(continuation["objective"].get("mode", "none"))
+    representation_reference = (
+        load_config("configs/dvslip_predictive_fine_future.yaml")["representation"]
+        if objective_mode in {"fine_future", "fine_same"}
+        else canonical["representation"]
+    )
+    if requested["representation"] != representation_reference:
+        raise ValueError(
+            "Predictive continuation must use the preregistered representation for its objective."
+        )
 
     parent = load_config(continuation["parent_config"])
     if parent["experiment"]["name"] != "dvslip_f_tcap_stage1_dwc3_d8":
@@ -364,8 +378,14 @@ def run_predictive_continuation(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Predictive continuation must preserve the parent dataset protocol.")
     allowed_model_fields = {
         "predictive_head",
+        "predictive_head_spatial_kernel_size",
+        "predictive_head_hidden_channels",
         "temporal_channel_mixer_dynamic_routing",
+        "temporal_channel_mixer_router_pooling",
+        "temporal_channel_mixer_router_hidden_divisor",
         "temporal_channel_mixer_predictive_auxiliary",
+        "temporal_channel_mixer_predictor_channel_groups",
+        "temporal_channel_mixer_predictor_spatial_kernel_size",
         "temporal_channel_mixer_surprise_routing",
     }
     stripped_model = {

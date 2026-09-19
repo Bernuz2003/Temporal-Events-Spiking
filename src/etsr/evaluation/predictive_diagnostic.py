@@ -15,7 +15,7 @@ from etsr.data.factory import build_dataset_bundle
 from etsr.models.factory import build_model
 from etsr.models.mini_qkformer import MiniQKFormer
 from etsr.models.temporal import CausalTemporalChannelMixer
-from etsr.reproducibility import seed_everything
+from etsr.reproducibility import git_commit, seed_everything
 from etsr.training.checkpointing import load_model_state
 from etsr.training.engine import evaluate, make_criterion
 from etsr.training.predictive import (
@@ -26,36 +26,63 @@ from etsr.training.predictive import (
 from etsr.utils.io import ensure_dir, sha256_file, write_json
 
 
-def _metric_summary(prediction: torch.Tensor, target: torch.Tensor) -> dict[str, float]:
-    error = prediction - target
-    mse = error.square().mean()
-    variance = (target - target.mean(0, keepdim=True)).square().mean().clamp_min(1e-12)
-    cosine = torch.nn.functional.cosine_similarity(prediction, target, dim=1).mean()
-    scale = target.square().mean().sqrt().clamp_min(1e-12)
-    return {
-        "r2_variance_normalized": float((1.0 - mse / variance).item()),
-        "nrmse_rms_target": float((mse.sqrt() / scale).item()),
-        "cosine_similarity": float(cosine.item()),
-        "mse": float(mse.item()),
-    }
+class _DenseMetricAccumulator:
+    """Streaming metrics for a spatially shared per-position linear predictor."""
+
+    def __init__(self, channels: int) -> None:
+        self.channels = channels
+        self.error_square_sum = 0.0
+        self.target_square_sum = 0.0
+        self.target_sum = torch.zeros(channels, dtype=torch.float64)
+        self.target_channel_square_sum = torch.zeros(channels, dtype=torch.float64)
+        self.cosine_sum = 0.0
+        self.rows = 0
+
+    def update(self, prediction: torch.Tensor, target: torch.Tensor) -> None:
+        prediction = prediction.reshape(-1, self.channels).float()
+        target = target.reshape(-1, self.channels).float()
+        self.error_square_sum += float((prediction - target).square().sum().item())
+        self.target_square_sum += float(target.square().sum().item())
+        self.target_sum += target.sum(0).double().cpu()
+        self.target_channel_square_sum += target.square().sum(0).double().cpu()
+        self.cosine_sum += float(
+            torch.nn.functional.cosine_similarity(prediction, target, dim=1).sum().item()
+        )
+        self.rows += len(target)
+
+    def summary(self) -> dict[str, float]:
+        elements = max(1, self.rows * self.channels)
+        mse = self.error_square_sum / elements
+        variance = float(
+            (
+                self.target_channel_square_sum
+                - self.target_sum.square() / max(1, self.rows)
+            ).sum().item()
+            / elements
+        )
+        target_rms = (self.target_square_sum / elements) ** 0.5
+        return {
+            "r2_variance_normalized": 1.0 - mse / max(variance, 1e-12),
+            "nrmse_rms_target": mse**0.5 / max(target_rms, 1e-12),
+            "cosine_similarity": self.cosine_sum / max(1, self.rows),
+            "mse": mse,
+            "dense_position_rows": self.rows,
+        }
 
 
 @torch.no_grad()
-def _extract_pairs(
+def _dense_pair_batches(
     student: MiniQKFormer,
     teacher: MiniQKFormer,
     loader,
     device: torch.device,
     mode: str,
     horizon: int,
+    alignment_horizon: int,
     max_samples: int,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, torch.Tensor, torch.Tensor, int]:
-    contexts = []
-    targets = []
-    persistence = []
-    target_sum = None
-    target_square_sum = None
-    target_count = 0
+):
+    """Yield matched dense rows from the exact geometry used by the 1x1 training head."""
+
     samples = 0
     for frames, _labels, _indices in loader:
         if samples >= max_samples:
@@ -63,55 +90,35 @@ def _extract_pairs(
         frames = move_encoded_input(frames, device)
         if not isinstance(frames, dict) and mode.startswith("fine_"):
             raise ValueError("Fine probe requires a multi-granular representation.")
-        context = student.extract_stage1(frames).mean(dim=(3, 4))
+        context = student.extract_stage1(frames)
         if mode.startswith("fine_"):
             assert isinstance(frames, dict)
             target_features = teacher.extract_fine_pre_lif(frames)
         else:
             target_features = teacher.extract_stage1(frames)
-        target_sequence = target_features.mean(dim=(3, 4))
         endpoint = last_occupied_steps(frames)
+        target_offset = horizon if mode.endswith("future") else 0
+        context_stop = context.shape[0] - alignment_horizon
         for batch_index in range(context.shape[1]):
             if samples >= max_samples:
                 break
-            stop = min(context.shape[0] - horizon, int(endpoint[batch_index].item()) - horizon)
+            stop = min(
+                context_stop,
+                int(endpoint[batch_index].item()) - alignment_horizon,
+            )
             if stop <= 0:
                 continue
-            contexts.append(context[:stop, batch_index].cpu())
-            sample_target = target_sequence[horizon : horizon + stop, batch_index]
-            targets.append(sample_target.cpu())
-            persistence.append(target_sequence[:stop, batch_index].cpu())
-            sample_target_features = target_features[
-                horizon : horizon + stop, batch_index
-            ]
-            channel_sum = sample_target_features.sum(dim=(0, 2, 3)).double().cpu()
-            channel_square_sum = (
-                sample_target_features.square().sum(dim=(0, 2, 3)).double().cpu()
+            sample_context = context[:stop, batch_index].permute(0, 2, 3, 1).reshape(
+                -1, context.shape[2]
             )
-            target_sum = channel_sum if target_sum is None else target_sum + channel_sum
-            target_square_sum = (
-                channel_square_sum
-                if target_square_sum is None
-                else target_square_sum + channel_square_sum
-            )
-            target_count += (
-                sample_target_features.shape[0]
-                * sample_target_features.shape[2]
-                * sample_target_features.shape[3]
-            )
+            sample_target = target_features[
+                target_offset : target_offset + stop, batch_index
+            ].permute(0, 2, 3, 1).reshape(-1, target_features.shape[2])
+            sample_persistence = target_features[:stop, batch_index].permute(
+                0, 2, 3, 1
+            ).reshape(-1, target_features.shape[2])
             samples += 1
-    if not contexts:
-        raise ValueError("No valid predictive pairs were extracted.")
-    assert target_sum is not None and target_square_sum is not None
-    return (
-        torch.cat(contexts),
-        torch.cat(targets),
-        torch.cat(persistence),
-        samples,
-        target_sum,
-        target_square_sum,
-        target_count,
-    )
+            yield sample_context, sample_target, sample_persistence, samples
 
 
 def _diagnostic_split(dataset, fit_samples: int, holdout_samples: int, seed: int):
@@ -128,32 +135,31 @@ def _diagnostic_split(dataset, fit_samples: int, holdout_samples: int, seed: int
     )
 
 
-def _fit_ridge(
-    train_x: torch.Tensor,
-    train_y: torch.Tensor,
-    validation_x: torch.Tensor,
+def _fit_dense_ridge(
+    batches,
+    channels: int,
     ridge: float,
-) -> tuple[torch.Tensor, dict[str, list[float]]]:
-    x_mean, x_std = train_x.mean(0), train_x.std(0, unbiased=False).clamp_min(1e-5)
-    y_mean, y_std = train_y.mean(0), train_y.std(0, unbiased=False).clamp_min(1e-5)
-    normalized_x = (train_x - x_mean) / x_std
-    normalized_y = (train_y - y_mean) / y_std
-    design = torch.cat((normalized_x, torch.ones(len(normalized_x), 1)), dim=1).double()
-    target = normalized_y.double()
-    penalty = torch.eye(design.shape[1], dtype=torch.float64) * ridge
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int]:
+    gram = torch.zeros(channels + 1, channels + 1, dtype=torch.float64)
+    cross = torch.zeros(channels + 1, channels, dtype=torch.float64)
+    target_sum = torch.zeros(channels, dtype=torch.float64)
+    target_square_sum = torch.zeros(channels, dtype=torch.float64)
+    rows = 0
+    samples = 0
+    for context, target, _persistence, sample_number in batches:
+        samples = sample_number
+        design = torch.cat((context.float(), torch.ones(len(context), 1, device=context.device)), 1)
+        gram += (design.T @ design).double().cpu()
+        cross += (design.T @ target.float()).double().cpu()
+        target_sum += target.sum(0).double().cpu()
+        target_square_sum += target.square().sum(0).double().cpu()
+        rows += len(target)
+    if rows == 0:
+        raise ValueError("No valid dense predictive pairs were extracted.")
+    penalty = torch.eye(channels + 1, dtype=torch.float64) * ridge
     penalty[-1, -1] = 0
-    weights = torch.linalg.solve(design.T @ design + penalty, design.T @ target)
-    validation_design = torch.cat(
-        (((validation_x - x_mean) / x_std), torch.ones(len(validation_x), 1)), dim=1
-    ).double()
-    prediction = (validation_design @ weights).float() * y_std + y_mean
-    normalization = {
-        "x_mean": x_mean.tolist(),
-        "x_std": x_std.tolist(),
-        "y_mean": y_mean.tolist(),
-        "y_std": y_std.tolist(),
-    }
-    return prediction, normalization
+    weights = torch.linalg.solve(gram / rows + penalty, cross / rows).float()
+    return weights, target_sum, target_square_sum, rows, samples
 
 
 def run_cross_resolution_probe(
@@ -171,8 +177,8 @@ def run_cross_resolution_probe(
         raise ValueError("Predictive probe requires a continuation configuration.")
     objective = continuation["objective"]
     mode = str(objective["mode"])
-    if mode not in {"fine_future", "coarse_future"}:
-        raise ValueError("Probe supports fine_future or coarse_future configurations.")
+    if mode not in {"fine_future", "fine_same", "coarse_future"}:
+        raise ValueError("Probe supports fine_future, fine_same or coarse_future configurations.")
     if max_train_samples <= 0 or max_validation_samples <= 0 or ridge <= 0:
         raise ValueError("Probe sample limits and ridge must be positive.")
 
@@ -198,55 +204,66 @@ def run_cross_resolution_probe(
     train_loader = build_loader(fit_dataset, probe_config["dataset"], shuffle=False)
     validation_loader = build_loader(holdout_dataset, probe_config["dataset"], shuffle=False)
     horizon = int(objective.get("horizon_steps", 2))
-    (
-        train_x,
-        train_y,
-        _train_persistence,
-        train_samples,
-        target_sum,
-        target_square_sum,
-        target_count,
-    ) = _extract_pairs(
-        student, teacher, train_loader, device, mode, horizon, max_train_samples
+    alignment_horizon = int(objective.get("alignment_horizon_steps", horizon))
+    channels = int(parent_config["model"].get("embed_dim", 128)) // 2
+    weights, target_sum, target_square_sum, target_count, train_samples = _fit_dense_ridge(
+        _dense_pair_batches(
+            student,
+            teacher,
+            train_loader,
+            device,
+            mode,
+            horizon,
+            alignment_horizon,
+            max_train_samples,
+        ),
+        channels,
+        ridge,
     )
-    (
-        validation_x,
-        validation_y,
-        validation_persistence,
-        validation_samples,
-        _holdout_sum,
-        _holdout_square_sum,
-        _holdout_count,
-    ) = _extract_pairs(
+    learned_metrics = _DenseMetricAccumulator(channels)
+    mean_metrics = _DenseMetricAccumulator(channels)
+    persistence_metrics = _DenseMetricAccumulator(channels)
+    train_target_mean = (target_sum / target_count).float()
+    validation_samples = 0
+    for context, target, persistence, sample_number in _dense_pair_batches(
         student,
         teacher,
         validation_loader,
         device,
         mode,
         horizon,
+        alignment_horizon,
         max_validation_samples,
-    )
-    prediction, normalization = _fit_ridge(train_x, train_y, validation_x, ridge)
-    mean_prediction = train_y.mean(0, keepdim=True).expand_as(validation_y)
+    ):
+        validation_samples = sample_number
+        design = torch.cat(
+            (context.float(), torch.ones(len(context), 1, device=context.device)), 1
+        )
+        prediction = design @ weights.to(context.device)
+        learned_metrics.update(prediction, target)
+        mean_metrics.update(train_target_mean.to(target.device).expand_as(target), target)
+        persistence_metrics.update(persistence, target)
+    if validation_samples == 0:
+        raise ValueError("No valid dense holdout pairs were extracted.")
     target_mean = target_sum / target_count
     target_variance = target_square_sum / target_count - target_mean.square()
     target_std = target_variance.clamp_min(1e-10).sqrt().clamp_min(1e-5)
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "mode": mode,
         "horizon_steps": horizon,
+        "alignment_horizon_steps": alignment_horizon,
         "train_samples": train_samples,
         "validation_samples": validation_samples,
-        "train_pairs": len(train_x),
-        "validation_pairs": len(validation_x),
+        "train_dense_position_rows": target_count,
+        "validation_dense_position_rows": learned_metrics.rows,
         "ridge": ridge,
-        "linear_probe": _metric_summary(prediction, validation_y),
-        "train_mean_baseline": _metric_summary(mean_prediction, validation_y),
-        "privileged_fine_persistence_baseline": _metric_summary(
-            validation_persistence, validation_y
-        ),
+        "probe_geometry": "shared_dense_affine_1x1_per_spatial_position",
+        "probe_git_commit": git_commit(),
+        "linear_probe": learned_metrics.summary(),
+        "train_mean_baseline": mean_metrics.summary(),
+        "privileged_target_persistence_baseline": persistence_metrics.summary(),
         "normalization_fit_on": "development_train_only",
-        "normalization": normalization,
         "target_standardization": {
             "mean_by_channel": target_mean.tolist(),
             "std_by_channel": target_std.tolist(),
@@ -260,6 +277,9 @@ def run_cross_resolution_probe(
             "disjoint_by_sample": True,
             "seed": int(config["experiment"]["seed"]),
         },
+        "representation": copy.deepcopy(config["representation"]),
+        "student_config": str(Path(continuation["parent_config"]).resolve()),
+        "teacher_config": str(Path(continuation["teacher_config"]).resolve()),
         "student_checkpoint": str(Path(continuation["parent_checkpoint"]).resolve()),
         "student_checkpoint_sha256": sha256_file(continuation["parent_checkpoint"]),
         "teacher_checkpoint": str(Path(continuation["teacher_checkpoint"]).resolve()),
@@ -286,7 +306,14 @@ def _load_continuation_model(
         weights_only=False,
     )
     incompatible = model.load_state_dict(checkpoint["model"], strict=False)
-    allowed = ("predictive_head.", ".content_router.", ".predictor_logits", ".surprise_router")
+    allowed = (
+        "predictive_head.",
+        ".content_router.",
+        ".predictor_logits",
+        ".predictor_spatial.",
+        ".predictor_projections.",
+        ".surprise_router",
+    )
     invalid = [key for key in incompatible.missing_keys if not any(item in key for item in allowed)]
     if invalid or incompatible.unexpected_keys:
         raise ValueError(
@@ -320,7 +347,11 @@ def run_predictive_preflight(
         teacher = build_model(teacher_config["model"], len(bundle.classes)).to(device)
         load_model_state(continuation["teacher_checkpoint"], teacher, device)
         teacher.eval().requires_grad_(False)
-    objective = PredictiveTrainingObjective(continuation["objective"], teacher)
+    objective = PredictiveTrainingObjective(
+        continuation["objective"],
+        teacher,
+        {**continuation, "representation": config["representation"]},
+    )
     loader = build_loader(bundle.validation, no_aug["dataset"], shuffle=False)
     frames, targets, _indices = next(iter(loader))
     frames = move_encoded_input(frames, device)
@@ -350,7 +381,12 @@ def run_predictive_preflight(
     with torch.no_grad():
         prefix = candidate.extract_stage1(frames)[:cutoff]
         altered_prefix = candidate.extract_stage1(altered)[:cutoff]
-    causal_difference = float((prefix - altered_prefix).abs().max().item())
+        encoded = candidate.encode_from_stage1(candidate.extract_stage1(frames))[:cutoff]
+        altered_encoded = candidate.encode_from_stage1(
+            candidate.extract_stage1(altered)
+        )[:cutoff]
+    stage1_causal_difference = float((prefix - altered_prefix).abs().max().item())
+    encoded_causal_difference = float((encoded - altered_encoded).abs().max().item())
 
     candidate.zero_grad(set_to_none=True)
     result = objective(
@@ -361,7 +397,14 @@ def run_predictive_preflight(
         epoch=max(1, int(continuation["objective"].get("ramp_epochs", 0))),
     )
     result.total_loss.backward()
-    diagnostic_tokens = ("predictive_head", "content_router", "predictor_logits", "surprise_router")
+    diagnostic_tokens = (
+        "predictive_head",
+        "content_router",
+        "predictor_logits",
+        "predictor_spatial",
+        "predictor_projections",
+        "surprise_router",
+    )
     gradient_norms = {
         name: (float(parameter.grad.norm().item()) if parameter.grad is not None else None)
         for name, parameter in candidate.named_parameters()
@@ -373,6 +416,16 @@ def run_predictive_preflight(
         if any(token in name for token in diagnostic_tokens)
         for value in [gradient_norms[name]]
     )
+    gradient_family_norms = {}
+    for token in diagnostic_tokens:
+        squared_norm = sum(
+            float(parameter.grad.double().square().sum().item())
+            for name, parameter in candidate.named_parameters()
+            if token in name and parameter.grad is not None
+        )
+        if any(token in name for name, _parameter in candidate.named_parameters()):
+            gradient_family_norms[token] = squared_norm**0.5
+    nonzero_gradients = all(value > 1e-12 for value in gradient_family_norms.values())
     teacher_gradients_absent = teacher is None or all(
         parameter.grad is None for parameter in teacher.parameters()
     )
@@ -384,12 +437,17 @@ def run_predictive_preflight(
         "parent_epoch": int(parent_checkpoint["epoch"]),
         "initial_logits_max_abs_difference": initial_difference,
         "initial_function_preserved": initial_difference <= 1e-6,
-        "causal_prefix_max_abs_difference": causal_difference,
-        "causal_prefix_passed": causal_difference <= 1e-6,
+        "stage1_causal_prefix_max_abs_difference": stage1_causal_difference,
+        "encoded_causal_prefix_max_abs_difference": encoded_causal_difference,
+        "causal_prefix_passed": max(
+            stage1_causal_difference, encoded_causal_difference
+        ) <= 1e-6,
         "total_loss_finite": bool(torch.isfinite(result.total_loss).item()),
         "objective_metrics": result.metrics,
         "new_parameter_gradient_norms": gradient_norms,
+        "new_parameter_gradient_family_norms": gradient_family_norms,
         "new_parameter_gradients_finite": finite_gradients,
+        "new_parameter_gradient_families_nonzero": nonzero_gradients,
         "teacher_gradients_absent": teacher_gradients_absent,
         "batchnorm_running_statistics": "fixed",
         "official_test_used": False,
@@ -400,6 +458,7 @@ def run_predictive_preflight(
             report["causal_prefix_passed"],
             report["total_loss_finite"],
             report["new_parameter_gradients_finite"],
+            report["new_parameter_gradient_families_nonzero"],
             report["teacher_gradients_absent"],
         )
     )
@@ -734,6 +793,7 @@ def run_dynamic_routing_diagnostic(
     load_model_state(checkpoint_path, model, device)
     model.eval().requires_grad_(False)
     gate_sums: dict[str, torch.Tensor] = {}
+    contribution_sums: dict[str, torch.Tensor] = {}
     gate_counts: dict[str, int] = {}
     handles = []
 
@@ -745,6 +805,12 @@ def run_dynamic_routing_diagnostic(
             observations = output.shape[0] * output.shape[1]
             values = stats["gate_mean_by_delay"].double().cpu() * observations
             gate_sums[name] = gate_sums.get(name, torch.zeros_like(values)) + values
+            contributions = stats.get("effective_contribution_mean_abs_by_delay")
+            if contributions is not None:
+                contribution_values = contributions.double().cpu() * observations
+                contribution_sums[name] = contribution_sums.get(
+                    name, torch.zeros_like(contribution_values)
+                ) + contribution_values
             gate_counts[name] = gate_counts.get(name, 0) + observations
 
         return collect
@@ -759,18 +825,27 @@ def run_dynamic_routing_diagnostic(
     for handle in handles:
         handle.remove()
     gate_means = {name: gate_sums[name] / gate_counts[name] for name in gate_sums}
+    contribution_means = {
+        name: contribution_sums[name] / gate_counts[name] for name in contribution_sums
+    }
 
     constant = build_model(config["model"], len(bundle.classes)).to(device)
     load_model_state(checkpoint_path, constant, device)
     constant.eval().requires_grad_(False)
     for name, module in constant.named_modules():
         if isinstance(module, CausalTemporalChannelMixer) and module.content_router is not None:
-            mean = gate_means[name].clamp(1e-5, 2 - 1e-5).to(
-                module.content_router.bias.device,
-                module.content_router.bias.dtype,
+            final = (
+                module.content_router[-1]
+                if isinstance(module.content_router, torch.nn.Sequential)
+                else module.content_router
             )
-            module.content_router.weight.zero_()
-            module.content_router.bias.copy_(torch.log(mean / (2 - mean)))
+            mean = gate_means[name].clamp(1e-5, 2 - 1e-5).to(
+                final.bias.device,
+                final.bias.dtype,
+            )
+            for parameter in module.content_router.parameters():
+                parameter.zero_()
+            final.bias.copy_(torch.log(mean / (2 - mean)))
 
     loader = build_loader(bundle.validation, no_aug["dataset"], shuffle=False)
     criterion = make_criterion(config["training"])
@@ -790,6 +865,9 @@ def run_dynamic_routing_diagnostic(
         },
         "train_gate_mean_by_module": {
             name: values.tolist() for name, values in gate_means.items()
+        },
+        "train_effective_contribution_mean_abs_by_module": {
+            name: values.tolist() for name, values in contribution_means.items()
         },
         "checkpoint": str(Path(checkpoint_path).resolve()),
         "checkpoint_sha256": sha256_file(checkpoint_path),

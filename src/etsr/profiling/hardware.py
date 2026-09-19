@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections import defaultdict
 from typing import Any
 
@@ -210,27 +211,73 @@ class _HardwareProfiler:
             self.totals["state_reads"] += history_reads
             self.totals["recurrent_state_updates"] += output.numel()
             if module.dynamic_routing:
-                router_macs = output.shape[0] * output.shape[1] * module.channels * len(module.delays)
-                pooling_adds = output.numel()
+                spatial_positions = math.prod(output.shape[3:]) if output.ndim > 3 else 1
+                routed_positions = spatial_positions if module.router_pooling == "local" else 1
+                router_macs = (
+                    output.shape[0]
+                    * output.shape[1]
+                    * routed_positions
+                    * module.channels
+                    * len(module.delays)
+                )
+                pooling_adds = output.numel() if module.router_pooling == "global" else 0
                 gate_multiplies = output.numel() * len(module.delays)
                 layer["content_router_mac"] += router_macs
                 layer["global_pool_add"] += pooling_adds
                 layer["tap_gate_multiply"] += gate_multiplies
-                self.totals["multivalued_mac_potential"] += router_macs
+                # Router Linear/Conv MACs are already included by their ordinary hooks.
                 self.totals["elementwise_add"] += pooling_adds
                 self.totals["elementwise_multiply"] += gate_multiplies
-                self.totals["sigmoid"] += output.shape[0] * output.shape[1] * len(module.delays)
+                self.totals["sigmoid"] += (
+                    output.shape[0]
+                    * output.shape[1]
+                    * routed_positions
+                    * len(module.delays)
+                )
             if module.predictive_auxiliary:
-                predictor_multiplies = output.numel() * len(module.delays)
+                predictor_multiplies = (
+                    output.numel() * len(module.delays)
+                    if module.predictor_logits is not None
+                    else 0
+                )
                 predictor_adds = output.numel() * max(0, len(module.delays) - 1)
                 layer["causal_predictor_multiply"] += predictor_multiplies
                 layer["causal_predictor_add"] += predictor_adds
                 self.totals["elementwise_multiply"] += predictor_multiplies
                 self.totals["elementwise_add"] += predictor_adds
             if module.surprise_routing:
-                surprise_router_macs = output.shape[0] * output.shape[1] * len(module.delays)
-                layer["surprise_router_mac"] += surprise_router_macs
-                self.totals["multivalued_mac_potential"] += surprise_router_macs
+                observations = output.shape[0] * output.shape[1] * module.channels
+                # The vector-error projection is an nn.Linear and is counted by its own hook.
+                surprise_gate_multiplies = 0
+                surprise_elements = output.numel()
+                surprise_reduction_adds = 2 * (surprise_elements - observations)
+                surprise_mean_scales = 2 * observations
+                surprise_logit_adds = (
+                    output.shape[0] * output.shape[1] * len(module.delays)
+                    if module.dynamic_routing
+                    else 0
+                )
+                layer["surprise_gate_multiply"] += surprise_gate_multiplies
+                layer["surprise_error_subtract"] += surprise_elements
+                layer["surprise_absolute_value"] += surprise_elements
+                layer["surprise_square"] += surprise_elements
+                layer["surprise_reduction_add"] += surprise_reduction_adds
+                layer["surprise_mean_scale_multiply"] += surprise_mean_scales
+                layer["surprise_sqrt"] += observations
+                layer["surprise_divide"] += observations
+                layer["surprise_logit_add"] += surprise_logit_adds
+                self.totals["elementwise_multiply"] += (
+                    surprise_gate_multiplies + surprise_mean_scales
+                )
+                self.totals["elementwise_add"] += surprise_logit_adds
+                self.totals["surprise_error_subtract"] += surprise_elements
+                self.totals["surprise_absolute_value"] += surprise_elements
+                self.totals["surprise_square"] += surprise_elements
+                self.totals["surprise_reduction_add"] += surprise_reduction_adds
+                self.totals["surprise_mean_scale_multiply"] += surprise_mean_scales
+                self.totals["surprise_sqrt"] += observations
+                self.totals["surprise_divide"] += observations
+                self.totals["surprise_logit_add"] += surprise_logit_adds
             routing = module.last_routing_statistics
             if routing is not None:
                 means = routing["gate_mean_by_delay"].cpu()
@@ -238,6 +285,12 @@ class _HardwareProfiler:
                 for index, delay in enumerate(module.delays):
                     layer[f"observed_gate_mean_delay_{delay}"] += float(means[index])
                     layer[f"observed_gate_std_delay_{delay}"] += float(stds[index])
+                contributions = routing.get("effective_contribution_mean_abs_by_delay")
+                if contributions is not None:
+                    for index, delay in enumerate(module.delays):
+                        layer[f"observed_effective_contribution_mean_abs_delay_{delay}"] += float(
+                            contributions[index].cpu()
+                        )
                 surprise = float(routing["surprise_mean"].cpu())
                 if not torch.isnan(torch.tensor(surprise)):
                     layer["observed_normalized_surprise_mean"] += surprise
@@ -384,6 +437,14 @@ class _HardwareProfiler:
                 "maxpool_comparison",
                 "elementwise_add",
                 "elementwise_multiply",
+                "surprise_error_subtract",
+                "surprise_absolute_value",
+                "surprise_square",
+                "surprise_reduction_add",
+                "surprise_mean_scale_multiply",
+                "surprise_sqrt",
+                "surprise_divide",
+                "surprise_logit_add",
             )
         }
         per_sample["sop_potential"] = (

@@ -369,6 +369,51 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError("Surprise routing requires the predictive auxiliary")
     if learnable_delays and (dynamic_routing or predictive_auxiliary):
         raise ConfigError("Conditional routing is defined only for fixed TCAP delays")
+    router_pooling = model.get("temporal_channel_mixer_router_pooling", "global")
+    if router_pooling not in {"global", "local"}:
+        raise ConfigError("model.temporal_channel_mixer_router_pooling must be global or local")
+    router_hidden_divisor = model.get("temporal_channel_mixer_router_hidden_divisor")
+    if router_hidden_divisor is not None and (
+        type(router_hidden_divisor) is not int or router_hidden_divisor <= 0
+    ):
+        raise ConfigError(
+            "model.temporal_channel_mixer_router_hidden_divisor must be positive or null"
+        )
+    if not dynamic_routing and (router_pooling != "global" or router_hidden_divisor is not None):
+        raise ConfigError("Temporal router geometry requires dynamic routing")
+    predictor_groups = model.get("temporal_channel_mixer_predictor_channel_groups")
+    if predictor_groups is not None and (
+        type(predictor_groups) is not int
+        or predictor_groups <= 0
+        or (embed_dim // 2) % predictor_groups
+        or embed_dim % predictor_groups
+    ):
+        raise ConfigError(
+            "model.temporal_channel_mixer_predictor_channel_groups must divide both TCAP widths"
+        )
+    predictor_kernel = model.get("temporal_channel_mixer_predictor_spatial_kernel_size", 1)
+    if type(predictor_kernel) is not int or predictor_kernel <= 0 or predictor_kernel % 2 == 0:
+        raise ConfigError(
+            "model.temporal_channel_mixer_predictor_spatial_kernel_size must be a positive odd integer"
+        )
+    if not predictive_auxiliary and (predictor_groups is not None or predictor_kernel != 1):
+        raise ConfigError("Temporal predictor geometry requires predictive auxiliary training")
+    predictive_head_kernel = model.get("predictive_head_spatial_kernel_size", 1)
+    if (
+        type(predictive_head_kernel) is not int
+        or predictive_head_kernel <= 0
+        or predictive_head_kernel % 2 == 0
+    ):
+        raise ConfigError("model.predictive_head_spatial_kernel_size must be a positive odd integer")
+    predictive_head_hidden = model.get("predictive_head_hidden_channels")
+    if predictive_head_hidden is not None and (
+        type(predictive_head_hidden) is not int or predictive_head_hidden <= 0
+    ):
+        raise ConfigError("model.predictive_head_hidden_channels must be positive or null")
+    if not model.get("predictive_head", False) and (
+        predictive_head_kernel != 1 or predictive_head_hidden is not None
+    ):
+        raise ConfigError("Predictive-head geometry requires model.predictive_head=true")
     if type(model.get("learnable_lif_tau", False)) is not bool:
         raise ConfigError("model.learnable_lif_tau must be boolean")
     if model.get("temporal_fir", False) and model.get("temporal_channel_mixer", False):

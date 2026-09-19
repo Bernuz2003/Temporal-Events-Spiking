@@ -5,6 +5,8 @@ experiment:
 
 model:
   temporal_channel_mixer_predictive_auxiliary: true
+  temporal_channel_mixer_predictor_channel_groups: 1
+  temporal_channel_mixer_predictor_spatial_kernel_size: 3
 
 continuation:
   objective:

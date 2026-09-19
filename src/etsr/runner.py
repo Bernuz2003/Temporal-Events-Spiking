@@ -564,6 +564,8 @@ def train_experiment(
             "predictive_head.",
             ".content_router.",
             ".predictor_logits",
+            ".predictor_spatial.",
+            ".predictor_projections.",
             ".surprise_router",
         )
         invalid_missing = [
@@ -590,7 +592,14 @@ def train_experiment(
         teacher.eval()
         logger.info("Loaded frozen predictive teacher: %s", continuation["teacher_checkpoint"])
     predictive_objective = (
-        PredictiveTrainingObjective(objective_config, teacher)
+        PredictiveTrainingObjective(
+            objective_config,
+            teacher,
+            {
+                **continuation,
+                "representation": config["representation"],
+            },
+        )
         if continuation is not None
         else None
     )
@@ -613,7 +622,10 @@ def train_experiment(
         if parameter.requires_grad
         and not name.startswith("predictive_head.")
         and not (
-            ".predictor_logits" in name
+            any(
+                token in name
+                for token in (".predictor_logits", ".predictor_spatial.", ".predictor_projections.")
+            )
             and not config["model"].get("temporal_channel_mixer_surprise_routing", False)
         )
     )
@@ -829,11 +841,19 @@ def train_experiment(
         deployment_config = copy.deepcopy(resolved_config)
         deployment_config.pop("continuation", None)
         deployment_config["model"].pop("predictive_head", None)
+        deployment_config["model"].pop("predictive_head_spatial_kernel_size", None)
+        deployment_config["model"].pop("predictive_head_hidden_channels", None)
         if not deployment_config["model"].get(
             "temporal_channel_mixer_surprise_routing", False
         ):
             deployment_config["model"].pop(
                 "temporal_channel_mixer_predictive_auxiliary", None
+            )
+            deployment_config["model"].pop(
+                "temporal_channel_mixer_predictor_channel_groups", None
+            )
+            deployment_config["model"].pop(
+                "temporal_channel_mixer_predictor_spatial_kernel_size", None
             )
         parent_config = load_config(continuation["parent_config"])
         if objective_config.get("mode") in {"fine_future", "fine_same"}:

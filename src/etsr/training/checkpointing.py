@@ -46,7 +46,17 @@ def save_deployment_checkpoint(
         name: value
         for name, value in model.state_dict().items()
         if not name.startswith("predictive_head.")
-        and not (remove_predictor and ".predictor_logits" in name)
+        and not (
+            remove_predictor
+            and any(
+                token in name
+                for token in (
+                    ".predictor_logits",
+                    ".predictor_spatial.",
+                    ".predictor_projections.",
+                )
+            )
+        )
     }
     _atomic_save(
         {

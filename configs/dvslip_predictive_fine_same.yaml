@@ -6,3 +6,4 @@ experiment:
 continuation:
   objective:
     mode: fine_same
+    normalization_report: artifacts/predictive_diagnostics/fine_same_probe.json
