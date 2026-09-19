@@ -29,6 +29,38 @@ def save_checkpoint(
     )
 
 
+def save_deployment_checkpoint(
+    path: str | Path,
+    model: torch.nn.Module,
+    epoch: int,
+    score: float,
+    config: dict[str, Any],
+    num_classes: int,
+) -> None:
+    """Save only parameters used by the ordinary inference forward."""
+
+    remove_predictor = not bool(
+        config.get("model", {}).get("temporal_channel_mixer_surprise_routing", False)
+    )
+    state = {
+        name: value
+        for name, value in model.state_dict().items()
+        if not name.startswith("predictive_head.")
+        and not (remove_predictor and ".predictor_logits" in name)
+    }
+    _atomic_save(
+        {
+            "model": state,
+            "epoch": epoch,
+            "score": score,
+            "config": {key: value for key, value in config.items() if not key.startswith("_")},
+            "num_classes": num_classes,
+            "deployment_export": True,
+        },
+        path,
+    )
+
+
 def save_training_state(
     path: str | Path,
     *,

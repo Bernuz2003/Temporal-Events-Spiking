@@ -16,6 +16,7 @@ from etsr.models.layers import (
 )
 from etsr.models.readout import DiagonalGatedReadout
 from etsr.models.spiking import MultiStepLIF
+from etsr.models.temporal import CausalTemporalChannelMixer
 
 
 class MiniQKFormer(nn.Module):
@@ -46,6 +47,9 @@ class MiniQKFormer(nn.Module):
         temporal_channel_mixer: bool = False,
         temporal_channel_mixer_delays: tuple[int, ...] = (1, 2, 4),
         temporal_channel_mixer_learnable_delays: bool = False,
+        temporal_channel_mixer_dynamic_routing: bool = False,
+        temporal_channel_mixer_predictive_auxiliary: bool = False,
+        temporal_channel_mixer_surprise_routing: bool = False,
         learnable_lif_tau: bool = False,
         gated_initial_memory_steps: float | None = None,
         multigranular: bool = False,
@@ -56,6 +60,7 @@ class MiniQKFormer(nn.Module):
         multigranular_micro_steps: int = 8,
         stage1_mixer: str = "token_qk",
         stage1_depthwise_kernel_size: int = 3,
+        predictive_head: bool = False,
     ) -> None:
         super().__init__()
         if embed_dim % 4 != 0:
@@ -80,6 +85,21 @@ class MiniQKFormer(nn.Module):
             raise ValueError("temporal_channel_mixer_learnable_delays must be boolean")
         if temporal_channel_mixer_learnable_delays and not temporal_channel_mixer:
             raise ValueError("learnable delays require the temporal channel mixer")
+        for name, enabled in (
+            ("temporal_channel_mixer_dynamic_routing", temporal_channel_mixer_dynamic_routing),
+            ("temporal_channel_mixer_predictive_auxiliary", temporal_channel_mixer_predictive_auxiliary),
+            ("temporal_channel_mixer_surprise_routing", temporal_channel_mixer_surprise_routing),
+            ("predictive_head", predictive_head),
+        ):
+            if type(enabled) is not bool:
+                raise ValueError(f"{name} must be boolean")
+        if temporal_channel_mixer_surprise_routing and not temporal_channel_mixer_predictive_auxiliary:
+            raise ValueError("surprise routing requires the predictive auxiliary")
+        if (
+            temporal_channel_mixer_dynamic_routing
+            or temporal_channel_mixer_predictive_auxiliary
+        ) and not temporal_channel_mixer:
+            raise ValueError("conditional temporal options require the temporal channel mixer")
         if type(learnable_lif_tau) is not bool:
             raise ValueError("learnable_lif_tau must be boolean")
         if temporal_fir and temporal_channel_mixer:
@@ -132,6 +152,11 @@ class MiniQKFormer(nn.Module):
         self.temporal_fir_enabled = temporal_fir
         self.temporal_channel_mixer_enabled = temporal_channel_mixer
         self.temporal_channel_mixer_learnable_delays = temporal_channel_mixer_learnable_delays
+        self.temporal_channel_mixer_dynamic_routing = temporal_channel_mixer_dynamic_routing
+        self.temporal_channel_mixer_predictive_auxiliary = (
+            temporal_channel_mixer_predictive_auxiliary
+        )
+        self.temporal_channel_mixer_surprise_routing = temporal_channel_mixer_surprise_routing
         self.learnable_lif_tau_enabled = learnable_lif_tau
         self.multigranular_enabled = multigranular
         self.multigranular_fusion_name = multigranular_fusion
@@ -152,6 +177,9 @@ class MiniQKFormer(nn.Module):
             temporal_fir_dilation=temporal_fir_dilations[0],
             temporal_channel_mixer_delays=channel_mixer_delays,
             temporal_channel_mixer_learnable_delays=temporal_channel_mixer_learnable_delays,
+            temporal_channel_mixer_dynamic_routing=temporal_channel_mixer_dynamic_routing,
+            temporal_channel_mixer_predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
+            temporal_channel_mixer_surprise_routing=temporal_channel_mixer_surprise_routing,
             learnable_tau=learnable_lif_tau,
         )
         self.fine_temporal_branch = (
@@ -207,6 +235,9 @@ class MiniQKFormer(nn.Module):
             temporal_fir_dilation=temporal_fir_dilations[1],
             temporal_channel_mixer_delays=channel_mixer_delays,
             temporal_channel_mixer_learnable_delays=temporal_channel_mixer_learnable_delays,
+            temporal_channel_mixer_dynamic_routing=temporal_channel_mixer_dynamic_routing,
+            temporal_channel_mixer_predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
+            temporal_channel_mixer_surprise_routing=temporal_channel_mixer_surprise_routing,
             learnable_tau=learnable_lif_tau,
         )
         self.stage2 = SpikingBlock(
@@ -220,6 +251,7 @@ class MiniQKFormer(nn.Module):
             learnable_tau=learnable_lif_tau,
         )
         self.head = nn.Linear(embed_dim, num_classes)
+        self.predictive_head = nn.Conv2d(half, half, 1, bias=True) if predictive_head else None
         self.gated_readout = (
             DiagonalGatedReadout(embed_dim, gated_initial_memory_steps)
             if readout == "diagonal_gated"
@@ -231,6 +263,10 @@ class MiniQKFormer(nn.Module):
                 module.surrogate_alpha = float(surrogate_alpha)
                 module.cross_time = lif_cross_time
         self.apply(self._initialize)
+        for module in self.modules():
+            if isinstance(module, CausalTemporalChannelMixer) and module.content_router is not None:
+                nn.init.zeros_(module.content_router.weight)
+                nn.init.zeros_(module.content_router.bias)
         if self.fine_temporal_branch is not None:
             self.fine_temporal_branch.initialize_temporal_reducer()
 
@@ -243,10 +279,10 @@ class MiniQKFormer(nn.Module):
             if getattr(module, "bias", None) is not None:
                 nn.init.zeros_(module.bias)
 
-    def _encode(self, frames: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
+    def extract_stage1(self, frames: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
         if isinstance(frames, dict):
-            if not self.multigranular_enabled or set(frames) != {"coarse", "fine"}:
-                raise ValueError("A coarse/fine input requires a multi-granular branch.")
+            if set(frames) != {"coarse", "fine"}:
+                raise ValueError("A coarse/fine input must contain exactly coarse and fine.")
             coarse_frames = frames["coarse"]
             fine_frames = frames["fine"]
         else:
@@ -258,7 +294,7 @@ class MiniQKFormer(nn.Module):
             raise ValueError("Expected input [B, T, C, H, W].")
         x = coarse_frames.permute(1, 0, 2, 3, 4).contiguous()
         x = self.patch_embed1(x)
-        if fine_frames is not None:
+        if fine_frames is not None and self.multigranular_enabled:
             assert self.fine_temporal_branch is not None
             fine = self.fine_temporal_branch(fine_frames)
             if fine.shape != x.shape:
@@ -271,8 +307,86 @@ class MiniQKFormer(nn.Module):
             else:
                 x = x + fine
         x = self.stage1(x)
+        return x
+
+    def _encode(self, frames: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
+        x = self.extract_stage1(frames)
+        return self.encode_from_stage1(x)
+
+    def encode_from_stage1(self, x: torch.Tensor) -> torch.Tensor:
         x = self.patch_embed2(x)
         return self.stage2(x)
+
+    def logits_from_stage1(
+        self,
+        stage1: torch.Tensor,
+        frames: torch.Tensor | dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        encoded = self.encode_from_stage1(stage1)
+        valid_steps = self._last_event_steps(frames) if self.readout_time == "last_event" else None
+        return self.head(self._readout(encoded, valid_steps))
+
+    def extract_fine_pre_lif(self, frames: dict[str, torch.Tensor]) -> torch.Tensor:
+        if self.fine_temporal_branch is None:
+            raise ValueError("Fine targets require a multi-granular teacher.")
+        if set(frames) != {"coarse", "fine"}:
+            raise ValueError("Fine targets require coarse and fine input streams.")
+        return self.fine_temporal_branch.forward_pre_lif(frames["fine"])
+
+    def predict_stage1_target(self, context: torch.Tensor) -> torch.Tensor:
+        if self.predictive_head is None:
+            raise ValueError("This model has no training-only predictive head.")
+        time_steps, batch = context.shape[:2]
+        projected = self.predictive_head(context.flatten(0, 1))
+        return projected.reshape(time_steps, batch, *projected.shape[1:])
+
+    def temporal_auxiliary_loss(self) -> torch.Tensor | None:
+        losses = [
+            module.auxiliary_loss()
+            for module in self.modules()
+            if isinstance(module, CausalTemporalChannelMixer)
+            and module.predictive_auxiliary
+        ]
+        valid = [loss for loss in losses if loss is not None]
+        return torch.stack(valid).mean() if valid else None
+
+    def temporal_auxiliary_statistics(
+        self, valid_steps: torch.Tensor
+    ) -> tuple[torch.Tensor | None, dict[str, float]]:
+        """Balance causal-prediction error across samples, activity and post-event tail."""
+
+        errors = [
+            module.auxiliary_error()
+            for module in self.modules()
+            if isinstance(module, CausalTemporalChannelMixer)
+            and module.predictive_auxiliary
+        ]
+        errors = [error for error in errors if error is not None]
+        if not errors:
+            return None, {}
+        active_losses = []
+        tail_losses = []
+        for error in errors:
+            positions = torch.arange(error.shape[0], device=error.device).unsqueeze(1)
+            active_mask = positions < valid_steps.unsqueeze(0)
+            tail_mask = ~active_mask
+            for mask, output in ((active_mask, active_losses), (tail_mask, tail_losses)):
+                counts = mask.sum(0)
+                present = counts > 0
+                if bool(present.any().item()):
+                    per_sample = (error * mask).sum(0) / counts.clamp_min(1)
+                    output.append(per_sample[present].mean())
+        regions = []
+        metrics: dict[str, float] = {}
+        if active_losses:
+            active = torch.stack(active_losses).mean()
+            regions.append(active)
+            metrics["temporal_prediction_active_loss"] = float(active.detach())
+        if tail_losses:
+            tail = torch.stack(tail_losses).mean()
+            regions.append(tail)
+            metrics["temporal_prediction_tail_loss"] = float(tail.detach())
+        return torch.stack(regions).mean(), metrics
 
     def forward(self, frames: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
         x = self._encode(frames)

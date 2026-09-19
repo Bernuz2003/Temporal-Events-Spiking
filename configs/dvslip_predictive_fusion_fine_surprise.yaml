@@ -1,0 +1,8 @@
+extends: dvslip_predictive_fine_future.yaml
+
+experiment:
+  name: dvslip_predictive_fusion_fine_surprise
+
+model:
+  temporal_channel_mixer_predictive_auxiliary: true
+  temporal_channel_mixer_surprise_routing: true

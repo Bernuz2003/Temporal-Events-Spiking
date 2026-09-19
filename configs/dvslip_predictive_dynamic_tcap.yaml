@@ -1,0 +1,7 @@
+extends: dvslip_predictive_continuation_base.yaml
+
+experiment:
+  name: dvslip_predictive_dynamic_tcap
+
+model:
+  temporal_channel_mixer_dynamic_routing: true

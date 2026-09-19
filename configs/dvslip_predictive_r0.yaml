@@ -1,0 +1,4 @@
+extends: dvslip_predictive_continuation_base.yaml
+
+experiment:
+  name: dvslip_predictive_r0

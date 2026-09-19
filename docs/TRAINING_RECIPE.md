@@ -1,6 +1,6 @@
 # Ricetta di training congelata
 
-**Aggiornata:** 2026-09-15
+**Aggiornata:** 2026-09-19
 
 **Recipe ID base:** `dvslip_e0_128`
 
@@ -40,6 +40,14 @@ estendere le epoche oltre il cosine già esaurito. Un'eccezione richiede una dec
 un controllo capace di separarla dalla modifica architetturale.
 
 ## Fase post-freeze
+
+**Eccezione preregistrata 2026-09-19:** prima di riprendere augmentation si applicherà il
+protocollo `dvslip_predictive_continuation_32_v1` definito nella
+[roadmap predittiva](PREDICTIVE_TEMPORAL_ROADMAP.md). È una continuazione di C0 con controllo
+appaiato, BN running fissa e recipe comune, non un nuovo full `dvslip_e0_128`. Il workflow
+`predictive-continuation` applica il preflight causale/gradienti, il gate bounded e il profiling
+del checkpoint deployabile. CE e loss ausiliarie sono registrate separatamente; i pesi allenati
+nel gate non entrano nel run di produzione.
 
 Dopo la conferma multi-seed si crea un nuovo `recipe_id`. Ogni raffinamento viene applicato alla
 sola candidata congelata e confrontato con il run della stessa struttura e dello stesso seed senza

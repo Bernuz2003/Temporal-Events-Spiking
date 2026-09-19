@@ -12,16 +12,43 @@ class ConfigError(ValueError):
     """Raised when a configuration is missing a required field."""
 
 
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _load_yaml_with_extends(config_path: Path, stack: tuple[Path, ...] = ()) -> dict[str, Any]:
+    resolved = config_path.resolve()
+    if resolved in stack:
+        raise ConfigError(f"Configuration inheritance cycle: {resolved}")
+    with resolved.open("r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
+    if not isinstance(config, dict):
+        raise ConfigError("The YAML root must be a mapping.")
+    parent = config.pop("extends", None)
+    if parent is None:
+        return config
+    if not isinstance(parent, str) or not parent.strip():
+        raise ConfigError("extends must be a non-empty path")
+    parent_path = Path(parent)
+    if not parent_path.is_absolute():
+        parent_path = resolved.parent / parent_path
+    if not parent_path.exists():
+        raise FileNotFoundError(f"Parent configuration not found: {parent_path}")
+    return _deep_merge(_load_yaml_with_extends(parent_path, (*stack, resolved)), config)
+
+
 def load_config(path: str | Path) -> dict[str, Any]:
     config_path = Path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"Configuration not found: {config_path}")
 
-    with config_path.open("r", encoding="utf-8") as handle:
-        config = yaml.safe_load(handle)
-
-    if not isinstance(config, dict):
-        raise ConfigError("The YAML root must be a mapping.")
+    config = _load_yaml_with_extends(config_path)
 
     _validate(config)
 
@@ -280,11 +307,20 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
     if type(multigranular) is not bool:
         raise ConfigError("model.multigranular must be boolean")
     is_multigranular = representation_name == "multigranular_count_frame"
-    if is_multigranular != multigranular:
+    continuation = config.get("continuation")
+    objective_mode = (
+        str(continuation.get("objective", {}).get("mode", "none"))
+        if isinstance(continuation, dict)
+        else "none"
+    )
+    training_only_fine_input = objective_mode in {"fine_future", "fine_same"}
+    if is_multigranular != multigranular and not (
+        is_multigranular and not multigranular and training_only_fine_input
+    ):
         raise ConfigError("Multi-granular representation and model configuration must match")
     if is_multigranular:
-        fine_channels = model.get("multigranular_fine_channels")
-        micro_steps = model.get("multigranular_micro_steps")
+        fine_channels = model.get("multigranular_fine_channels", 16)
+        micro_steps = model.get("multigranular_micro_steps", 8)
         expected_micro_steps = representation["bin_width_us"] // representation["micro_bin_width_us"]
         if type(fine_channels) is not int or fine_channels <= 0:
             raise ConfigError("model.multigranular_fine_channels must be positive")
@@ -297,15 +333,16 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         mid_channels = model.get("multigranular_fine_mid_channels")
         if mid_channels is not None and (type(mid_channels) is not int or mid_channels <= 0):
             raise ConfigError("model.multigranular_fine_mid_channels must be positive or null")
-        temporal_groups = model.get("multigranular_temporal_groups")
-        if (
-            type(temporal_groups) is not int
-            or temporal_groups <= 0
-            or (embed_dim // 2) % temporal_groups
-        ):
-            raise ConfigError("model.multigranular_temporal_groups must divide embed_dim/2")
-        if model.get("multigranular_fusion") not in {"add", "concat_residual"}:
-            raise ConfigError("model.multigranular_fusion must be add or concat_residual")
+        if multigranular:
+            temporal_groups = model.get("multigranular_temporal_groups")
+            if (
+                type(temporal_groups) is not int
+                or temporal_groups <= 0
+                or (embed_dim // 2) % temporal_groups
+            ):
+                raise ConfigError("model.multigranular_temporal_groups must divide embed_dim/2")
+            if model.get("multigranular_fusion") not in {"add", "concat_residual"}:
+                raise ConfigError("model.multigranular_fusion must be add or concat_residual")
     if type(model.get("temporal_fir", False)) is not bool:
         raise ConfigError("model.temporal_fir must be boolean")
     if type(model.get("temporal_channel_mixer", False)) is not bool:
@@ -315,6 +352,23 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError("model.temporal_channel_mixer_learnable_delays must be boolean")
     if learnable_delays and not model.get("temporal_channel_mixer", False):
         raise ConfigError("Learnable delays require model.temporal_channel_mixer=true")
+    dynamic_routing = model.get("temporal_channel_mixer_dynamic_routing", False)
+    predictive_auxiliary = model.get("temporal_channel_mixer_predictive_auxiliary", False)
+    surprise_routing = model.get("temporal_channel_mixer_surprise_routing", False)
+    for name, enabled in (
+        ("dynamic_routing", dynamic_routing),
+        ("predictive_auxiliary", predictive_auxiliary),
+        ("surprise_routing", surprise_routing),
+        ("predictive_head", model.get("predictive_head", False)),
+    ):
+        if type(enabled) is not bool:
+            raise ConfigError(f"model.{name} must be boolean")
+    if (dynamic_routing or predictive_auxiliary) and not model.get("temporal_channel_mixer", False):
+        raise ConfigError("Conditional temporal options require model.temporal_channel_mixer=true")
+    if surprise_routing and not predictive_auxiliary:
+        raise ConfigError("Surprise routing requires the predictive auxiliary")
+    if learnable_delays and (dynamic_routing or predictive_auxiliary):
+        raise ConfigError("Conditional routing is defined only for fixed TCAP delays")
     if type(model.get("learnable_lif_tau", False)) is not bool:
         raise ConfigError("model.learnable_lif_tau must be boolean")
     if model.get("temporal_fir", False) and model.get("temporal_channel_mixer", False):
@@ -448,3 +502,45 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError("dataset.batch_size must be positive")
     if training.get("select_metric", "macro_f1") not in ("accuracy", "macro_f1"):
         raise ConfigError("training.select_metric must be accuracy or macro_f1")
+
+    if continuation is not None:
+        _validate_predictive_continuation(config, objective_mode)
+
+
+def _validate_predictive_continuation(config: dict[str, Any], objective_mode: str) -> None:
+    continuation = config["continuation"]
+    if not isinstance(continuation, dict):
+        raise ConfigError("continuation must be a mapping")
+    for field in ("parent_config", "parent_checkpoint"):
+        if not isinstance(continuation.get(field), str) or not continuation[field].strip():
+            raise ConfigError(f"continuation.{field} must be a non-empty path")
+    if continuation.get("freeze_batchnorm_statistics") is not True:
+        raise ConfigError("Predictive continuation requires fixed BatchNorm running statistics")
+    objective = continuation.get("objective")
+    if not isinstance(objective, dict):
+        raise ConfigError("continuation.objective must be a mapping")
+    allowed_modes = {"none", "fine_future", "fine_same", "coarse_future", "late_prefix"}
+    if objective_mode not in allowed_modes:
+        raise ConfigError(f"Unsupported continuation objective mode: {objective_mode}")
+    weight = objective.get("weight", 0.0)
+    if type(weight) not in (int, float) or isinstance(weight, bool) or not 0.0 <= weight <= 1.0:
+        raise ConfigError("continuation.objective.weight must be in [0, 1]")
+    ramp = objective.get("ramp_epochs", 0)
+    if type(ramp) is not int or ramp < 0 or ramp > int(config["training"]["epochs"]):
+        raise ConfigError("continuation.objective.ramp_epochs must fit the training horizon")
+    if objective_mode != "none":
+        for field in ("teacher_config", "teacher_checkpoint"):
+            if not isinstance(continuation.get(field), str) or not continuation[field].strip():
+                raise ConfigError(f"continuation.{field} is required by the objective")
+    head_required = objective_mode in {"fine_future", "fine_same", "coarse_future"}
+    if bool(config["model"].get("predictive_head", False)) != head_required:
+        raise ConfigError("model.predictive_head must match the latent predictive objective")
+    if head_required and (
+        not isinstance(objective.get("normalization_report"), str)
+        or not objective["normalization_report"].strip()
+    ):
+        raise ConfigError("Latent predictive objectives require a normalization_report path")
+    if objective_mode in {"fine_future", "fine_same"} and config["representation"]["name"] != "multigranular_count_frame":
+        raise ConfigError("Fine predictive objectives require multigranular_count_frame input")
+    if float(config["augmentation"].get("event_mix_probability", 0.0)):
+        raise ConfigError("Predictive continuations do not support EventMix")

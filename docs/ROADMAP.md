@@ -1,51 +1,51 @@
 # Roadmap decisiva
 
-**Aggiornata:** 2026-09-13
+**Aggiornata:** 2026-09-19
 
-## Esito della discovery
+## Riferimento e priorità corrente
 
-F+MG-Cap+TCAP stabilisce il record development a seed 42 con 53,15% Macro-F1, ma aggiunge soltanto
-0,80 pp a F+TCAP e non raggiunge la soglia preregistrata di +2 pp. Il confronto appaiato attraversa
-zero e il costo cresce nettamente. **F+TCAP resta quindi il finalista strutturale primario:** 52,36%
-F1, 492.516 parametri e profilo migliore di B per stato, SOP e proxy Horowitz.
+Il riferimento congelato è **F+DWC-3+TCAP-d8**, E0, tap `[1,2,4,8]`: DVS-Lip seed 42
+55,18% Macro-F1, terna 42/43/44 55,54 ± 0,90%; DVS-Gesture seed 42 88,81% Macro-F1.
+Sono risultati development, non official-test. La prima discovery è conclusa.
 
-TCAP è il meccanismo più solido: produce +6,21 pp F1 su F e +4,73 pp su MG. MG resta evidenza
-positiva sulla rappresentazione fine e sulla latenza, ma non entra nella campagna multi-seed
-principale. PLIF, gated, TBR, Spike-TBR e clock matching sono chiusi come candidati di accuracy.
+Prima di riprendere augmentation si apre soltanto la fase delimitata da
+[`PREDICTIVE_TEMPORAL_ROADMAP.md`](PREDICTIVE_TEMPORAL_ROADMAP.md). La
+[review](PREDICTIVE_TEMPORAL_RESEARCH_REVIEW.md) ne espone motivazioni e limiti.
 
-## Ultimo gate architetturale
+## Ordine vincolante
 
-Prima del freeze sono ammesse soltanto due verifiche:
+1. Diagnostiche causali e di predicibilità sui checkpoint esistenti; verifica del costo.
+2. Controllo di continuazione R0 dal checkpoint congelato, stessa recipe dei candidati.
+3. Supervisione futura cross-resolution e TCAP dinamico, isolati; controlli attributivi solo
+   dove l'esito giustifica proseguire. Fallback di supervisione dei prefissi motivato da PLIF.
+4. Errore predittivo per il routing solo se la diagnostica ne sostiene l'utilità, con controllo
+   che riceve la stessa auxiliary loss. Nessuna regola imposta «alta sorpresa → meno memoria».
+5. Unica fusione dei componenti positivi; replica del solo vincitore e R0 ai seed 43/44;
+   trasferimento DVS-Gesture del metodo effettivamente supportato dai teacher disponibili.
+6. Congelamento di struttura e ricetta; ripresa delle augmentation sulla sola candidata.
+7. Eventuale compressione/quantizzazione; official test in un'unica campagna finale.
 
-1. ablation checkpoint-only dei tap TCAP 1/2/4; un run `[1,2,4,8]` viene autorizzato solo se il tap
-   più lungo mostra un contributo marginale ancora forte;
-2. un solo probe high-frequency DWC-3 nel primo stage di F+TCAP, con E0, stage 2 e recipe invariati.
+Non si riaddestra B per questi raffinamenti. Spatial erasing conserva il segnale positivo sul
+vecchio riferimento; Temporal Maskout resta negativo nella configurazione provata. Non si
+assume additività delle augmentation con un nuovo modello. Run già avviati possono terminare.
 
-La soglia di promozione resta +2 pp F1. Il probe locale può essere conservato come variante Pareto
-se rimane entro −0,5 pp e riduce in modo misurato SOP/energia. Non si provano kernel, posizioni,
-larghezze, tau, gain o fusioni alternative. Se entrambi i test passano si consente una sola
-combinazione; altrimenti si congela il vincitore individuale o F+TCAP.
+## Budget e stop
 
-## Fase successiva
+Il protocollo dettagliato ammette al massimo **8 continuazioni da 32 epoche per lo screening**,
+più 4 per la conferma appaiata Lip e fino a 2 per il trasferimento Gesture. I rami sono
+condizionali, non una lista da eseguire integralmente. Il tetto di GPU-ore della discovery
+include probe, gate e teacher: tre volte il training del C0 seed 42, circa 26,92 ore dal suo log.
+Throughput e hardware del server vanno registrati; numero di epoche e tempo effettivo non coincidono.
 
-La roadmap dettagliata è in [`VALIDATION_REFINEMENT_ROADMAP.md`](VALIDATION_REFINEMENT_ROADMAP.md).
-L'ordine vincolante è:
+Le soglie di screening, attribuzione, fusione e replica sono fissate nel documento operativo.
+Non si aprono sweep per salvare un esito negativo. Un bug rende il run non valido; un negativo
+valido resta registrato. Grandi teacher, pretraining EMA esteso da zero, nuove rappresentazioni
+e nuove famiglie neuronali restano fuori da questa fase.
 
-1. conferma su DVS-Lip con B e finalista ai seed 43 e 44;
-2. trasferimento strutturale su DVS-Gesture, prima seed 42 e poi replica solo se positivo;
-3. raffinamento supervisionato sequenziale: temporal Maskout, augmentation geometrica moderata,
-   loss ai prefissi tardivi, orizzonte di training e media dei pesi;
-4. un eventuale pretraining JEPA-like/predictive sul backbone ormai fissato;
-5. compressione TCAP→T, pruning/grouping e quantization-aware training come fronte Pareto;
-6. official test in un'unica campagna dopo il congelamento di modelli e recipe.
+I risultati devono riportare accuratezza finale, prefissi e profiling del proprio checkpoint;
+un miglioramento di latenza o firing non viene presentato come aumento dell'accuracy o riduzione
+misurata dell'energia hardware. L'official test resta embargoed.
 
-JEPA/predictive coding avviene dopo la conferma strutturale e la definizione del riferimento
-supervisionato, ma prima dell'official test. In questo modo misura il valore del pretraining senza
-confonderlo con una nuova architettura o con una recipe ancora mobile.
-
-## Stop rule
-
-Ogni famiglia riceve una configurazione fissata e viene chiusa al primo risultato negativo
-replicato o quando richiederebbe scegliere a posteriori fra più valori. L'official test resta
-embargoed. Tutti i confronti riportano F1/accuracy, Acc1/Acc2, PrefixAUC, costo di training e profilo
-hardware v4 del proprio best.
+La [roadmap di validazione e raffinamento](VALIDATION_REFINEMENT_ROADMAP.md) conserva il piano
+di trasferimento/augmentation/compressione e la storia della selezione; per l'ordine corrente
+prevalgono questo documento e il protocollo predittivo.

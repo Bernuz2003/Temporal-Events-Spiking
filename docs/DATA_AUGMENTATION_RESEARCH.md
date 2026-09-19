@@ -2,6 +2,11 @@
 
 Stato del documento: **15 settembre 2026**.
 
+**Priorità aggiornata 2026-09-19:** i nuovi lanci augmentation attendono la conclusione della
+[fase predittiva e condizionale](PREDICTIVE_TEMPORAL_ROADMAP.md). I risultati già acquisiti e i
+run eventualmente in corso sono conservati. Alla ripresa si verifica il beneficio sulla candidata
+selezionata, senza duplicare le augmentation su B.
+
 Questo documento governa la selezione delle augmentation dopo il congelamento della struttura
 **F+DWC-3+TCAP-d8**. Lo scopo è massimizzare il guadagno rispetto al modello congelato con pochi
 run informativi, mantenendo separati tre concetti:
@@ -115,14 +120,31 @@ non assenza assoluta di augmentation.
 | Frozen, flip 0,5 — seed 43 | **✓** | 55,09% | 54,88% | replica architetturale | non è uno screen augmentation |
 | Frozen, flip 0,5 — seed 44 | **✓** | 56,73% | 56,56% | replica architetturale | non è uno screen augmentation |
 | Media 3 seed | **✓** | **55,78 ± 0,85%** | **55,54 ± 0,90%** | riferimento di robustezza | deviazione standard campionaria |
-| + Temporal Maskout `8 × [1,4]` bin | **⏳** | — | — | in attesa | confrontare col seed 42 |
-| + Spatial erasing `4 × [1,20]` px | **⏳** | — | — | in attesa | confrontare col seed 42 |
-| + Maskout + spatial erasing | **○** | — | — | non misurato | solo se entrambi i singoli passano |
+| + Temporal Maskout `8 × [1,4]` bin | **✓** | 52,02% | 50,91% | −3,51 pp Acc; −4,27 pp F1 | negativo; non combinare |
+| + Spatial erasing `4 × [1,20]` px | **✓** | **57,03%** | **56,69%** | +1,50 pp Acc; +1,52 pp F1 | supera lo screen; replicare |
+| + Maskout + spatial erasing | **—** | — | — | non autorizzato | Maskout non supera lo screen |
 | Time scaling | **○** | — | — | non misurato | P2, senza sweep di velocità |
 
 Il flip non è stato isolato rispetto a una ricetta identica con probabilità zero; il suo delta
 locale è quindi **non identificabile** dagli artifact esistenti. Non si spende un nuovo full run
 solo per ricostruirlo: resta parte del riferimento congelato.
+
+Temporal Maskout produce underfitting da perturbazione: al termine del training l'accuracy train
+sugli input mascherati è 46,74%, contro 89,10% del riferimento, mentre la validation pulita rimane
+più facile del train. Sulla distribuzione validation, la policy cancella in simulazione il 40,3%
+medio dei bin attivi e almeno metà dell'utterance nel 26,4% dei casi. Il danno è concentrato dopo i
+primi prefissi: il F1 migliora di 0,94/1,35 pp a 250/500 ms, ma perde 8,54 pp a 1 s e 13,34 pp a
+1,5 s. Il risultato rigetta questa intensità sul finalista E0+TCAP; non rigetta ogni possibile
+occlusione temporale, ma la stop-rule vieta uno sweep post-hoc di conteggi e lunghezze.
+
+Spatial erasing dà invece un miglioramento coerente col collo di bottiglia: +2,87 pp su Acc1 e
++0,13 pp su Acc2, con +1,47 pp di accuracy PrefixAUC assoluta e +1,76 pp di PrefixAUC relativa. Il
+bootstrap appaiato stratificato esplorativo del delta F1 ha IC95% `[−0,36; +3,39]` pp e McNemar
+esatto dà `p=0,120`: il seed 42 supera la soglia preregistrata, ma i seed 43/44 restano necessari
+prima di promuovere la policy finale. Essendo train-only, la policy non aggiunge parametri, stato o
+operazioni potenziali in inferenza. Il checkpoint spatial-erasing ha firing rate globale 9,04% ed
+energia Horowitz activity-aware 7.148,31 µJ/sample, entro l'intervallo dei finalisti seed 43/44
+senza nuova augmentation (8,87–9,42% e 7.151,10–7.169,86 µJ/sample).
 
 ## DVS-Gesture
 

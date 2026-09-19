@@ -22,6 +22,10 @@ from etsr.evaluation.metrics import ClassificationAccumulator, ClassificationRes
 from etsr.models.temporal import CausalTemporalChannelMixer
 from etsr.training.augmentation import EventMix
 from etsr.training.checkpointing import load_model_state
+from etsr.training.predictive import (
+    PredictiveTrainingObjective,
+    freeze_batchnorm_running_statistics,
+)
 
 
 def make_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Optimizer:
@@ -92,11 +96,16 @@ def train_one_epoch(
     gradient_clip_norm: float | None,
     gradient_accumulation_steps: int = 1,
     batch_augmentation: EventMix | None = None,
+    predictive_objective: PredictiveTrainingObjective | None = None,
+    epoch: int = 1,
+    freeze_batchnorm_statistics: bool = False,
 ) -> dict[str, float | None]:
     if gradient_accumulation_steps <= 0:
         raise ValueError("gradient_accumulation_steps must be positive")
 
     model.train()
+    if freeze_batchnorm_statistics:
+        freeze_batchnorm_running_statistics(model)
     loss_sum = 0.0
     correct = 0.0
     samples = 0
@@ -110,6 +119,7 @@ def train_one_epoch(
     clipped_steps = 0
     optimizer_steps = 0
     optimizer.zero_grad(set_to_none=True)
+    component_sums: dict[str, float] = {}
     delay_modules = tuple(
         module
         for module in model.modules()
@@ -124,10 +134,18 @@ def train_one_epoch(
             frames = mixed_batch.frames
 
         with torch.autocast(device_type=device.type, enabled=amp_enabled):
-            logits = model(frames)
-            if mixed_batch is None:
-                loss = criterion(logits, targets)
+            if predictive_objective is not None:
+                if mixed_batch is not None:
+                    raise ValueError("Predictive continuations do not support batch mixing.")
+                batch_result = predictive_objective(model, frames, targets, criterion, epoch)
+                logits = batch_result.logits
+                loss = batch_result.total_loss
             else:
+                logits = model(frames)
+                batch_result = None
+            if predictive_objective is None and mixed_batch is None:
+                loss = criterion(logits, targets)
+            elif predictive_objective is None:
                 if not isinstance(criterion, nn.CrossEntropyLoss):
                     raise TypeError("EventMix requires CrossEntropyLoss")
                 primary_loss = nn.functional.cross_entropy(
@@ -154,6 +172,9 @@ def train_one_epoch(
             raise FloatingPointError(f"Non-finite training loss at batch {batch_index}.")
 
         batch_size = int(targets.numel())
+        if batch_result is not None:
+            for name, value in batch_result.metrics.items():
+                component_sums[name] = component_sums.get(name, 0.0) + value * batch_size
         accumulated_samples += batch_size
         scaler.scale(loss * batch_size).backward()
         batches_seen = batch_index + 1
@@ -216,7 +237,7 @@ def train_one_epoch(
             )
         samples += batch_size
 
-    return {
+    result = {
         "loss": loss_sum / max(1, samples),
         "accuracy": correct / max(1, samples),
         "seconds": time.perf_counter() - start,
@@ -237,6 +258,8 @@ def train_one_epoch(
         ),
         "amp_overflow_fraction": amp_overflow_steps / max(1, optimizer_steps),
     }
+    result.update({name: value / max(1, samples) for name, value in component_sums.items()})
+    return result
 
 
 @torch.no_grad()

@@ -2,6 +2,14 @@
 
 **Definita:** 2026-09-13
 
+**Aggiornamento operativo 2026-09-19:** il riferimento congelato è F+DWC-3+TCAP-d8;
+la nuova [roadmap predittiva](PREDICTIVE_TEMPORAL_ROADMAP.md) precede la ripresa della Fase C.
+Essa sostituisce l'ordine che rinviava tutti gli esperimenti predittivi a dopo le augmentation.
+La riapertura è limitata a quel protocollo; non autorizza nuovi full generalisti o grandi teacher.
+Le sezioni iniziali «Punto di partenza» e «Chiusura controllata» conservano il razionale storico
+del 13 settembre, non indicano esperimenti ancora da lanciare. L'ordine corrente è nella
+[roadmap principale](ROADMAP.md).
+
 Questa fase inizia dopo la chiusura della discovery architetturale e mantiene separati tre quesiti:
 
 1. la superiorità strutturale è riproducibile fra seed e dataset?
@@ -110,6 +118,10 @@ generale da un vantaggio specifico per la dinamica del labiale.
 
 ## Fase C — raffinamento supervisionato della struttura congelata
 
+**In pausa per nuovi lanci durante la fase predittiva.** I risultati augmentation già ottenuti
+restano nel [registro specifico](DATA_AUGMENTATION_RESEARCH.md). Alla ripresa si usa il riferimento
+selezionato dalla nuova fase, verificando l'interazione con le augmentation senza duplicarle su B.
+
 Le modifiche si provano in sequenza. Ogni stadio usa il vincitore dello stadio precedente e viene
 scartato al primo delta negativo replicato. Nessuna griglia di iperparametri.
 
@@ -190,6 +202,11 @@ dalla selezione prestazionale.
 
 ## Fase D — JEPA-like e predictive coding
 
+**Piano precedente, sostituito per la fase corrente.** Il nuovo protocollo è
+[`PREDICTIVE_TEMPORAL_ROADMAP.md`](PREDICTIVE_TEMPORAL_ROADMAP.md): continuazioni controllate,
+teacher esistenti, causalità BN e routing limitato. Il pretraining EMA esteso descritto sotto
+resta un'opzione futura non autorizzata; non va sommato al budget della nuova roadmap.
+
 Questa fase avviene **dopo** conferma multi-seed, trasferimento e definizione di un forte riferimento
 supervisionato, ma prima dell'unico accesso al test ufficiale. Il motivo è attributivo: pretraining e
 fine-tuning devono essere confrontati con la stessa architettura e la stessa recipe già fissate.
@@ -219,6 +236,9 @@ modello compresso, la recipe e la regola di checkpoint selection. Le configurazi
 valutate in un'unica campagna, senza usare l'esito del test per scegliere fra varianti.
 
 ## Ordine operativo e stop rule
+
+**Tabella storica della pianificazione iniziale.** Non è la coda di esecuzione attuale; per
+dipendenze, stop e budget vincolanti usare la nuova [roadmap predittiva](PREDICTIVE_TEMPORAL_ROADMAP.md).
 
 | Ordine | Esperimento | Full massimi prima dello stop |
 |---:|---|---:|

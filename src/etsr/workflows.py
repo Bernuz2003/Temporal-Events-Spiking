@@ -342,6 +342,89 @@ def run_supervised_refinement(config: dict[str, Any]) -> dict[str, Any]:
     return manifest
 
 
+def run_predictive_continuation(config: dict[str, Any]) -> dict[str, Any]:
+    """Gate, run and profile one preregistered 32-epoch continuation."""
+
+    validate_config(config)
+    requested = copy.deepcopy(config)
+    continuation = requested.get("continuation")
+    if not isinstance(continuation, dict):
+        raise ValueError("Predictive continuation requires a continuation section.")
+    if requested["training"].get("recipe_id") != "dvslip_predictive_continuation_32_v1":
+        raise ValueError("Predictive continuation requires the frozen 32-epoch recipe identifier.")
+    if int(requested["training"].get("epochs", 0)) != 32:
+        raise ValueError("Predictive continuation is fixed to 32 epochs.")
+    if requested["augmentation"] != {"horizontal_flip_probability": 0.5}:
+        raise ValueError("Predictive continuation must preserve the C0 flip-only augmentation.")
+
+    parent = load_config(continuation["parent_config"])
+    if parent["experiment"]["name"] != "dvslip_f_tcap_stage1_dwc3_d8":
+        raise ValueError("Predictive continuation must start from frozen DWC3+TCAP-d8.")
+    if requested["dataset"] != parent["dataset"]:
+        raise ValueError("Predictive continuation must preserve the parent dataset protocol.")
+    allowed_model_fields = {
+        "predictive_head",
+        "temporal_channel_mixer_dynamic_routing",
+        "temporal_channel_mixer_predictive_auxiliary",
+        "temporal_channel_mixer_surprise_routing",
+    }
+    stripped_model = {
+        key: value for key, value in requested["model"].items() if key not in allowed_model_fields
+    }
+    if stripped_model != parent["model"]:
+        raise ValueError("Predictive continuation may change only registered training/routing fields.")
+
+    from etsr.evaluation.predictive_diagnostic import run_predictive_preflight
+
+    preflight_output = (
+        Path("artifacts")
+        / "predictive_preflight"
+        / f"{requested['experiment']['name']}__seed{requested['experiment']['seed']}.json"
+    )
+    preflight = run_predictive_preflight(requested, preflight_output)
+    if not preflight["passed"]:
+        raise RuntimeError(f"Predictive preflight failed; see {preflight_output}.")
+
+    gate_config = copy.deepcopy(requested)
+    gate_config["experiment"]["name"] += "_overfit"
+    gate_config["training"].update(
+        {
+            "epochs": 50,
+            "amp": False,
+            "select_metric": "accuracy",
+            "overfit": {
+                "class_count": 16,
+                "samples_per_class": 4,
+                "stop_on_pass": True,
+            },
+        }
+    )
+    gate = train_experiment(gate_config)
+    if not gate.get("overfit_gate", {}).get("passed", False):
+        raise RuntimeError("Predictive bounded overfit failed; no continuation training was started.")
+
+    full = train_experiment(copy.deepcopy(requested))
+    profile_output = Path(full["artifact_dir"]) / "hardware_profile_v4.json"
+    profile_checkpoint(
+        load_config(Path(full["artifact_dir"]) / "deployment_config_resolved.yaml"),
+        full["deployment_checkpoint"],
+        profile_output,
+    )
+    result = {
+        "status": "complete",
+        "preflight": str(preflight_output.resolve()),
+        "gate_artifact_dir": gate["artifact_dir"],
+        "artifact_dir": full["artifact_dir"],
+        "checkpoint": full["checkpoint"],
+        "deployment_checkpoint": full["deployment_checkpoint"],
+        "profile": str(profile_output.resolve()),
+        "objective": requested["continuation"]["objective"],
+        "official_test_used": False,
+    }
+    write_json(result, Path(full["artifact_dir"]) / "predictive_workflow.json")
+    return result
+
+
 def profile_completed_runs(
     artifact_root: str | Path = "artifacts",
     checkpoint_root: str | Path = "checkpoints",

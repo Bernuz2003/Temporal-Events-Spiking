@@ -32,6 +32,15 @@ def build_model(config: dict[str, Any], num_classes: int) -> nn.Module:
         temporal_channel_mixer_learnable_delays=config.get(
             "temporal_channel_mixer_learnable_delays", False
         ),
+        temporal_channel_mixer_dynamic_routing=config.get(
+            "temporal_channel_mixer_dynamic_routing", False
+        ),
+        temporal_channel_mixer_predictive_auxiliary=config.get(
+            "temporal_channel_mixer_predictive_auxiliary", False
+        ),
+        temporal_channel_mixer_surprise_routing=config.get(
+            "temporal_channel_mixer_surprise_routing", False
+        ),
         learnable_lif_tau=config.get("learnable_lif_tau", False),
         gated_initial_memory_steps=config.get("gated_initial_memory_steps"),
         multigranular=config.get("multigranular", False),
@@ -42,4 +51,5 @@ def build_model(config: dict[str, Any], num_classes: int) -> nn.Module:
         multigranular_micro_steps=int(config.get("multigranular_micro_steps", 8)),
         stage1_mixer=str(config.get("stage1_mixer", "token_qk")),
         stage1_depthwise_kernel_size=int(config.get("stage1_depthwise_kernel_size", 3)),
+        predictive_head=config.get("predictive_head", False),
     )

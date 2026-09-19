@@ -23,6 +23,41 @@ def build_parser() -> argparse.ArgumentParser:
         "refine", help="Run one preregistered supervised refinement, then profile"
     )
     refinement.add_argument("--config", required=True)
+    predictive = subparsers.add_parser(
+        "predictive-continuation",
+        help="Run a gated predictive/conditional continuation and profile its best checkpoint",
+    )
+    predictive.add_argument("--config", required=True)
+    predictive_probe = subparsers.add_parser(
+        "predictive-probe",
+        help="Fit the train-only cross-resolution linear probe and evaluate validation predictability",
+    )
+    predictive_probe.add_argument("--config", required=True)
+    predictive_probe.add_argument("--output", required=True)
+    predictive_probe.add_argument("--train-samples", type=int, default=512)
+    predictive_probe.add_argument("--validation-samples", type=int, default=256)
+    predictive_check = subparsers.add_parser(
+        "predictive-check",
+        help="Verify parent equivalence, causal prefixes and new-module gradients",
+    )
+    predictive_check.add_argument("--config", required=True)
+    predictive_check.add_argument("--output", required=True)
+    tcap_predictive_probe = subparsers.add_parser(
+        "tcap-predictive-probe",
+        help="Fit and evaluate the checkpoint-only causal TCAP history predictor",
+    )
+    tcap_predictive_probe.add_argument("--config", required=True)
+    tcap_predictive_probe.add_argument("--checkpoint", required=True)
+    tcap_predictive_probe.add_argument("--output", required=True)
+    tcap_predictive_probe.add_argument("--fit-samples", type=int, default=256)
+    tcap_predictive_probe.add_argument("--holdout-samples", type=int, default=256)
+    dynamic_routing_diagnostic = subparsers.add_parser(
+        "dynamic-routing-diagnostic",
+        help="Compare learned dynamic TCAP gates with their train-set mean constants",
+    )
+    dynamic_routing_diagnostic.add_argument("--config", required=True)
+    dynamic_routing_diagnostic.add_argument("--checkpoint", required=True)
+    dynamic_routing_diagnostic.add_argument("--output", required=True)
     backfill = subparsers.add_parser("profile-runs", help="Reprofile completed full runs, no training")
     backfill.add_argument("--artifact-root", default="artifacts")
     backfill.add_argument("--checkpoint-root", default="checkpoints")
@@ -207,6 +242,53 @@ def main() -> None:
         from etsr.workflows import run_supervised_refinement
 
         print(run_supervised_refinement(load_config(args.config)))
+    elif args.command == "predictive-continuation":
+        from etsr.config import load_config
+        from etsr.workflows import run_predictive_continuation
+
+        print(run_predictive_continuation(load_config(args.config)))
+    elif args.command == "predictive-probe":
+        from etsr.config import load_config
+        from etsr.evaluation.predictive_diagnostic import run_cross_resolution_probe
+
+        print(
+            run_cross_resolution_probe(
+                load_config(args.config),
+                args.output,
+                max_train_samples=args.train_samples,
+                max_validation_samples=args.validation_samples,
+            )
+        )
+    elif args.command == "predictive-check":
+        from etsr.config import load_config
+        from etsr.evaluation.predictive_diagnostic import run_predictive_preflight
+
+        report = run_predictive_preflight(load_config(args.config), args.output)
+        print(report)
+        if not report["passed"]:
+            raise SystemExit("Predictive preflight failed; see the JSON report.")
+    elif args.command == "tcap-predictive-probe":
+        from etsr.config import load_config
+        from etsr.evaluation.predictive_diagnostic import run_tcap_predictive_probe
+
+        print(
+            run_tcap_predictive_probe(
+                load_config(args.config),
+                args.checkpoint,
+                args.output,
+                fit_samples=args.fit_samples,
+                holdout_samples=args.holdout_samples,
+            )
+        )
+    elif args.command == "dynamic-routing-diagnostic":
+        from etsr.config import load_config
+        from etsr.evaluation.predictive_diagnostic import run_dynamic_routing_diagnostic
+
+        print(
+            run_dynamic_routing_diagnostic(
+                load_config(args.config), args.checkpoint, args.output
+            )
+        )
     elif args.command == "profile-runs":
         from etsr.workflows import profile_completed_runs
 

@@ -1,0 +1,7 @@
+extends: dvslip_predictive_fine_future.yaml
+
+experiment:
+  name: dvslip_predictive_fusion_fine_dynamic
+
+model:
+  temporal_channel_mixer_dynamic_routing: true

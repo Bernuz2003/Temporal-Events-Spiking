@@ -1,0 +1,20 @@
+extends: dvslip_f_tcap_stage1_dwc3_d8.yaml
+
+experiment:
+  name: dvslip_predictive_continuation_base
+
+training:
+  recipe_id: dvslip_predictive_continuation_32_v1
+  epochs: 32
+  learning_rate: 0.0001
+  min_learning_rate: 0.000001
+  warmup_epochs: 2
+
+continuation:
+  parent_config: configs/dvslip_f_tcap_stage1_dwc3_d8.yaml
+  parent_checkpoint: checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt
+  freeze_batchnorm_statistics: true
+  objective:
+    mode: none
+    weight: 0.0
+    ramp_epochs: 0

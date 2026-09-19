@@ -13,7 +13,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from etsr.config import save_config
+from etsr.config import load_config, save_config
 from etsr.data.common import DatasetBundle, DatasetSubset, balanced_overfit_bundle, build_loader
 from etsr.data.factory import build_dataset_bundle
 from etsr.evaluation.metrics import (
@@ -33,8 +33,10 @@ from etsr.reproducibility import (
 )
 from etsr.training.augmentation import build_batch_augmentation
 from etsr.training.checkpointing import (
+    load_model_state,
     load_training_state,
     save_checkpoint,
+    save_deployment_checkpoint,
     save_training_state,
 )
 from etsr.training.engine import (
@@ -46,6 +48,7 @@ from etsr.training.engine import (
     train_one_epoch,
 )
 from etsr.training.gates import overfit_gate
+from etsr.training.predictive import PredictiveTrainingObjective
 from etsr.utils.io import append_csv, ensure_dir, sha256_file, write_csv, write_json
 from etsr.utils.logging import configure_logging
 
@@ -547,6 +550,50 @@ def train_experiment(
 
     num_classes = len(bundle.classes)
     model = build_model(config["model"], num_classes).to(device)
+    continuation = config.get("continuation")
+    parent_metadata = None
+    if continuation is not None:
+        parent_path = Path(continuation["parent_checkpoint"])
+        if not parent_path.is_file():
+            raise FileNotFoundError(f"Continuation parent checkpoint not found: {parent_path}")
+        parent_metadata = torch.load(parent_path, map_location=device, weights_only=False)
+        if int(parent_metadata.get("num_classes", -1)) != num_classes:
+            raise ValueError("Continuation parent class count differs from the dataset.")
+        incompatible = model.load_state_dict(parent_metadata["model"], strict=False)
+        allowed_missing = (
+            "predictive_head.",
+            ".content_router.",
+            ".predictor_logits",
+            ".surprise_router",
+        )
+        invalid_missing = [
+            key for key in incompatible.missing_keys if not any(token in key for token in allowed_missing)
+        ]
+        if invalid_missing or incompatible.unexpected_keys:
+            raise ValueError(
+                "Continuation parent is not topology-compatible: "
+                f"missing={invalid_missing}, unexpected={incompatible.unexpected_keys}"
+            )
+        logger.info("Initialized continuation from: %s", parent_path)
+
+    teacher = None
+    objective_config = (continuation or {}).get("objective", {"mode": "none", "weight": 0.0})
+    if str(objective_config.get("mode", "none")) != "none":
+        teacher_config = load_config(continuation["teacher_config"])
+        teacher = build_model(teacher_config["model"], num_classes).to(device)
+        teacher_checkpoint = load_model_state(
+            continuation["teacher_checkpoint"], teacher, device
+        )
+        if int(teacher_checkpoint.get("num_classes", -1)) != num_classes:
+            raise ValueError("Predictive teacher class count differs from the dataset.")
+        teacher.requires_grad_(False)
+        teacher.eval()
+        logger.info("Loaded frozen predictive teacher: %s", continuation["teacher_checkpoint"])
+    predictive_objective = (
+        PredictiveTrainingObjective(objective_config, teacher)
+        if continuation is not None
+        else None
+    )
     delay_modules = {
         name: module
         for name, module in model.named_modules()
@@ -560,12 +607,42 @@ def train_experiment(
         for name, module in model.named_children()
     }
     logger.info("Trainable parameters: %d", parameter_count)
+    deployment_parameter_count = sum(
+        parameter.numel()
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+        and not name.startswith("predictive_head.")
+        and not (
+            ".predictor_logits" in name
+            and not config["model"].get("temporal_channel_mixer_surprise_routing", False)
+        )
+    )
 
+    if continuation is not None and resume is None:
+        # New routers/predictors and optional teachers consume different amounts of RNG during
+        # construction. Reset before DataLoader creation so every continuation sees the same
+        # shuffle and augmentation streams as R0.
+        seed_everything(seed, bool(config["experiment"].get("deterministic", True)))
     train_loader = build_loader(bundle.train, config["dataset"], shuffle=True)
     validation_loader = build_loader(bundle.validation, config["dataset"], shuffle=False)
     optimizer = make_optimizer(model, config["training"])
     scheduler = make_scheduler(optimizer, config["training"])
     criterion = make_criterion(config["training"])
+    initial_validation = None
+    initial_validation_path = artifact_dir / "continuation_initial_validation.json"
+    if continuation is not None and resume is None:
+        initial_result, _ = evaluate(
+            model, validation_loader, criterion, device, num_classes
+        )
+        initial_validation = initial_result.to_dict()
+        write_json(initial_validation, initial_validation_path)
+        logger.info(
+            "Continuation epoch 0 | val %.4f/%.4f",
+            initial_result.loss,
+            initial_result.macro_f1,
+        )
+    elif continuation is not None and initial_validation_path.is_file():
+        initial_validation = json.loads(initial_validation_path.read_text(encoding="utf-8"))
     batch_augmentation = build_batch_augmentation(config["augmentation"])
     amp_enabled = bool(config["training"].get("amp", False) and device.type == "cuda")
     try:
@@ -585,6 +662,7 @@ def train_experiment(
         "git_commit": commit,
         "git_dirty": dirty,
         "trainable_parameters": parameter_count,
+        "deployment_parameters": deployment_parameter_count,
         "parameter_breakdown": parameter_breakdown,
         "classes": bundle.classes,
         "official_test_used": False,
@@ -658,6 +736,9 @@ def train_experiment(
             config["training"].get("gradient_clip_norm"),
             int(config["training"].get("gradient_accumulation_steps", 1)),
             batch_augmentation,
+            predictive_objective,
+            epoch,
+            bool((continuation or {}).get("freeze_batchnorm_statistics", False)),
         )
         validation, _ = evaluate(model, validation_loader, criterion, device, num_classes)
         epoch_peak_memory = (
@@ -681,6 +762,16 @@ def train_experiment(
             "amp_overflow_fraction": train_metrics["amp_overflow_fraction"],
             "peak_cuda_memory_bytes": epoch_peak_memory,
         }
+        for name in (
+            "classification_loss",
+            "auxiliary_loss",
+            "predictive_loss",
+            "predictive_pair_coverage",
+            "temporal_prediction_loss",
+            "auxiliary_weight",
+        ):
+            if name in train_metrics:
+                row[f"train_{name}"] = train_metrics[name]
         if delay_modules:
             row["delay_temperature"] = next(iter(delay_modules.values())).delay_temperature
         append_csv(row, artifact_dir / "history.csv")
@@ -733,6 +824,30 @@ def train_experiment(
                 break
 
     restore_best_model(checkpoint_path, model, device, logger)
+    deployment_checkpoint_path = None
+    if continuation is not None:
+        deployment_config = copy.deepcopy(resolved_config)
+        deployment_config.pop("continuation", None)
+        deployment_config["model"].pop("predictive_head", None)
+        if not deployment_config["model"].get(
+            "temporal_channel_mixer_surprise_routing", False
+        ):
+            deployment_config["model"].pop(
+                "temporal_channel_mixer_predictive_auxiliary", None
+            )
+        parent_config = load_config(continuation["parent_config"])
+        if objective_config.get("mode") in {"fine_future", "fine_same"}:
+            deployment_config["representation"] = copy.deepcopy(parent_config["representation"])
+        deployment_checkpoint_path = checkpoint_dir / "deployment.pt"
+        save_config(deployment_config, artifact_dir / "deployment_config_resolved.yaml")
+        save_deployment_checkpoint(
+            deployment_checkpoint_path,
+            model,
+            best_epoch,
+            best_score,
+            deployment_config,
+            num_classes,
+        )
     validation_payload, shortcut_correlations, prefix_evaluation = _write_final_evaluation(
         config,
         model,
@@ -754,9 +869,15 @@ def train_experiment(
         "readout": _readout_metadata(config),
         "validation": validation_payload,
         "trainable_parameters": parameter_count,
+        "deployment_parameters": deployment_parameter_count,
         "parameter_breakdown": parameter_breakdown,
         "checkpoint": str(checkpoint_path.resolve()),
         "last_checkpoint": str(last_checkpoint_path.resolve()),
+        "deployment_checkpoint": (
+            str(deployment_checkpoint_path.resolve())
+            if deployment_checkpoint_path is not None
+            else None
+        ),
         "artifact_dir": str(artifact_dir.resolve()),
         "git_commit": commit,
         "git_dirty": dirty,
@@ -774,6 +895,32 @@ def train_experiment(
     if delay_modules:
         summary["learned_delays"] = {
             name: module.learned_delay_summary() for name, module in delay_modules.items()
+        }
+    if continuation is not None:
+        summary["continuation"] = {
+            "parent_checkpoint": str(Path(continuation["parent_checkpoint"]).resolve()),
+            "parent_checkpoint_sha256": sha256_file(continuation["parent_checkpoint"]),
+            "parent_epoch": int(parent_metadata["epoch"]),
+            "objective": objective_config,
+            "freeze_batchnorm_statistics": bool(
+                continuation.get("freeze_batchnorm_statistics", False)
+            ),
+            "teacher_checkpoint": (
+                str(Path(continuation["teacher_checkpoint"]).resolve())
+                if teacher is not None
+                else None
+            ),
+            "teacher_checkpoint_sha256": (
+                sha256_file(continuation["teacher_checkpoint"])
+                if teacher is not None
+                else None
+            ),
+            "normalization_report_sha256": (
+                sha256_file(objective_config["normalization_report"])
+                if objective_config.get("normalization_report")
+                else None
+            ),
+            "initial_validation": initial_validation,
         }
     write_json(summary, artifact_dir / "summary.json")
     logger.info("Artifacts: %s", artifact_dir)

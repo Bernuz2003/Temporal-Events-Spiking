@@ -1,0 +1,24 @@
+extends: dvslip_predictive_continuation_base.yaml
+
+experiment:
+  name: dvslip_predictive_fine_future
+
+representation:
+  name: multigranular_count_frame
+  micro_bin_width_us: 6250
+  fine_spatial_stride: 4
+  fine_count_cap: 65535
+
+model:
+  predictive_head: true
+
+continuation:
+  teacher_config: configs/dvslip_f_multigranular_temporal_capacity.yaml
+  teacher_checkpoint: checkpoints/dvslip_f_multigranular_temporal_capacity__20260912_135802_779469__seed42/best.pt
+  objective:
+    mode: fine_future
+    weight: 0.1
+    ramp_epochs: 4
+    horizon_steps: 2
+    alignment_horizon_steps: 2
+    normalization_report: artifacts/predictive_diagnostics/fine_future_probe.json

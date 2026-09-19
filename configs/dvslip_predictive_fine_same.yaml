@@ -1,0 +1,8 @@
+extends: dvslip_predictive_fine_future.yaml
+
+experiment:
+  name: dvslip_predictive_fine_same
+
+continuation:
+  objective:
+    mode: fine_same

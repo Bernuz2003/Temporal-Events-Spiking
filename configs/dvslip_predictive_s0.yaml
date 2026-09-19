@@ -1,0 +1,13 @@
+extends: dvslip_predictive_continuation_base.yaml
+
+experiment:
+  name: dvslip_predictive_s0
+
+model:
+  temporal_channel_mixer_predictive_auxiliary: true
+
+continuation:
+  objective:
+    mode: none
+    weight: 0.1
+    ramp_epochs: 4

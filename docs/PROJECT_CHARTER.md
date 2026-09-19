@@ -1,6 +1,6 @@
 # Project charter
 
-**Aggiornato:** 2026-09-07
+**Aggiornato:** 2026-09-19
 
 ## Obiettivo
 
@@ -14,9 +14,12 @@ protocollo. Un punteggio isolato non basta.
 1. Stabilizzare una modifica **strutturale** che migliori la baseline.
 2. Confermare baseline e candidata con più seed e completare il profilo hardware proxy.
 3. Congelare l'architettura.
-4. Applicare soltanto allora augmentation, ottimizzazione della convergenza ed eventuale
-   quantizzazione, sempre con un controllo sulla baseline.
-5. Usare l'official test una sola volta per la valutazione finale autorizzata.
+4. Sul riferimento confermato, eseguire la fase predittiva/condizionale delimitata da
+   [`PREDICTIVE_TEMPORAL_ROADMAP.md`](PREDICTIVE_TEMPORAL_ROADMAP.md), prima di riprendere le
+   augmentation. Il controllo è la stessa candidata con uguale continuazione di training.
+5. Congelare nuovamente struttura e ricetta; riprendere augmentation e raffinamento sulla sola
+   candidata. Non duplicare i run sulla baseline B; quantizzazione successiva alla selezione.
+6. Usare l'official test una sola volta per la valutazione finale autorizzata.
 
 Non si apre una griglia di clipping, learning rate, neuron model o readout durante la selezione
 strutturale. Un nuovo run deve eliminare un'incertezza capace di cambiare la candidata finale.
@@ -35,10 +38,11 @@ stato e operazioni; non è sufficiente spostare il costo fuori dal conteggio dei
 
 ## Confini
 
-La fase corrente comprende front-end/patch embedding, memoria temporale causale compatta e il
-readout già disponibile. JEPA, predictive coding, pretraining, grandi teacher, ricerca estesa di
-iperparametri e quantizzazione sono rinviati. DVS-Gesture e altri dataset servono alla sola
-validazione di trasferimento della candidata congelata.
+Il riferimento è F+DWC-3+TCAP-d8. La riapertura corrente riguarda soltanto supervisione predittiva,
+routing TCAP e i relativi controlli preregistrati; non è una nuova ricerca generalista di
+architetture. Grandi teacher, pretraining esteso da zero, sweep e quantizzazione restano rinviati.
+DVS-Gesture serve alla validazione di trasferimento; la disponibilità di teacher specifici deve
+essere dichiarata prima di rivendicare il trasferimento dell'intera pipeline.
 
 ## Integrità sperimentale
 

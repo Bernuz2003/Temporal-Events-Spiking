@@ -1,0 +1,18 @@
+extends: dvslip_predictive_continuation_base.yaml
+
+experiment:
+  name: dvslip_predictive_coarse_future
+
+model:
+  predictive_head: true
+
+continuation:
+  teacher_config: configs/dvslip_f_tcap_stage1_dwc3_d8.yaml
+  teacher_checkpoint: checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt
+  objective:
+    mode: coarse_future
+    weight: 0.1
+    ramp_epochs: 4
+    horizon_steps: 2
+    alignment_horizon_steps: 2
+    normalization_report: artifacts/predictive_diagnostics/coarse_future_probe.json

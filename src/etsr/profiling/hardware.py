@@ -209,6 +209,38 @@ class _HardwareProfiler:
             self.totals["multivalued_mac_potential"] += macs
             self.totals["state_reads"] += history_reads
             self.totals["recurrent_state_updates"] += output.numel()
+            if module.dynamic_routing:
+                router_macs = output.shape[0] * output.shape[1] * module.channels * len(module.delays)
+                pooling_adds = output.numel()
+                gate_multiplies = output.numel() * len(module.delays)
+                layer["content_router_mac"] += router_macs
+                layer["global_pool_add"] += pooling_adds
+                layer["tap_gate_multiply"] += gate_multiplies
+                self.totals["multivalued_mac_potential"] += router_macs
+                self.totals["elementwise_add"] += pooling_adds
+                self.totals["elementwise_multiply"] += gate_multiplies
+                self.totals["sigmoid"] += output.shape[0] * output.shape[1] * len(module.delays)
+            if module.predictive_auxiliary:
+                predictor_multiplies = output.numel() * len(module.delays)
+                predictor_adds = output.numel() * max(0, len(module.delays) - 1)
+                layer["causal_predictor_multiply"] += predictor_multiplies
+                layer["causal_predictor_add"] += predictor_adds
+                self.totals["elementwise_multiply"] += predictor_multiplies
+                self.totals["elementwise_add"] += predictor_adds
+            if module.surprise_routing:
+                surprise_router_macs = output.shape[0] * output.shape[1] * len(module.delays)
+                layer["surprise_router_mac"] += surprise_router_macs
+                self.totals["multivalued_mac_potential"] += surprise_router_macs
+            routing = module.last_routing_statistics
+            if routing is not None:
+                means = routing["gate_mean_by_delay"].cpu()
+                stds = routing["gate_std_by_delay"].cpu()
+                for index, delay in enumerate(module.delays):
+                    layer[f"observed_gate_mean_delay_{delay}"] += float(means[index])
+                    layer[f"observed_gate_std_delay_{delay}"] += float(stds[index])
+                surprise = float(routing["surprise_mean"].cpu())
+                if not torch.isnan(torch.tensor(surprise)):
+                    layer["observed_normalized_surprise_mean"] += surprise
             state_elements = module.max_delay * output[0].numel() // output.shape[1]
             self.state_shapes[name] = (state_elements, output.element_size() * 8)
             self._activation(output)
@@ -400,8 +432,18 @@ class _HardwareProfiler:
                 layer["delays"] = list(values["delays"])
             layers[name] = layer
 
+        deployable_parameters = [
+            parameter
+            for name, parameter in self.model.named_parameters()
+            if not name.startswith("predictive_head.")
+        ]
+        training_only_parameters = [
+            parameter
+            for name, parameter in self.model.named_parameters()
+            if name.startswith("predictive_head.")
+        ]
         parameter_dtypes: dict[str, int] = defaultdict(int)
-        for parameter in self.model.parameters():
+        for parameter in deployable_parameters:
             parameter_dtypes[str(parameter.dtype)] += parameter.numel()
         state_elements = sum(elements for elements, _bits in self.state_shapes.values())
         state_bits = sum(elements * bits for elements, bits in self.state_shapes.values())
@@ -426,12 +468,15 @@ class _HardwareProfiler:
             "parameters": {
                 "trainable_elements": sum(
                     parameter.numel()
-                    for parameter in self.model.parameters()
+                    for parameter in deployable_parameters
                     if parameter.requires_grad
                 ),
                 "runtime_parameter_bits": sum(
                     parameter.numel() * parameter.element_size() * 8
-                    for parameter in self.model.parameters()
+                    for parameter in deployable_parameters
+                ),
+                "training_only_elements_excluded": sum(
+                    parameter.numel() for parameter in training_only_parameters
                 ),
                 "dtypes": dict(parameter_dtypes),
                 "quantization_status": "unquantized_runtime",
@@ -499,7 +544,10 @@ class _HardwareProfiler:
                 "sigmoid_per_sample": self.totals["sigmoid"] / samples,
                 "tanh_per_sample": self.totals["tanh"] / samples,
                 "exp_lut_per_sample": 0,
-                "note": "surrogate sigmoid is training-only; gated-readout sigmoid/tanh are inference operations",
+                "note": (
+                    "surrogate sigmoid is training-only; gated-readout and conditional TCAP "
+                    "sigmoids/tanh are inference operations"
+                ),
             },
             "limitations": [
                 "BatchNorm is assumed fused into preceding affine layers at inference.",

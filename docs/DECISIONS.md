@@ -1,6 +1,30 @@
 # Decisioni attive
 
-**Aggiornate:** 2026-09-13
+**Aggiornate:** 2026-09-19
+
+## Decisioni correnti della fase predittiva
+
+1. F+DWC-3+TCAP-d8 è il riferimento congelato. F+TCAP e MG+TCAP citati sotto sono riferimenti
+   storici della discovery, non il modello corrente.
+2. Prima della ripresa augmentation si segue soltanto
+   [`PREDICTIVE_TEMPORAL_ROADMAP.md`](PREDICTIVE_TEMPORAL_ROADMAP.md): continuazione comune R0,
+   supervisione predittiva, routing dinamico e surprise con controlli; una sola fusione.
+3. Il confronto è con uguale training aggiuntivo del finalista, non con B. BN running fissa
+   in tutti i bracci; teacher eval. Nuove augmentation escluse da questa fase.
+4. PLIF informa diagnostiche dei prefissi e un fallback di supervisione tardiva. Non si
+   reintroduce il neuron model e non si impone una costante `last_event+K`.
+5. Tetto screening: otto continuazioni da 32 epoche, con limite aggiuntivo in GPU-ore. Controlli,
+   soglie, repliche e trasferimento condizionale sono definiti nel protocollo operativo.
+6. Si promuove un solo vincitore confermato, poi si riprendono le augmentation sulla candidata.
+   B non riceve screen duplicati. I negativi validi restano parte dell'evidenza.
+7. Official test escluso. Profiling dal proprio best; nessun risparmio attribuito automaticamente
+   a gate soft. La disponibilità del teacher limita cosa può essere trasferito fra dataset.
+
+## Decisioni della discovery al 13 settembre — contesto storico
+
+Le seguenti voci documentano il percorso precedente. Le indicazioni di candidato corrente e
+ordine futuro ai punti 6, 17, 21–26 sono superate dalle decisioni sopra; non autorizzano nuovi
+run oltre al protocollo attivo. I risultati numerici conservano il proprio seed e significato.
 
 1. DVS-Lip resta il benchmark di sviluppo e l'official test resta embargoed fino alla valutazione
    finale. Tutte le cifre correnti sono seed 42 sulla development validation ricavata

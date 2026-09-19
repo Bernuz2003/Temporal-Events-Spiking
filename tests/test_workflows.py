@@ -390,6 +390,32 @@ def test_supervised_refinement_accepts_only_declared_multi_family_combinations(m
         workflows.run_supervised_refinement(config)
 
 
+def test_predictive_continuation_failure_blocks_the_full_run(tmp_path, monkeypatch):
+    config = load_config("configs/dvslip_predictive_r0.yaml")
+    calls = []
+
+    def train(candidate):
+        calls.append(copy.deepcopy(candidate))
+        directory = tmp_path / "gate"
+        directory.mkdir(exist_ok=True)
+        return {
+            "artifact_dir": str(directory),
+            "checkpoint": str(directory / "best.pt"),
+            "overfit_gate": {"passed": False},
+        }
+
+    monkeypatch.setattr(
+        "etsr.evaluation.predictive_diagnostic.run_predictive_preflight",
+        lambda _config, _output: {"passed": True},
+    )
+    monkeypatch.setattr(workflows, "train_experiment", train)
+    with pytest.raises(RuntimeError, match="no continuation training"):
+        workflows.run_predictive_continuation(config)
+    assert len(calls) == 1
+    assert calls[0]["training"]["overfit"]["stop_on_pass"]
+    assert calls[0]["training"]["epochs"] == 50
+
+
 def test_runner_overfit_early_stops_and_records_actual_subset(tmp_path, monkeypatch):
     frames = torch.tensor([[1., 0.], [1., 0.], [0., 1.], [0., 1.]])
     targets = torch.tensor([0, 0, 1, 1])

@@ -38,6 +38,9 @@ class ConvBNLIF2d(nn.Module):
         temporal_fir_dilation: int = 1,
         temporal_channel_mixer_delays: tuple[int, ...] | None = None,
         temporal_channel_mixer_learnable_delays: bool = False,
+        temporal_channel_mixer_dynamic_routing: bool = False,
+        temporal_channel_mixer_predictive_auxiliary: bool = False,
+        temporal_channel_mixer_surprise_routing: bool = False,
         learnable_tau: bool = False,
     ) -> None:
         super().__init__()
@@ -64,6 +67,9 @@ class ConvBNLIF2d(nn.Module):
                 out_channels,
                 temporal_channel_mixer_delays,
                 learnable_delays=temporal_channel_mixer_learnable_delays,
+                dynamic_routing=temporal_channel_mixer_dynamic_routing,
+                predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
+                surprise_routing=temporal_channel_mixer_surprise_routing,
             )
             if temporal_channel_mixer_delays is not None
             else None
@@ -95,6 +101,9 @@ class ConvBNMaxPoolLIF2d(nn.Module):
         temporal_fir_dilation: int = 1,
         temporal_channel_mixer_delays: tuple[int, ...] | None = None,
         temporal_channel_mixer_learnable_delays: bool = False,
+        temporal_channel_mixer_dynamic_routing: bool = False,
+        temporal_channel_mixer_predictive_auxiliary: bool = False,
+        temporal_channel_mixer_surprise_routing: bool = False,
         learnable_tau: bool = False,
     ) -> None:
         super().__init__()
@@ -117,6 +126,9 @@ class ConvBNMaxPoolLIF2d(nn.Module):
                 out_channels,
                 temporal_channel_mixer_delays,
                 learnable_delays=temporal_channel_mixer_learnable_delays,
+                dynamic_routing=temporal_channel_mixer_dynamic_routing,
+                predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
+                surprise_routing=temporal_channel_mixer_surprise_routing,
             )
             if temporal_channel_mixer_delays is not None
             else None
@@ -149,6 +161,9 @@ class InitialPatchEmbedding(nn.Module):
         temporal_fir_dilation: int = 1,
         temporal_channel_mixer_delays: tuple[int, ...] | None = None,
         temporal_channel_mixer_learnable_delays: bool = False,
+        temporal_channel_mixer_dynamic_routing: bool = False,
+        temporal_channel_mixer_predictive_auxiliary: bool = False,
+        temporal_channel_mixer_surprise_routing: bool = False,
         learnable_tau: bool = False,
     ):
         super().__init__()
@@ -196,6 +211,9 @@ class InitialPatchEmbedding(nn.Module):
             temporal_fir_dilation=temporal_fir_dilation,
             temporal_channel_mixer_delays=temporal_channel_mixer_delays,
             temporal_channel_mixer_learnable_delays=temporal_channel_mixer_learnable_delays,
+            temporal_channel_mixer_dynamic_routing=temporal_channel_mixer_dynamic_routing,
+            temporal_channel_mixer_predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
+            temporal_channel_mixer_surprise_routing=temporal_channel_mixer_surprise_routing,
             learnable_tau=learnable_tau,
         )
         self.shortcut = ConvBNLIF2d(
@@ -225,6 +243,9 @@ class PyramidalPatchEmbedding(nn.Module):
         temporal_fir_dilation: int = 1,
         temporal_channel_mixer_delays: tuple[int, ...] | None = None,
         temporal_channel_mixer_learnable_delays: bool = False,
+        temporal_channel_mixer_dynamic_routing: bool = False,
+        temporal_channel_mixer_predictive_auxiliary: bool = False,
+        temporal_channel_mixer_surprise_routing: bool = False,
         learnable_tau: bool = False,
     ) -> None:
         super().__init__()
@@ -258,6 +279,9 @@ class PyramidalPatchEmbedding(nn.Module):
             temporal_fir_dilation=temporal_fir_dilation,
             temporal_channel_mixer_delays=temporal_channel_mixer_delays,
             temporal_channel_mixer_learnable_delays=temporal_channel_mixer_learnable_delays,
+            temporal_channel_mixer_dynamic_routing=temporal_channel_mixer_dynamic_routing,
+            temporal_channel_mixer_predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
+            temporal_channel_mixer_surprise_routing=temporal_channel_mixer_surprise_routing,
             learnable_tau=learnable_tau,
         )
         self.shortcut = ConvBNLIF2d(
@@ -362,7 +386,7 @@ class FineTemporalBranch(nn.Module):
                 diagonal, diagonal.remainder(channels_per_group)
             ] = 1.0 / self.micro_steps_per_macro
 
-    def forward(self, fine_frames: torch.Tensor) -> torch.Tensor:
+    def forward_pre_lif(self, fine_frames: torch.Tensor) -> torch.Tensor:
         if fine_frames.ndim != 5:
             raise ValueError("Fine branch expects [B, T_micro, C, H, W].")
         if fine_frames.shape[1] % self.micro_steps_per_macro:
@@ -378,7 +402,10 @@ class FineTemporalBranch(nn.Module):
         x = self.temporal_bn(self.temporal_reduce(x))
         macro_steps = x.shape[-1]
         x = x.reshape(batch, height, width, channels, macro_steps).permute(4, 0, 3, 1, 2)
-        return self.output_lif(x.contiguous())
+        return x.contiguous()
+
+    def forward(self, fine_frames: torch.Tensor) -> torch.Tensor:
+        return self.output_lif(self.forward_pre_lif(fine_frames))
 
 
 class PatchEmbeddingStage(nn.Module):
@@ -394,6 +421,9 @@ class PatchEmbeddingStage(nn.Module):
         temporal_fir_dilation: int = 1,
         temporal_channel_mixer_delays: tuple[int, ...] | None = None,
         temporal_channel_mixer_learnable_delays: bool = False,
+        temporal_channel_mixer_dynamic_routing: bool = False,
+        temporal_channel_mixer_predictive_auxiliary: bool = False,
+        temporal_channel_mixer_surprise_routing: bool = False,
         learnable_tau: bool = False,
     ):
         super().__init__()
@@ -419,6 +449,9 @@ class PatchEmbeddingStage(nn.Module):
             temporal_fir_dilation=temporal_fir_dilation,
             temporal_channel_mixer_delays=temporal_channel_mixer_delays,
             temporal_channel_mixer_learnable_delays=temporal_channel_mixer_learnable_delays,
+            temporal_channel_mixer_dynamic_routing=temporal_channel_mixer_dynamic_routing,
+            temporal_channel_mixer_predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
+            temporal_channel_mixer_surprise_routing=temporal_channel_mixer_surprise_routing,
             learnable_tau=learnable_tau,
         )
         self.shortcut = ConvBNLIF2d(

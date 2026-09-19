@@ -1,0 +1,7 @@
+extends: dvslip_predictive_s0_dynamic.yaml
+
+experiment:
+  name: dvslip_predictive_s1_dynamic
+
+model:
+  temporal_channel_mixer_surprise_routing: true

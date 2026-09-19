@@ -103,6 +103,62 @@ Il workflow esegue bounded overfit, full da pesi nuovi e profiling v4. La config
 Token-QK nello stage 1 con il mixer depthwise 3×3; E0, F, TCAP 1/2/4, stage 2 e recipe restano
 invariati. Non cambiare kernel, ritardi o soglia del gate.
 
+## Fase predictive-temporal
+
+Questa fase usa esclusivamente `predictive-continuation`: il workflow carica C0, esegue
+automaticamente il preflight di equivalenza/causalità/gradienti, applica il bounded overfit e
+avvia le 32 epoche solo se il gate passa. Il best di training conserva i moduli ausiliari;
+`deployment.pt` e `deployment_config_resolved.yaml` rimuovono predictor cross-resolution e ogni
+predittore TCAP non usato in inferenza. Prima di ogni campagna eseguire sul commit scelto:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/dataset_workflow.sh dvslip check
+```
+
+Le due diagnostiche P0 non addestrano il classificatore. Il probe fine usa due sottoinsiemi
+disgiunti del development-train e scrive anche la normalizzazione per canale richiesta da P-F.
+La diagnostica TCAP fitta soltanto i coefficienti convessi del probe e valuta storia/errore.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-p0-fine -- predictive-probe --config configs/dvslip_predictive_fine_future.yaml --output artifacts/predictive_diagnostics/fine_future_probe.json --train-samples 512 --validation-samples 256
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-p0-tcap -- tcap-predictive-probe --config configs/dvslip_f_tcap_stage1_dwc3_d8.yaml --checkpoint checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt --output artifacts/predictive_diagnostics/tcap_predictive_probe.json --fit-samples 256 --holdout-samples 256
+```
+
+Se P0 è valido, avviare prima il solo controllo R0. P-F e D possono partire in parallelo soltanto
+dopo che R0 ha confermato la ricetta comune; il file prodotto dal probe fine è un input tracciato
+di P-F.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-r0 -- predictive-continuation --config configs/dvslip_predictive_r0.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-fine-future -- predictive-continuation --config configs/dvslip_predictive_fine_future.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-dynamic-tcap -- predictive-continuation --config configs/dvslip_predictive_dynamic_tcap.yaml
+```
+
+Dopo D, confrontare i gate dinamici con i loro valori medi sul train usando il checkpoint
+deployabile del run, senza riaddestramento:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-dynamic-routing-diagnostic -- dynamic-routing-diagnostic --config artifacts/<run-D>/deployment_config_resolved.yaml --checkpoint checkpoints/<run-D>/deployment.pt --output artifacts/<run-D>/dynamic_routing_diagnostic.json
+```
+
+I controlli P-0/P-C, il fallback L e i bracci S sono condizionali. P-C richiede prima il proprio
+probe per produrre la normalizzazione coarse. Se D supera lo screen usare la coppia S dinamica;
+altrimenti usare S0/S1 senza router di contenuto. Non eseguire entrambe le coppie.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-p0-coarse -- predictive-probe --config configs/dvslip_predictive_coarse_future.yaml --output artifacts/predictive_diagnostics/coarse_future_probe.json --train-samples 512 --validation-samples 256
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-fine-same -- predictive-continuation --config configs/dvslip_predictive_fine_same.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-coarse-future -- predictive-continuation --config configs/dvslip_predictive_coarse_future.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-late-prefix -- predictive-continuation --config configs/dvslip_predictive_late_prefix.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0 -- predictive-continuation --config configs/dvslip_predictive_s0.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s1 -- predictive-continuation --config configs/dvslip_predictive_s1.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0-dynamic -- predictive-continuation --config configs/dvslip_predictive_s0_dynamic.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s1-dynamic -- predictive-continuation --config configs/dvslip_predictive_s1_dynamic.yaml
+```
+
+Le tre config `dvslip_predictive_fusion_*` rappresentano i soli esiti possibili della diramazione,
+non tre run da lanciare: si sceglie una sola config dopo aver identificato i due componenti positivi.
+
 ## Monitoraggio e ripresa
 
 ```bash
