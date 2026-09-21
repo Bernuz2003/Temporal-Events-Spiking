@@ -552,6 +552,7 @@ def train_experiment(
     model = build_model(config["model"], num_classes).to(device)
     continuation = config.get("continuation")
     parent_metadata = None
+    new_parameter_names: set[str] = set()
     if continuation is not None:
         parent_path = Path(continuation["parent_checkpoint"])
         if not parent_path.is_file():
@@ -576,6 +577,10 @@ def train_experiment(
                 "Continuation parent is not topology-compatible: "
                 f"missing={invalid_missing}, unexpected={incompatible.unexpected_keys}"
             )
+        model_parameter_names = dict(model.named_parameters())
+        new_parameter_names = {
+            name for name in incompatible.missing_keys if name in model_parameter_names
+        }
         logger.info("Initialized continuation from: %s", parent_path)
 
     teacher = None
@@ -637,7 +642,24 @@ def train_experiment(
         seed_everything(seed, bool(config["experiment"].get("deterministic", True)))
     train_loader = build_loader(bundle.train, config["dataset"], shuffle=True)
     validation_loader = build_loader(bundle.validation, config["dataset"], shuffle=False)
-    optimizer = make_optimizer(model, config["training"])
+    new_parameter_learning_rate = (
+        continuation.get("new_parameter_learning_rate")
+        if continuation is not None
+        else None
+    )
+    optimizer = make_optimizer(
+        model,
+        config["training"],
+        new_parameter_names=new_parameter_names,
+        new_parameter_learning_rate=new_parameter_learning_rate,
+    )
+    if new_parameter_learning_rate is not None:
+        logger.info(
+            "Continuation learning rates | inherited %.3e | new %.3e | new tensors %d",
+            float(config["training"]["learning_rate"]),
+            float(new_parameter_learning_rate),
+            len(new_parameter_names),
+        )
     scheduler = make_scheduler(optimizer, config["training"])
     criterion = make_criterion(config["training"])
     initial_validation = None
@@ -679,6 +701,9 @@ def train_experiment(
         "classes": bundle.classes,
         "official_test_used": False,
     }
+    if continuation is not None:
+        runtime["continuation_new_parameter_names"] = sorted(new_parameter_names)
+        runtime["continuation_new_parameter_learning_rate"] = new_parameter_learning_rate
     runtime.update(getattr(bundle.train, "runtime_metadata", {}))
     if overfit is not None:
         runtime["overfit_train_indices"] = list(bundle.train.indices)
@@ -737,6 +762,10 @@ def train_experiment(
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
         learning_rate = optimizer.param_groups[0]["lr"]
+        group_learning_rates = {
+            str(group.get("group_name", f"group_{index}")): float(group["lr"])
+            for index, group in enumerate(optimizer.param_groups)
+        }
         train_metrics = train_one_epoch(
             model,
             train_loader,
@@ -752,7 +781,15 @@ def train_experiment(
             epoch,
             bool((continuation or {}).get("freeze_batchnorm_statistics", False)),
         )
-        validation, _ = evaluate(model, validation_loader, criterion, device, num_classes)
+        routing_statistics: list[dict[str, Any]] = []
+        validation, _ = evaluate(
+            model,
+            validation_loader,
+            criterion,
+            device,
+            num_classes,
+            routing_statistics=routing_statistics,
+        )
         epoch_peak_memory = (
             int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else None
         )
@@ -774,6 +811,10 @@ def train_experiment(
             "amp_overflow_fraction": train_metrics["amp_overflow_fraction"],
             "peak_cuda_memory_bytes": epoch_peak_memory,
         }
+        if "inherited" in group_learning_rates:
+            row["inherited_learning_rate"] = group_learning_rates["inherited"]
+        if "new" in group_learning_rates:
+            row["new_parameter_learning_rate"] = group_learning_rates["new"]
         for name in (
             "classification_loss",
             "auxiliary_loss",
@@ -787,6 +828,11 @@ def train_experiment(
         if delay_modules:
             row["delay_temperature"] = next(iter(delay_modules.values())).delay_temperature
         append_csv(row, artifact_dir / "history.csv")
+        for routing_row in routing_statistics:
+            append_csv(
+                {"epoch": epoch, "partition": "validation", **routing_row},
+                artifact_dir / "routing_gate_trajectory.csv",
+            )
         if delay_modules:
             for delay_row in _delay_trajectory_rows(delay_modules, epoch):
                 append_csv(delay_row, artifact_dir / "learned_delay_trajectory.csv")
@@ -941,7 +987,12 @@ def train_experiment(
                 else None
             ),
             "initial_validation": initial_validation,
+            "new_parameter_names": sorted(new_parameter_names),
+            "new_parameter_learning_rate": new_parameter_learning_rate,
         }
+    routing_trajectory_path = artifact_dir / "routing_gate_trajectory.csv"
+    if routing_trajectory_path.is_file():
+        summary["routing_gate_trajectory"] = str(routing_trajectory_path.resolve())
     write_json(summary, artifact_dir / "summary.json")
     logger.info("Artifacts: %s", artifact_dir)
     logger.info("Checkpoint: %s", checkpoint_path)

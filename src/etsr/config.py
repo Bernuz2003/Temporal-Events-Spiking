@@ -561,6 +561,13 @@ def _validate_predictive_continuation(config: dict[str, Any], objective_mode: st
             raise ConfigError(f"continuation.{field} must be a non-empty path")
     if continuation.get("freeze_batchnorm_statistics") is not True:
         raise ConfigError("Predictive continuation requires fixed BatchNorm running statistics")
+    new_parameter_learning_rate = continuation.get("new_parameter_learning_rate")
+    if new_parameter_learning_rate is not None and (
+        type(new_parameter_learning_rate) not in (int, float)
+        or isinstance(new_parameter_learning_rate, bool)
+        or new_parameter_learning_rate <= 0.0
+    ):
+        raise ConfigError("continuation.new_parameter_learning_rate must be positive")
     objective = continuation.get("objective")
     if not isinstance(objective, dict):
         raise ConfigError("continuation.objective must be a mapping")

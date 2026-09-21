@@ -207,6 +207,35 @@ o regolarizzazione, non dimostra routing utile. Anche un calo per gate costanti 
 diagnostica, non sostituisce una futura ablation riaddestrata qualora si volesse una rivendicazione
 forte di novità architetturale.
 
+### Esito dello screen seed 42 e confronto confermativo
+
+Lo screen ha ottenuto 55,57% Macro-F1, pari a +0,60 pp su R0 e +0,40 pp su C0: il margine
+non supera il gate prestazionale di +1 pp. La diagnostica checkpoint-only già prevista ha però
+mostrato che sostituire i gate locali con le rispettive medie di training riduce il Macro-F1 a
+54,04% e l'accuracy a 54,02%. Il contributo dinamico sullo stesso checkpoint è quindi +1,53 pp
+Macro-F1 e +1,70 pp accuracy. Questo sostiene la dipendenza dal contenuto, pur senza equivalere
+a un'ablation riaddestrata.
+
+R0 ha inoltre mostrato che la continuazione comune riporta in tre epoche il learning rate dei
+pesi ereditati da circa `4e-6` a `1e-4`, degradando rapidamente C0. Prima di chiudere D viene
+pertanto eseguito un solo blocco confermativo preregistrato con learning rate discriminativi:
+
+- pesi ereditati: massimo `1e-5`;
+- soli parametri nuovi del router: massimo `1e-4`;
+- stesso parent C0, 64 epoche, dati, BN fissa, schedule, seed e criteri di selezione;
+- nuovo R0 appaiato con la stessa ricetta, senza parametri a learning rate alto.
+
+Ad ogni epoca D registra sul validation set, a pesi fissi e senza augmentation, media, deviazione
+standard e coefficiente di variazione dei gate per layer e delay. La varianza totale su
+sample×tempo×spazio viene inoltre decomposta in variabilità fra sample e variabilità interna al
+sample. In questo modo il cambiamento del bias medio resta separato dalla risposta agli input;
+il confronto finale con gate medi rimane comunque obbligatorio.
+
+Questo blocco non rivaluta P-F e non autorizza una griglia di learning rate. D viene promosso
+solo se supera il nuovo R0 di almeno +1 pp Macro-F1, non perde materialmente accuracy e conserva
+evidenza dinamica nel confronto con gate medi. In caso contrario il routing di contenuto viene
+chiuso e non entra in fusione.
+
 ## 7. S — surprise come informazione aggiuntiva, senza imporne il segno
 
 Questo asse si apre solo dopo P0.3 e l'esito di D. Il residuo non viene interpretato automaticamente

@@ -427,6 +427,11 @@ def test_predictive_continuation_rejects_recipe_and_representation_drift():
     with pytest.raises(ValueError, match="preregistered representation"):
         workflows.run_predictive_continuation(config)
 
+    config = load_config("configs/dvslip_predictive_dynamic_tcap_discriminative_lr.yaml")
+    config["continuation"]["new_parameter_learning_rate"] = 2e-4
+    with pytest.raises(ValueError, match="canonical new_parameter_learning_rate"):
+        workflows.run_predictive_continuation(config)
+
 
 def test_runner_overfit_early_stops_and_records_actual_subset(tmp_path, monkeypatch):
     frames = torch.tensor([[1., 0.], [1., 0.], [0., 1.], [0., 1.]])

@@ -4,6 +4,7 @@ import json
 
 import pytest
 import torch
+from torch.utils.data import DataLoader, TensorDataset
 
 from etsr.config import load_config
 from etsr.evaluation.predictive_diagnostic import (
@@ -15,6 +16,7 @@ from etsr.models.factory import build_model
 from etsr.models.mini_qkformer import MiniQKFormer
 from etsr.models.temporal import CausalTemporalChannelMixer
 from etsr.reproducibility import git_commit
+from etsr.training.engine import evaluate
 from etsr.training.predictive import PredictiveTrainingObjective, _balanced_masked_loss
 from etsr.utils.io import sha256_file
 
@@ -37,6 +39,14 @@ def test_predictive_configs_inherit_the_frozen_continuation_recipe():
     assert dynamic["model"]["temporal_channel_mixer_router_hidden_divisor"] == 2
     assert surprise["model"]["temporal_channel_mixer_predictor_channel_groups"] == 1
     assert surprise["model"]["temporal_channel_mixer_predictor_spatial_kernel_size"] == 3
+
+    stable_r0 = load_config("configs/dvslip_predictive_r0_discriminative_lr.yaml")
+    stable_dynamic = load_config(
+        "configs/dvslip_predictive_dynamic_tcap_discriminative_lr.yaml"
+    )
+    assert stable_r0["training"]["learning_rate"] == 1e-5
+    assert stable_r0["continuation"]["new_parameter_learning_rate"] == 1e-4
+    assert stable_dynamic["model"]["temporal_channel_mixer_dynamic_routing"]
 
 
 def test_dynamic_tcap_starts_as_exact_fixed_tcap_and_is_causal():
@@ -119,6 +129,56 @@ def test_local_nonlinear_router_starts_as_fixed_tcap_and_varies_spatially():
     torch.testing.assert_close(
         local.last_routing_statistics["gate_mean_by_delay"], torch.ones(2)
     )
+    total_variance = local.last_routing_statistics["gate_std_by_delay"].square()
+    between_sample_variance = (
+        local.last_routing_statistics["gate_sample_mean_second_moment_by_delay"]
+        - local.last_routing_statistics["gate_mean_by_delay"].square()
+    )
+    within_sample_variance = local.last_routing_statistics[
+        "gate_within_sample_variance_mean_by_delay"
+    ]
+    torch.testing.assert_close(
+        total_variance,
+        between_sample_variance + within_sample_variance,
+        atol=1e-6,
+        rtol=1e-5,
+    )
+
+
+def test_evaluation_collects_fixed_weight_input_dependence_statistics():
+    model = MiniQKFormer(
+        in_channels=2,
+        num_classes=5,
+        embed_dim=32,
+        num_heads=4,
+        frontend="pyramidal",
+        temporal_channel_mixer=True,
+        temporal_channel_mixer_delays=(1, 2),
+        temporal_channel_mixer_dynamic_routing=True,
+        temporal_channel_mixer_router_pooling="local",
+        temporal_channel_mixer_router_hidden_divisor=2,
+        stage1_mixer="depthwise_conv",
+    )
+    frames = torch.randn(2, 4, 2, 32, 32)
+    targets = torch.tensor([0, 1])
+    loader = DataLoader(TensorDataset(frames, targets, torch.arange(2)), batch_size=1)
+    routing_statistics = []
+
+    evaluate(
+        model,
+        loader,
+        torch.nn.CrossEntropyLoss(),
+        torch.device("cpu"),
+        5,
+        routing_statistics=routing_statistics,
+    )
+
+    assert len(routing_statistics) == 4
+    assert {row["delay"] for row in routing_statistics} == {1, 2}
+    assert all(row["gate_mean"] == pytest.approx(1.0) for row in routing_statistics)
+    assert all(row["gate_std"] == pytest.approx(0.0) for row in routing_statistics)
+    assert all(row["gate_cv"] == pytest.approx(0.0) for row in routing_statistics)
+    assert all(row["sample_count"] == 2 for row in routing_statistics)
 
 
 def test_spatial_mimo_predictor_is_causal_and_all_new_families_receive_gradients():

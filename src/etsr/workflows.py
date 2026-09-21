@@ -350,13 +350,29 @@ def run_predictive_continuation(config: dict[str, Any]) -> dict[str, Any]:
     continuation = requested.get("continuation")
     if not isinstance(continuation, dict):
         raise ValueError("Predictive continuation requires a continuation section.")
-    canonical = load_config("configs/dvslip_predictive_continuation_base.yaml")
+    recipe_id = requested["training"].get("recipe_id")
+    canonical_by_recipe = {
+        "dvslip_predictive_continuation_64_v1": (
+            "configs/dvslip_predictive_continuation_base.yaml"
+        ),
+        "dvslip_predictive_continuation_64_discriminative_lr_v2": (
+            "configs/dvslip_predictive_continuation_discriminative_lr_base.yaml"
+        ),
+    }
+    if recipe_id not in canonical_by_recipe:
+        raise ValueError(f"Unsupported predictive continuation recipe: {recipe_id}")
+    canonical = load_config(canonical_by_recipe[recipe_id])
     for section in ("dataset", "augmentation", "evaluation", "training"):
         if requested[section] != canonical[section]:
             raise ValueError(
                 f"Predictive continuation must exactly preserve canonical {section}."
             )
-    for field in ("parent_config", "parent_checkpoint", "freeze_batchnorm_statistics"):
+    for field in (
+        "parent_config",
+        "parent_checkpoint",
+        "freeze_batchnorm_statistics",
+        "new_parameter_learning_rate",
+    ):
         if continuation.get(field) != canonical["continuation"].get(field):
             raise ValueError(f"Predictive continuation must preserve canonical {field}.")
 

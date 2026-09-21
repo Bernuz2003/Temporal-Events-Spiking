@@ -216,7 +216,7 @@ class CausalTemporalChannelMixer(nn.Module):
         )
         self.last_auxiliary_loss: torch.Tensor | None = None
         self.last_auxiliary_error: torch.Tensor | None = None
-        self.last_routing_statistics: dict[str, torch.Tensor] | None = None
+        self.last_routing_statistics: dict[str, torch.Tensor | int] | None = None
         self._initialize_conditional_modules()
         if learnable_delays:
             centers = torch.tensor(delays, dtype=torch.float32)[:, None].repeat(1, channels)
@@ -540,10 +540,23 @@ class CausalTemporalChannelMixer(nn.Module):
         gates = None if gate_logits is None else 2.0 * torch.sigmoid(gate_logits)
         self.last_routing_statistics = None
         if gates is not None:
-            reduction_dims = tuple(index for index in range(gates.ndim) if index != 2)
+            observed = gates.detach().float()
+            within_sample_dims = (0, *range(3, gates.ndim))
+            sample_means = observed.mean(dim=within_sample_dims)
+            sample_second_moments = observed.square().mean(dim=within_sample_dims)
+            sample_variances = (sample_second_moments - sample_means.square()).clamp_min(0)
+            gate_mean = sample_means.mean(dim=0)
+            gate_second_moment = sample_second_moments.mean(dim=0)
             self.last_routing_statistics = {
-                "gate_mean_by_delay": gates.detach().mean(dim=reduction_dims),
-                "gate_std_by_delay": gates.detach().std(dim=reduction_dims, unbiased=False),
+                "gate_mean_by_delay": gate_mean,
+                "gate_second_moment_by_delay": gate_second_moment,
+                "gate_std_by_delay": (
+                    gate_second_moment - gate_mean.square()
+                ).clamp_min(0).sqrt(),
+                "gate_sample_mean_second_moment_by_delay": sample_means.square().mean(dim=0),
+                "gate_within_sample_variance_mean_by_delay": sample_variances.mean(dim=0),
+                "gate_observation_count": gates.numel() // gates.shape[2],
+                "gate_sample_count": gates.shape[1],
                 "surprise_mean": (
                     surprise.detach().mean() if surprise is not None else gates.new_tensor(float("nan"))
                 ),

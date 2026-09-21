@@ -28,24 +28,80 @@ from etsr.training.predictive import (
 )
 
 
-def make_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Optimizer:
-    delay_centers = [
-        module.delay_centers
+def make_optimizer(
+    model: nn.Module,
+    config: dict[str, Any],
+    *,
+    new_parameter_names: set[str] | None = None,
+    new_parameter_learning_rate: float | None = None,
+) -> torch.optim.Optimizer:
+    """Build AdamW, optionally giving newly introduced continuation parameters their own LR."""
+
+    base_learning_rate = float(config.get("learning_rate", 1e-3))
+    weight_decay = float(config.get("weight_decay", 0.0))
+    delay_ids = {
+        id(module.delay_centers)
         for module in model.modules()
         if isinstance(module, CausalTemporalChannelMixer) and module.delay_centers is not None
+    }
+    requested_new_names = set(new_parameter_names or ())
+    named_parameters = [
+        (name, parameter)
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
     ]
-    if delay_centers:
-        delay_ids = {id(parameter) for parameter in delay_centers}
-        parameters = [
-            {"params": [p for p in model.parameters() if id(p) not in delay_ids]},
-            {"params": delay_centers, "weight_decay": 0.0},
-        ]
+    known_names = {name for name, _parameter in named_parameters}
+    unknown_names = requested_new_names - known_names
+    if unknown_names:
+        raise ValueError(f"Unknown new continuation parameters: {sorted(unknown_names)}")
+
+    if new_parameter_learning_rate is None or not requested_new_names:
+        delay_centers = [parameter for _name, parameter in named_parameters if id(parameter) in delay_ids]
+        if delay_centers:
+            parameters: Any = [
+                {
+                    "params": [
+                        parameter
+                        for _name, parameter in named_parameters
+                        if id(parameter) not in delay_ids
+                    ],
+                    "group_name": "default",
+                },
+                {"params": delay_centers, "weight_decay": 0.0, "group_name": "delay_centers"},
+            ]
+        else:
+            parameters = [
+                {
+                    "params": [parameter for _name, parameter in named_parameters],
+                    "group_name": "default",
+                }
+            ]
     else:
-        parameters = model.parameters()
+        grouped: dict[tuple[bool, bool], list[nn.Parameter]] = {}
+        for name, parameter in named_parameters:
+            key = (name in requested_new_names, id(parameter) in delay_ids)
+            grouped.setdefault(key, []).append(parameter)
+        parameters = []
+        for (is_new, is_delay), values in grouped.items():
+            group_name = "new" if is_new else "inherited"
+            if is_delay:
+                group_name += "_delay_centers"
+            parameters.append(
+                {
+                    "params": values,
+                    "lr": (
+                        float(new_parameter_learning_rate)
+                        if is_new
+                        else base_learning_rate
+                    ),
+                    "weight_decay": 0.0 if is_delay else weight_decay,
+                    "group_name": group_name,
+                }
+            )
     return torch.optim.AdamW(
         parameters,
-        lr=float(config.get("learning_rate", 1e-3)),
-        weight_decay=float(config.get("weight_decay", 0.0)),
+        lr=base_learning_rate,
+        weight_decay=weight_decay,
     )
 
 
@@ -85,6 +141,89 @@ def make_criterion(config: dict[str, Any]) -> nn.Module:
     return nn.CrossEntropyLoss(label_smoothing=float(config.get("label_smoothing", 0.0)))
 
 
+def _accumulate_routing_statistics(
+    accumulators: dict[str, dict[str, Any]],
+    modules: tuple[tuple[str, CausalTemporalChannelMixer], ...],
+) -> None:
+    """Accumulate exact gate moments without retaining an autograd graph or synchronizing CUDA."""
+
+    for name, module in modules:
+        statistics = module.last_routing_statistics
+        if statistics is None:
+            continue
+        observations = int(statistics["gate_observation_count"])
+        sample_count = int(statistics["gate_sample_count"])
+        current = accumulators.setdefault(
+            name,
+            {
+                "delays": module.delays,
+                "observation_count": 0,
+                "sample_count": 0,
+            },
+        )
+        weighted = {
+            "gate_sum": statistics["gate_mean_by_delay"] * observations,
+            "gate_second_moment_sum": (
+                statistics["gate_second_moment_by_delay"] * observations
+            ),
+            "sample_mean_sum": statistics["gate_mean_by_delay"] * sample_count,
+            "sample_mean_second_moment_sum": (
+                statistics["gate_sample_mean_second_moment_by_delay"] * sample_count
+            ),
+            "within_sample_variance_sum": (
+                statistics["gate_within_sample_variance_mean_by_delay"] * sample_count
+            ),
+        }
+        contributions = statistics.get("effective_contribution_mean_abs_by_delay")
+        if isinstance(contributions, torch.Tensor):
+            weighted["effective_contribution_sum"] = contributions.detach().float() * observations
+        for key, value in weighted.items():
+            current[key] = current.get(key, torch.zeros_like(value)) + value
+        current["observation_count"] += observations
+        current["sample_count"] += sample_count
+
+
+def _finalize_routing_statistics(
+    accumulators: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = []
+    for name, values in accumulators.items():
+        observations = int(values["observation_count"])
+        sample_count = int(values["sample_count"])
+        mean = values["gate_sum"] / observations
+        second_moment = values["gate_second_moment_sum"] / observations
+        variance = (second_moment - mean.square()).clamp_min(0)
+        sample_mean = values["sample_mean_sum"] / sample_count
+        sample_mean_second = values["sample_mean_second_moment_sum"] / sample_count
+        between_sample_variance = (sample_mean_second - sample_mean.square()).clamp_min(0)
+        within_sample_variance = values["within_sample_variance_sum"] / sample_count
+        contribution = (
+            values["effective_contribution_sum"] / observations
+            if "effective_contribution_sum" in values
+            else None
+        )
+        for index, delay in enumerate(values["delays"]):
+            gate_mean = float(mean[index].cpu())
+            gate_std = float(variance[index].sqrt().cpu())
+            row = {
+                "module": name,
+                "delay": int(delay),
+                "gate_mean": gate_mean,
+                "gate_std": gate_std,
+                "gate_cv": gate_std / max(abs(gate_mean), 1e-12),
+                "gate_between_sample_std": float(
+                    between_sample_variance[index].sqrt().cpu()
+                ),
+                "gate_within_sample_std": float(within_sample_variance[index].sqrt().cpu()),
+                "gate_observation_count": observations,
+                "sample_count": sample_count,
+            }
+            if contribution is not None:
+                row["effective_contribution_mean_abs"] = float(contribution[index].cpu())
+            rows.append(row)
+    return rows
+
+
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -99,7 +238,7 @@ def train_one_epoch(
     predictive_objective: PredictiveTrainingObjective | None = None,
     epoch: int = 1,
     freeze_batchnorm_statistics: bool = False,
-) -> dict[str, float | None]:
+) -> dict[str, Any]:
     if gradient_accumulation_steps <= 0:
         raise ValueError("gradient_accumulation_steps must be positive")
 
@@ -125,7 +264,6 @@ def train_one_epoch(
         for module in model.modules()
         if isinstance(module, CausalTemporalChannelMixer) and module.learnable_delays
     )
-
     for batch_index, (frames, targets, _indices) in enumerate(loader):
         frames = move_encoded_input(frames, device)
         targets = targets.to(device, non_blocking=True)
@@ -271,9 +409,19 @@ def evaluate(
     num_classes: int,
     collect_predictions: bool = False,
     prefix_steps: int | Sequence[int] | None = None,
+    routing_statistics: list[dict[str, Any]] | None = None,
 ) -> tuple[ClassificationResult, dict[str, Any] | None]:
     model.eval()
     accumulator = ClassificationAccumulator(num_classes, collect_predictions)
+    routing_modules = tuple(
+        (name, module)
+        for name, module in model.named_modules()
+        if isinstance(module, CausalTemporalChannelMixer)
+        and (module.content_router is not None or module.surprise_router is not None)
+    )
+    routing_accumulators: dict[str, dict[str, Any]] = {}
+    if routing_statistics is not None and prefix_steps is not None:
+        raise ValueError("Routing statistics require full-window evaluation.")
     for batch_index, (frames, targets, indices) in enumerate(loader):
         frames = move_encoded_input(frames, device)
         targets = targets.to(device, non_blocking=True)
@@ -305,12 +453,16 @@ def evaluate(
                 outputs.append(model(slice_encoded_time(selected_frames, int(steps.item()))))
             order = torch.cat(positions).argsort()
             logits = torch.cat(outputs).index_select(0, order)
+        if routing_statistics is not None:
+            _accumulate_routing_statistics(routing_accumulators, routing_modules)
         loss = criterion(logits, targets)
         if not bool(torch.isfinite(loss).item()):
             raise FloatingPointError(f"Non-finite evaluation loss at batch {batch_index}.")
         accumulator.update(logits, targets, loss, indices)
 
     predictions = accumulator.prediction_arrays() if collect_predictions else None
+    if routing_statistics is not None:
+        routing_statistics.extend(_finalize_routing_statistics(routing_accumulators))
     return accumulator.compute(), predictions
 
 

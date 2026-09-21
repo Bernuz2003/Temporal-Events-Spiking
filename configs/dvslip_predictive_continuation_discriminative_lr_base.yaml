@@ -1,0 +1,12 @@
+extends: dvslip_predictive_continuation_base.yaml
+
+experiment:
+  name: dvslip_predictive_continuation_discriminative_lr_base
+
+training:
+  recipe_id: dvslip_predictive_continuation_64_discriminative_lr_v2
+  learning_rate: 0.00001
+  min_learning_rate: 0.000001
+
+continuation:
+  new_parameter_learning_rate: 0.0001

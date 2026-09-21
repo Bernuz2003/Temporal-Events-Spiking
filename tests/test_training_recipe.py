@@ -7,7 +7,7 @@ from etsr.cli import build_parser
 from etsr.data.common import DatasetBundle, balanced_overfit_bundle
 from etsr.runner import _checkpoint_evaluation_contract, _readout_metadata
 from etsr.training.checkpointing import load_training_state, save_training_state
-from etsr.training.engine import evaluate, make_scheduler, train_one_epoch
+from etsr.training.engine import evaluate, make_optimizer, make_scheduler, train_one_epoch
 
 
 class _DisabledScaler:
@@ -234,6 +234,22 @@ def test_warmup_cosine_scheduler_reaches_base_and_minimum_rates():
     assert rates[0] == pytest.approx(1e-5)
     assert rates[4] == pytest.approx(1e-3)
     assert rates[-1] == pytest.approx(1e-6)
+
+
+def test_optimizer_can_assign_a_distinct_lr_to_new_continuation_parameters():
+    model = nn.Sequential(nn.Linear(2, 3), nn.Linear(3, 2))
+    optimizer = make_optimizer(
+        model,
+        {"learning_rate": 1e-5, "weight_decay": 5e-4},
+        new_parameter_names={"1.weight", "1.bias"},
+        new_parameter_learning_rate=1e-4,
+    )
+
+    groups = {group["group_name"]: group for group in optimizer.param_groups}
+    assert groups.keys() == {"inherited", "new"}
+    assert groups["inherited"]["lr"] == pytest.approx(1e-5)
+    assert groups["new"]["lr"] == pytest.approx(1e-4)
+    assert sum(parameter.numel() for parameter in groups["new"]["params"]) == 8
 
 
 def test_gradient_accumulation_steps_once_per_complete_or_final_group(monkeypatch):

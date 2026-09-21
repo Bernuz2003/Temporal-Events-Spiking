@@ -143,6 +143,17 @@ deployabile del run, senza riaddestramento:
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-dynamic-routing-diagnostic -- dynamic-routing-diagnostic --config artifacts/<run-D>/deployment_config_resolved.yaml --checkpoint checkpoints/<run-D>/deployment.pt --output artifacts/<run-D>/dynamic_routing_diagnostic.json
 ```
 
+Confronto confermativo a learning rate discriminativi, da eseguire su due server distinti dopo
+che `dataset_workflow.sh dvslip check` è passato sul commit corrente:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-r0-dlr -- predictive-continuation --config configs/dvslip_predictive_r0_discriminative_lr.yaml
+```
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-dynamic-tcap-dlr -- predictive-continuation --config configs/dvslip_predictive_dynamic_tcap_discriminative_lr.yaml
+```
+
 I controlli P-0/P-C, il fallback L e i bracci S sono condizionali. P-C richiede prima il proprio
 probe per produrre la normalizzazione coarse. Se D supera lo screen usare la coppia S dinamica;
 altrimenti usare S0/S1 senza router di contenuto. Non eseguire entrambe le coppie.
