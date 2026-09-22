@@ -44,9 +44,22 @@ def test_predictive_configs_inherit_the_frozen_continuation_recipe():
     stable_dynamic = load_config(
         "configs/dvslip_predictive_dynamic_tcap_discriminative_lr.yaml"
     )
+    stable_s0 = load_config("configs/dvslip_predictive_s0.yaml")
+    stable_s1 = load_config("configs/dvslip_predictive_s1.yaml")
+    stable_late_prefix = load_config("configs/dvslip_predictive_late_prefix.yaml")
     assert stable_r0["training"]["learning_rate"] == 1e-5
     assert stable_r0["continuation"]["new_parameter_learning_rate"] == 1e-4
     assert stable_dynamic["model"]["temporal_channel_mixer_dynamic_routing"]
+    for candidate in (stable_s0, stable_s1, stable_late_prefix):
+        assert (
+            candidate["training"]["recipe_id"]
+            == "dvslip_predictive_continuation_64_discriminative_lr_v2"
+        )
+        assert candidate["training"]["learning_rate"] == 1e-5
+        assert candidate["continuation"]["new_parameter_learning_rate"] == 1e-4
+    assert not stable_s0["model"].get("temporal_channel_mixer_dynamic_routing", False)
+    assert not stable_s1["model"].get("temporal_channel_mixer_dynamic_routing", False)
+    assert stable_s1["model"]["temporal_channel_mixer_surprise_routing"]
 
 
 def test_dynamic_tcap_starts_as_exact_fixed_tcap_and_is_causal():
@@ -157,6 +170,8 @@ def test_evaluation_collects_fixed_weight_input_dependence_statistics():
         temporal_channel_mixer_dynamic_routing=True,
         temporal_channel_mixer_router_pooling="local",
         temporal_channel_mixer_router_hidden_divisor=2,
+        temporal_channel_mixer_predictive_auxiliary=True,
+        temporal_channel_mixer_surprise_routing=True,
         stage1_mixer="depthwise_conv",
     )
     frames = torch.randn(2, 4, 2, 32, 32)
@@ -179,6 +194,8 @@ def test_evaluation_collects_fixed_weight_input_dependence_statistics():
     assert all(row["gate_std"] == pytest.approx(0.0) for row in routing_statistics)
     assert all(row["gate_cv"] == pytest.approx(0.0) for row in routing_statistics)
     assert all(row["sample_count"] == 2 for row in routing_statistics)
+    assert all(row["normalized_surprise_mean"] >= 0.0 for row in routing_statistics)
+    assert all(row["normalized_surprise_std"] >= 0.0 for row in routing_statistics)
 
 
 def test_spatial_mimo_predictor_is_causal_and_all_new_families_receive_gradients():
@@ -225,8 +242,58 @@ def test_surprise_tcap_eval_computes_routing_without_auxiliary_loss():
     assert output.shape == sequence.shape
     assert mixer.last_routing_statistics is not None
     assert torch.isfinite(mixer.last_routing_statistics["surprise_mean"])
+    assert mixer.prediction_diagnostics() is not None
     assert mixer.auxiliary_loss() is None
     assert mixer.auxiliary_error() is None
+
+
+def test_temporal_predictor_reports_region_skill_against_causal_references():
+    model = MiniQKFormer(
+        in_channels=2,
+        num_classes=5,
+        embed_dim=32,
+        num_heads=4,
+        frontend="pyramidal",
+        temporal_channel_mixer=True,
+        temporal_channel_mixer_delays=(1, 2),
+        temporal_channel_mixer_predictive_auxiliary=True,
+        temporal_channel_mixer_predictor_channel_groups=1,
+        temporal_channel_mixer_predictor_spatial_kernel_size=3,
+        stage1_mixer="depthwise_conv",
+    ).eval()
+    frames = torch.randn(2, 4, 2, 32, 32)
+    frames[0, 2:] = 0
+    frames[1, 3:] = 0
+    loader = DataLoader(
+        TensorDataset(frames, torch.tensor([0, 1]), torch.arange(2)), batch_size=2
+    )
+    statistics = []
+    evaluate(
+        model,
+        loader,
+        torch.nn.CrossEntropyLoss(),
+        torch.device("cpu"),
+        5,
+        temporal_prediction_statistics=statistics,
+    )
+    metrics = statistics[0]
+
+    expected = {
+        "temporal_prediction_active_loss",
+        "temporal_prediction_tail_loss",
+        "temporal_persistence_active_loss",
+        "temporal_persistence_tail_loss",
+        "temporal_delay_mean_active_loss",
+        "temporal_delay_mean_tail_loss",
+        "temporal_target_active_variance",
+        "temporal_target_tail_variance",
+        "temporal_prediction_active_skill_vs_persistence",
+        "temporal_prediction_tail_skill_vs_persistence",
+        "temporal_prediction_active_skill_vs_delay_mean",
+        "temporal_prediction_tail_skill_vs_delay_mean",
+    }
+    assert expected <= metrics.keys()
+    assert all(torch.isfinite(torch.tensor(metrics[name])) for name in expected)
 
 
 def test_matched_predictive_mask_uses_context_indices_only():

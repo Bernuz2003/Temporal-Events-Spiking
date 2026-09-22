@@ -7,7 +7,13 @@ from etsr.cli import build_parser
 from etsr.data.common import DatasetBundle, balanced_overfit_bundle
 from etsr.runner import _checkpoint_evaluation_contract, _readout_metadata
 from etsr.training.checkpointing import load_training_state, save_training_state
-from etsr.training.engine import evaluate, make_optimizer, make_scheduler, train_one_epoch
+from etsr.training.engine import (
+    _objective_gradient_diagnostics,
+    evaluate,
+    make_optimizer,
+    make_scheduler,
+    train_one_epoch,
+)
 
 
 class _DisabledScaler:
@@ -250,6 +256,23 @@ def test_optimizer_can_assign_a_distinct_lr_to_new_continuation_parameters():
     assert groups["inherited"]["lr"] == pytest.approx(1e-5)
     assert groups["new"]["lr"] == pytest.approx(1e-4)
     assert sum(parameter.numel() for parameter in groups["new"]["params"]) == 8
+
+
+def test_objective_gradient_diagnostics_report_scale_and_shared_alignment():
+    model = nn.Linear(2, 1, bias=False)
+    inputs = torch.tensor([[1.0, 2.0], [2.0, -1.0]])
+    outputs = model(inputs)
+    classification = outputs.square().mean()
+    auxiliary = (outputs - 1.0).square().mean()
+
+    metrics = _objective_gradient_diagnostics(model, classification, auxiliary, 0.1)
+
+    assert metrics["classification_gradient_norm"] > 0.0
+    assert metrics["auxiliary_gradient_norm"] > 0.0
+    assert metrics["weighted_auxiliary_gradient_norm"] == pytest.approx(
+        0.1 * metrics["auxiliary_gradient_norm"]
+    )
+    assert -1.0 <= metrics["classification_auxiliary_gradient_cosine"] <= 1.0
 
 
 def test_gradient_accumulation_steps_once_per_complete_or_final_group(monkeypatch):

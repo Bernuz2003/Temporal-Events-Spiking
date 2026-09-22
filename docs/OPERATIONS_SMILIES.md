@@ -154,20 +154,15 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-r0-
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-dynamic-tcap-dlr -- predictive-continuation --config configs/dvslip_predictive_dynamic_tcap_discriminative_lr.yaml
 ```
 
-I controlli P-0/P-C, il fallback L e i bracci S sono condizionali. P-C richiede prima il proprio
-probe per produrre la normalizzazione coarse. Se D supera lo screen usare la coppia S dinamica;
-altrimenti usare S0/S1 senza router di contenuto. Non eseguire entrambe le coppie.
+Il confronto confermativo ha chiuso D sotto la soglia prestazionale. La campagna selezionata usa
+quindi S0/S1 senza router di contenuto e il fallback L, tutti con la recipe discriminativa v2.
+I tre run possono partire in parallelo dopo il check; le configurazioni S dinamiche non vanno
+lanciate. I controlli P-0/P-C restano sospesi.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-p0-coarse -- predictive-probe --config configs/dvslip_predictive_coarse_future.yaml --output artifacts/predictive_diagnostics/coarse_future_probe.json --train-samples 512 --validation-samples 256
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-p0-fine-same -- predictive-probe --config configs/dvslip_predictive_fine_same.yaml --output artifacts/predictive_diagnostics/fine_same_probe.json --train-samples 512 --validation-samples 256
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-fine-same -- predictive-continuation --config configs/dvslip_predictive_fine_same.yaml
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-coarse-future -- predictive-continuation --config configs/dvslip_predictive_coarse_future.yaml
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-late-prefix -- predictive-continuation --config configs/dvslip_predictive_late_prefix.yaml
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0 -- predictive-continuation --config configs/dvslip_predictive_s0.yaml
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s1 -- predictive-continuation --config configs/dvslip_predictive_s1.yaml
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0-dynamic -- predictive-continuation --config configs/dvslip_predictive_s0_dynamic.yaml
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s1-dynamic -- predictive-continuation --config configs/dvslip_predictive_s1_dynamic.yaml
 ```
 
 Le tre config `dvslip_predictive_fusion_*` rappresentano i soli esiti possibili della diramazione,

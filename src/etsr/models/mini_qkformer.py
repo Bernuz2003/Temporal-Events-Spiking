@@ -414,40 +414,88 @@ class MiniQKFormer(nn.Module):
     def temporal_auxiliary_statistics(
         self, valid_steps: torch.Tensor
     ) -> tuple[torch.Tensor | None, dict[str, float]]:
-        """Balance causal-prediction error across samples, activity and post-event tail."""
+        """Return the balanced predictor loss and causal-reference diagnostics."""
 
-        errors = [
-            module.auxiliary_error()
+        values = self._temporal_prediction_region_values(valid_steps)
+        prediction_regions = [
+            values[key]
+            for key in ("prediction_active", "prediction_tail")
+            if key in values
+        ]
+        if not prediction_regions:
+            return None, {}
+        metrics = self._temporal_prediction_metrics(values)
+        return torch.stack(prediction_regions).mean(), metrics
+
+    def temporal_prediction_statistics(self, valid_steps: torch.Tensor) -> dict[str, float]:
+        """Measure predictor skill against causal persistence and delay-mean references."""
+
+        return self._temporal_prediction_metrics(
+            self._temporal_prediction_region_values(valid_steps)
+        )
+
+    def _temporal_prediction_region_values(
+        self, valid_steps: torch.Tensor
+    ) -> dict[str, torch.Tensor]:
+        diagnostics = [
+            module.prediction_diagnostics()
             for module in self.modules()
             if isinstance(module, CausalTemporalChannelMixer)
             and module.predictive_auxiliary
         ]
-        errors = [error for error in errors if error is not None]
-        if not errors:
-            return None, {}
-        active_losses = []
-        tail_losses = []
-        for error in errors:
-            positions = torch.arange(error.shape[0], device=error.device).unsqueeze(1)
+        diagnostics = [value for value in diagnostics if value is not None]
+        collected: dict[str, list[torch.Tensor]] = {}
+        for diagnostic in diagnostics:
+            reference = diagnostic["prediction_error"]
+            positions = torch.arange(reference.shape[0], device=reference.device).unsqueeze(1)
             active_mask = positions < valid_steps.unsqueeze(0)
             tail_mask = ~active_mask
-            for mask, output in ((active_mask, active_losses), (tail_mask, tail_losses)):
+            for region, mask in (("active", active_mask), ("tail", tail_mask)):
                 counts = mask.sum(0)
                 present = counts > 0
-                if bool(present.any().item()):
+                if not bool(present.any().item()):
+                    continue
+                for name, error in diagnostic.items():
                     per_sample = (error * mask).sum(0) / counts.clamp_min(1)
-                    output.append(per_sample[present].mean())
-        regions = []
+                    collected.setdefault(f"{name.removesuffix('_error')}_{region}", []).append(
+                        per_sample[present].mean()
+                    )
+        return {
+            name: torch.stack(region_values).mean()
+            for name, region_values in collected.items()
+        }
+
+    @staticmethod
+    def _temporal_prediction_metrics(
+        values: dict[str, torch.Tensor],
+    ) -> dict[str, float]:
         metrics: dict[str, float] = {}
-        if active_losses:
-            active = torch.stack(active_losses).mean()
-            regions.append(active)
-            metrics["temporal_prediction_active_loss"] = float(active.detach())
-        if tail_losses:
-            tail = torch.stack(tail_losses).mean()
-            regions.append(tail)
-            metrics["temporal_prediction_tail_loss"] = float(tail.detach())
-        return torch.stack(regions).mean(), metrics
+        display_names = {
+            "prediction": "temporal_prediction",
+            "persistence": "temporal_persistence",
+            "delay_mean": "temporal_delay_mean",
+            "target_variance": "temporal_target",
+        }
+        for region in ("active", "tail"):
+            for source, prefix in display_names.items():
+                key = f"{source}_{region}"
+                if key not in values:
+                    continue
+                suffix = "variance" if source == "target_variance" else "loss"
+                metrics[f"{prefix}_{region}_{suffix}"] = float(values[key].detach())
+            prediction_key = f"prediction_{region}"
+            if prediction_key not in values:
+                continue
+            for reference in ("persistence", "delay_mean"):
+                reference_key = f"{reference}_{region}"
+                if reference_key in values:
+                    skill = 1.0 - values[prediction_key].detach() / values[
+                        reference_key
+                    ].detach().clamp_min(1e-12)
+                    metrics[
+                        f"temporal_prediction_{region}_skill_vs_{reference}"
+                    ] = float(skill)
+        return metrics
 
     def forward(self, frames: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
         x = self._encode(frames)

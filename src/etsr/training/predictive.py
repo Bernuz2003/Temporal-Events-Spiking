@@ -58,6 +58,8 @@ def _balanced_masked_loss(
 class PredictiveBatchResult:
     logits: torch.Tensor
     total_loss: torch.Tensor
+    classification_loss: torch.Tensor
+    auxiliary_loss: torch.Tensor
     metrics: dict[str, float]
 
 
@@ -200,7 +202,13 @@ class PredictiveTrainingObjective:
         weight = self.effective_weight(epoch)
         total = classification + weight * auxiliary_total
         metrics.update(auxiliary_loss=float(auxiliary_total.detach()), auxiliary_weight=weight)
-        return PredictiveBatchResult(logits, total, metrics)
+        return PredictiveBatchResult(
+            logits=logits,
+            total_loss=total,
+            classification_loss=classification,
+            auxiliary_loss=auxiliary_total,
+            metrics=metrics,
+        )
 
     def _late_prefix(
         self,
@@ -232,9 +240,11 @@ class PredictiveTrainingObjective:
         auxiliary = torch.stack(terms).mean()
         weight = self.effective_weight(epoch)
         return PredictiveBatchResult(
-            logits,
-            classification + weight * auxiliary,
-            {
+            logits=logits,
+            total_loss=classification + weight * auxiliary,
+            classification_loss=classification,
+            auxiliary_loss=auxiliary,
+            metrics={
                 "classification_loss": float(classification.detach()),
                 "auxiliary_loss": float(auxiliary.detach()),
                 "auxiliary_weight": weight,

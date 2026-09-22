@@ -216,6 +216,7 @@ class CausalTemporalChannelMixer(nn.Module):
         )
         self.last_auxiliary_loss: torch.Tensor | None = None
         self.last_auxiliary_error: torch.Tensor | None = None
+        self.last_prediction_diagnostics: dict[str, torch.Tensor] | None = None
         self.last_routing_statistics: dict[str, torch.Tensor | int] | None = None
         self._initialize_conditional_modules()
         if learnable_delays:
@@ -415,15 +416,16 @@ class CausalTemporalChannelMixer(nn.Module):
                 self.last_routing_statistics["effective_contribution_mean_abs_by_delay"] = (
                     torch.stack(effective_contributions)
                 )
-            if prediction is not None and self.training:
-                pointwise = torch.nn.functional.smooth_l1_loss(
-                    prediction[0], current.detach(), reduction="none"
+            if prediction is not None:
+                delayed = torch.stack([state[-delay] for delay in self.delays])
+                self._record_prediction_diagnostics(
+                    prediction,
+                    current.unsqueeze(0),
+                    state[-min(self.delays)].unsqueeze(0),
+                    delayed.mean(0).unsqueeze(0),
                 )
-                self.last_auxiliary_error = pointwise.flatten(1).mean(1).unsqueeze(0)
-                self.last_auxiliary_loss = self.last_auxiliary_error.mean()
             else:
-                self.last_auxiliary_loss = None
-                self.last_auxiliary_error = None
+                self._clear_prediction_diagnostics()
         next_state = torch.cat((state[1:], current.unsqueeze(0)), dim=0)
         return output, next_state
 
@@ -471,20 +473,65 @@ class CausalTemporalChannelMixer(nn.Module):
                 self.last_routing_statistics["effective_contribution_mean_abs_by_delay"] = (
                     torch.stack(effective_contributions)
                 )
-            if prediction is not None and self.training:
-                # The current feature is detached only on the target side. This prevents the
-                # predictor from manufacturing an easy target while still training its history.
-                pointwise = torch.nn.functional.smooth_l1_loss(
-                    prediction,
-                    sequence.detach(),
-                    reduction="none",
+            if prediction is not None:
+                delayed = torch.stack(
+                    [
+                        history[
+                            self.max_delay - delay : self.max_delay - delay + sequence.shape[0]
+                        ]
+                        for delay in self.delays
+                    ]
                 )
-                self.last_auxiliary_error = pointwise.flatten(2).mean(2)
-                self.last_auxiliary_loss = self.last_auxiliary_error.mean()
+                self._record_prediction_diagnostics(
+                    prediction,
+                    sequence,
+                    delayed[self.delays.index(min(self.delays))],
+                    delayed.mean(0),
+                )
             else:
-                self.last_auxiliary_loss = None
-                self.last_auxiliary_error = None
+                self._clear_prediction_diagnostics()
         return output, history[-self.max_delay :].clone()
+
+    def _clear_prediction_diagnostics(self) -> None:
+        self.last_auxiliary_loss = None
+        self.last_auxiliary_error = None
+        self.last_prediction_diagnostics = None
+
+    def _record_prediction_diagnostics(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+        persistence: torch.Tensor,
+        delayed_mean: torch.Tensor,
+    ) -> None:
+        """Retain causal predictor and reference errors as per-time/per-sample scalars."""
+
+        detached_target = target.detach()
+
+        def reduced_smooth_l1(candidate: torch.Tensor) -> torch.Tensor:
+            pointwise = torch.nn.functional.smooth_l1_loss(
+                candidate,
+                detached_target,
+                reduction="none",
+            )
+            return pointwise.flatten(2).mean(2)
+
+        prediction_error = reduced_smooth_l1(prediction)
+        detached_float = detached_target.float().flatten(2)
+        self.last_prediction_diagnostics = {
+            "prediction_error": prediction_error,
+            "persistence_error": reduced_smooth_l1(persistence.detach()),
+            "delay_mean_error": reduced_smooth_l1(delayed_mean.detach()),
+            "target_variance": detached_float.var(dim=2, unbiased=False),
+        }
+        if self.training:
+            # The target and trivial references are detached. Gradients flow through the
+            # predictor and its causal history only.
+            self.last_auxiliary_error = prediction_error
+            self.last_auxiliary_loss = prediction_error.mean()
+        else:
+            self.last_auxiliary_loss = None
+            self.last_auxiliary_error = None
 
     def _conditional_gates(
         self,
@@ -500,7 +547,7 @@ class CausalTemporalChannelMixer(nn.Module):
         prediction = None
         surprise = None
         has_predictor = self.predictor_logits is not None or self.predictor_projections is not None
-        if has_predictor and (self.training or self.surprise_routing):
+        if has_predictor:
             prediction = self._causal_prediction(sequence, history)
             spatial_dims = tuple(range(3, sequence.ndim))
             scale = (
@@ -560,6 +607,12 @@ class CausalTemporalChannelMixer(nn.Module):
                 "surprise_mean": (
                     surprise.detach().mean() if surprise is not None else gates.new_tensor(float("nan"))
                 ),
+                "surprise_second_moment": (
+                    surprise.detach().square().mean()
+                    if surprise is not None
+                    else gates.new_tensor(float("nan"))
+                ),
+                "surprise_observation_count": surprise.numel() if surprise is not None else 0,
             }
         return gates, prediction
 
@@ -602,6 +655,9 @@ class CausalTemporalChannelMixer(nn.Module):
 
     def auxiliary_error(self) -> torch.Tensor | None:
         return self.last_auxiliary_error
+
+    def prediction_diagnostics(self) -> dict[str, torch.Tensor] | None:
+        return self.last_prediction_diagnostics
 
     def forward(self, sequence: torch.Tensor) -> torch.Tensor:
         return self.forward_sequence(sequence)[0]

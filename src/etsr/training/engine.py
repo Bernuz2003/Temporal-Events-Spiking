@@ -25,6 +25,7 @@ from etsr.training.checkpointing import load_model_state
 from etsr.training.predictive import (
     PredictiveTrainingObjective,
     freeze_batchnorm_running_statistics,
+    last_occupied_steps,
 )
 
 
@@ -141,6 +142,65 @@ def make_criterion(config: dict[str, Any]) -> nn.Module:
     return nn.CrossEntropyLoss(label_smoothing=float(config.get("label_smoothing", 0.0)))
 
 
+def _objective_gradient_diagnostics(
+    model: nn.Module,
+    classification_loss: torch.Tensor,
+    auxiliary_loss: torch.Tensor,
+    auxiliary_weight: float,
+) -> dict[str, float]:
+    """Measure CE/auxiliary gradient scale and alignment on one diagnostic batch."""
+
+    parameters = tuple(parameter for parameter in model.parameters() if parameter.requires_grad)
+    classification_gradients = torch.autograd.grad(
+        classification_loss,
+        parameters,
+        retain_graph=True,
+        allow_unused=True,
+    )
+    auxiliary_gradients = torch.autograd.grad(
+        auxiliary_loss,
+        parameters,
+        retain_graph=True,
+        allow_unused=True,
+    )
+    classification_squared = classification_loss.new_zeros((), dtype=torch.float64)
+    auxiliary_squared = classification_loss.new_zeros((), dtype=torch.float64)
+    shared_dot = classification_loss.new_zeros((), dtype=torch.float64)
+    shared_classification_squared = classification_loss.new_zeros((), dtype=torch.float64)
+    shared_auxiliary_squared = classification_loss.new_zeros((), dtype=torch.float64)
+    for classification_gradient, auxiliary_gradient in zip(
+        classification_gradients, auxiliary_gradients, strict=True
+    ):
+        if classification_gradient is not None:
+            classification_squared += classification_gradient.detach().double().square().sum()
+        if auxiliary_gradient is not None:
+            auxiliary_squared += auxiliary_gradient.detach().double().square().sum()
+        if classification_gradient is not None and auxiliary_gradient is not None:
+            classification_double = classification_gradient.detach().double()
+            auxiliary_double = auxiliary_gradient.detach().double()
+            shared_dot += (classification_double * auxiliary_double).sum()
+            shared_classification_squared += classification_double.square().sum()
+            shared_auxiliary_squared += auxiliary_double.square().sum()
+    classification_norm = classification_squared.sqrt()
+    auxiliary_norm = auxiliary_squared.sqrt()
+    shared_denominator = (
+        shared_classification_squared.sqrt() * shared_auxiliary_squared.sqrt()
+    )
+    cosine = (
+        shared_dot / shared_denominator
+        if bool((shared_denominator > 0).item())
+        else shared_dot.new_tensor(float("nan"))
+    )
+    return {
+        "classification_gradient_norm": float(classification_norm.cpu()),
+        "auxiliary_gradient_norm": float(auxiliary_norm.cpu()),
+        "weighted_auxiliary_gradient_norm": float(
+            (auxiliary_norm * abs(auxiliary_weight)).cpu()
+        ),
+        "classification_auxiliary_gradient_cosine": float(cosine.cpu()),
+    }
+
+
 def _accumulate_routing_statistics(
     accumulators: dict[str, dict[str, Any]],
     modules: tuple[tuple[str, CausalTemporalChannelMixer], ...],
@@ -177,6 +237,23 @@ def _accumulate_routing_statistics(
         contributions = statistics.get("effective_contribution_mean_abs_by_delay")
         if isinstance(contributions, torch.Tensor):
             weighted["effective_contribution_sum"] = contributions.detach().float() * observations
+        surprise_count = int(statistics.get("surprise_observation_count", 0))
+        surprise_mean = statistics.get("surprise_mean")
+        surprise_second_moment = statistics.get("surprise_second_moment")
+        if (
+            surprise_count > 0
+            and isinstance(surprise_mean, torch.Tensor)
+            and isinstance(surprise_second_moment, torch.Tensor)
+        ):
+            current["surprise_sum"] = current.get(
+                "surprise_sum", surprise_mean.new_zeros(())
+            ) + surprise_mean * surprise_count
+            current["surprise_second_moment_sum"] = current.get(
+                "surprise_second_moment_sum", surprise_second_moment.new_zeros(())
+            ) + surprise_second_moment * surprise_count
+            current["surprise_observation_count"] = (
+                current.get("surprise_observation_count", 0) + surprise_count
+            )
         for key, value in weighted.items():
             current[key] = current.get(key, torch.zeros_like(value)) + value
         current["observation_count"] += observations
@@ -202,6 +279,13 @@ def _finalize_routing_statistics(
             if "effective_contribution_sum" in values
             else None
         )
+        surprise_count = int(values.get("surprise_observation_count", 0))
+        surprise_mean = None
+        surprise_std = None
+        if surprise_count > 0:
+            surprise_mean = values["surprise_sum"] / surprise_count
+            surprise_second_moment = values["surprise_second_moment_sum"] / surprise_count
+            surprise_std = (surprise_second_moment - surprise_mean.square()).clamp_min(0).sqrt()
         for index, delay in enumerate(values["delays"]):
             gate_mean = float(mean[index].cpu())
             gate_std = float(variance[index].sqrt().cpu())
@@ -220,6 +304,15 @@ def _finalize_routing_statistics(
             }
             if contribution is not None:
                 row["effective_contribution_mean_abs"] = float(contribution[index].cpu())
+            if surprise_mean is not None and surprise_std is not None:
+                mean_value = float(surprise_mean.cpu())
+                std_value = float(surprise_std.cpu())
+                row.update(
+                    normalized_surprise_mean=mean_value,
+                    normalized_surprise_std=std_value,
+                    normalized_surprise_cv=std_value / max(abs(mean_value), 1e-12),
+                    surprise_observation_count=surprise_count,
+                )
             rows.append(row)
     return rows
 
@@ -259,6 +352,7 @@ def train_one_epoch(
     optimizer_steps = 0
     optimizer.zero_grad(set_to_none=True)
     component_sums: dict[str, float] = {}
+    objective_gradient_metrics: dict[str, float] = {}
     delay_modules = tuple(
         module
         for module in model.modules()
@@ -308,6 +402,18 @@ def train_one_epoch(
                 ).mean()
         if not bool(torch.isfinite(loss).item()):
             raise FloatingPointError(f"Non-finite training loss at batch {batch_index}.")
+
+        if (
+            batch_index == 0
+            and batch_result is not None
+            and batch_result.auxiliary_loss.requires_grad
+        ):
+            objective_gradient_metrics = _objective_gradient_diagnostics(
+                model,
+                batch_result.classification_loss,
+                batch_result.auxiliary_loss,
+                float(batch_result.metrics["auxiliary_weight"]),
+            )
 
         batch_size = int(targets.numel())
         if batch_result is not None:
@@ -397,6 +503,7 @@ def train_one_epoch(
         "amp_overflow_fraction": amp_overflow_steps / max(1, optimizer_steps),
     }
     result.update({name: value / max(1, samples) for name, value in component_sums.items()})
+    result.update(objective_gradient_metrics)
     return result
 
 
@@ -410,6 +517,7 @@ def evaluate(
     collect_predictions: bool = False,
     prefix_steps: int | Sequence[int] | None = None,
     routing_statistics: list[dict[str, Any]] | None = None,
+    temporal_prediction_statistics: list[dict[str, float]] | None = None,
 ) -> tuple[ClassificationResult, dict[str, Any] | None]:
     model.eval()
     accumulator = ClassificationAccumulator(num_classes, collect_predictions)
@@ -420,6 +528,8 @@ def evaluate(
         and (module.content_router is not None or module.surprise_router is not None)
     )
     routing_accumulators: dict[str, dict[str, Any]] = {}
+    temporal_prediction_sums: dict[str, float] = {}
+    temporal_prediction_samples = 0
     if routing_statistics is not None and prefix_steps is not None:
         raise ValueError("Routing statistics require full-window evaluation.")
     for batch_index, (frames, targets, indices) in enumerate(loader):
@@ -455,6 +565,17 @@ def evaluate(
             logits = torch.cat(outputs).index_select(0, order)
         if routing_statistics is not None:
             _accumulate_routing_statistics(routing_accumulators, routing_modules)
+        if temporal_prediction_statistics is not None:
+            diagnostic = getattr(model, "temporal_prediction_statistics", None)
+            if diagnostic is None:
+                raise TypeError("Temporal prediction statistics require a compatible model.")
+            batch_statistics = diagnostic(last_occupied_steps(frames))
+            batch_size = int(targets.numel())
+            for name, value in batch_statistics.items():
+                temporal_prediction_sums[name] = (
+                    temporal_prediction_sums.get(name, 0.0) + value * batch_size
+                )
+            temporal_prediction_samples += batch_size
         loss = criterion(logits, targets)
         if not bool(torch.isfinite(loss).item()):
             raise FloatingPointError(f"Non-finite evaluation loss at batch {batch_index}.")
@@ -463,6 +584,13 @@ def evaluate(
     predictions = accumulator.prediction_arrays() if collect_predictions else None
     if routing_statistics is not None:
         routing_statistics.extend(_finalize_routing_statistics(routing_accumulators))
+    if temporal_prediction_statistics is not None:
+        temporal_prediction_statistics.append(
+            {
+                name: value / max(1, temporal_prediction_samples)
+                for name, value in temporal_prediction_sums.items()
+            }
+        )
     return accumulator.compute(), predictions
 
 

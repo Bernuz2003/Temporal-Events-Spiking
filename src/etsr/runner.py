@@ -782,6 +782,11 @@ def train_experiment(
             bool((continuation or {}).get("freeze_batchnorm_statistics", False)),
         )
         routing_statistics: list[dict[str, Any]] = []
+        temporal_prediction_statistics: list[dict[str, float]] | None = (
+            []
+            if config["model"].get("temporal_channel_mixer_predictive_auxiliary", False)
+            else None
+        )
         validation, _ = evaluate(
             model,
             validation_loader,
@@ -789,6 +794,7 @@ def train_experiment(
             device,
             num_classes,
             routing_statistics=routing_statistics,
+            temporal_prediction_statistics=temporal_prediction_statistics,
         )
         epoch_peak_memory = (
             int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else None
@@ -821,10 +827,33 @@ def train_experiment(
             "predictive_loss",
             "predictive_pair_coverage",
             "temporal_prediction_loss",
+            "temporal_prediction_active_loss",
+            "temporal_prediction_tail_loss",
+            "temporal_persistence_active_loss",
+            "temporal_persistence_tail_loss",
+            "temporal_delay_mean_active_loss",
+            "temporal_delay_mean_tail_loss",
+            "temporal_target_active_variance",
+            "temporal_target_tail_variance",
+            "temporal_prediction_active_skill_vs_persistence",
+            "temporal_prediction_tail_skill_vs_persistence",
+            "temporal_prediction_active_skill_vs_delay_mean",
+            "temporal_prediction_tail_skill_vs_delay_mean",
             "auxiliary_weight",
+            "classification_gradient_norm",
+            "auxiliary_gradient_norm",
+            "weighted_auxiliary_gradient_norm",
+            "classification_auxiliary_gradient_cosine",
         ):
             if name in train_metrics:
                 row[f"train_{name}"] = train_metrics[name]
+        if temporal_prediction_statistics:
+            row.update(
+                {
+                    f"validation_{name}": value
+                    for name, value in temporal_prediction_statistics[0].items()
+                }
+            )
         if delay_modules:
             row["delay_temperature"] = next(iter(delay_modules.values())).delay_temperature
         append_csv(row, artifact_dir / "history.csv")
