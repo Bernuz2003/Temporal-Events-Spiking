@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import logging
 import math
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +49,10 @@ from etsr.training.engine import (
     train_one_epoch,
 )
 from etsr.training.gates import overfit_gate
-from etsr.training.predictive import PredictiveTrainingObjective
+from etsr.training.predictive import (
+    PredictiveTrainingObjective,
+    validate_predictive_training_authorization,
+)
 from etsr.utils.io import append_csv, ensure_dir, sha256_file, write_csv, write_json
 from etsr.utils.logging import configure_logging
 
@@ -497,6 +501,9 @@ def train_experiment(
     resume_from: str | Path | None = None,
 ) -> dict[str, Any]:
     config = copy.deepcopy(config)
+    continuation = config.get("continuation")
+    if continuation is not None:
+        validate_predictive_training_authorization(continuation)
     overfit = config["training"].get("overfit")
     if overfit is not None:
         config["training"]["amp"] = False
@@ -550,7 +557,6 @@ def train_experiment(
 
     num_classes = len(bundle.classes)
     model = build_model(config["model"], num_classes).to(device)
-    continuation = config.get("continuation")
     parent_metadata = None
     new_parameter_names: set[str] = set()
     if continuation is not None:
@@ -821,32 +827,18 @@ def train_experiment(
             row["inherited_learning_rate"] = group_learning_rates["inherited"]
         if "new" in group_learning_rates:
             row["new_parameter_learning_rate"] = group_learning_rates["new"]
-        for name in (
-            "classification_loss",
-            "auxiliary_loss",
-            "predictive_loss",
-            "predictive_pair_coverage",
-            "temporal_prediction_loss",
-            "temporal_prediction_active_loss",
-            "temporal_prediction_tail_loss",
-            "temporal_persistence_active_loss",
-            "temporal_persistence_tail_loss",
-            "temporal_delay_mean_active_loss",
-            "temporal_delay_mean_tail_loss",
-            "temporal_target_active_variance",
-            "temporal_target_tail_variance",
-            "temporal_prediction_active_skill_vs_persistence",
-            "temporal_prediction_tail_skill_vs_persistence",
-            "temporal_prediction_active_skill_vs_delay_mean",
-            "temporal_prediction_tail_skill_vs_delay_mean",
-            "auxiliary_weight",
-            "classification_gradient_norm",
-            "auxiliary_gradient_norm",
-            "weighted_auxiliary_gradient_norm",
-            "classification_auxiliary_gradient_cosine",
-        ):
-            if name in train_metrics:
-                row[f"train_{name}"] = train_metrics[name]
+        standard_train_metrics = {
+            "loss",
+            "accuracy",
+            "seconds",
+            "gradient_norm_mean",
+            "gradient_clip_fraction",
+            "gradient_nonfinite_fraction",
+            "amp_overflow_fraction",
+        }
+        for name, value in train_metrics.items():
+            if name not in standard_train_metrics and value is not None:
+                row[f"train_{name}"] = value
         if temporal_prediction_statistics:
             row.update(
                 {
@@ -856,6 +848,11 @@ def train_experiment(
             )
         if delay_modules:
             row["delay_temperature"] = next(iter(delay_modules.values())).delay_temperature
+        selection_eligible = (
+            predictive_objective is None
+            or predictive_objective.selection_eligible(epoch)
+        )
+        row["selection_eligible"] = selection_eligible
         append_csv(row, artifact_dir / "history.csv")
         for routing_row in routing_statistics:
             append_csv(
@@ -876,7 +873,7 @@ def train_experiment(
         )
 
         score = float(getattr(validation, select_metric))
-        if score > best_score:
+        if selection_eligible and score > best_score:
             best_score = score
             best_epoch = epoch
             save_checkpoint(
@@ -910,6 +907,8 @@ def train_experiment(
                 logger.info("Bounded overfit passed for five consecutive epochs; stopping.")
                 break
 
+    if best_epoch < 0:
+        raise RuntimeError("No checkpoint was eligible for selection after auxiliary warm-up.")
     restore_best_model(checkpoint_path, model, device, logger)
     deployment_checkpoint_path = None
     if continuation is not None:
@@ -981,10 +980,43 @@ def train_experiment(
         "environment_sha256": runtime["environment_sha256"],
         "peak_cuda_memory_bytes": (peak_cuda_memory_bytes if device.type == "cuda" else None),
     }
+    with (artifact_dir / "history.csv").open(newline="") as handle:
+        history_rows = list(csv.DictReader(handle))
+    declared_late_window_size = int(config["training"].get("late_summary_window", 16))
+    late_window_size = min(declared_late_window_size, len(history_rows))
+    late_rows = history_rows[-late_window_size:]
+    summary["late_window"] = {
+        "declared_size": declared_late_window_size,
+        "observed_size": len(late_rows),
+        "first_epoch": int(late_rows[0]["epoch"]),
+        "last_epoch": int(late_rows[-1]["epoch"]),
+        "validation_macro_f1_mean": statistics.fmean(
+            float(row["validation_macro_f1"]) for row in late_rows
+        ),
+        "validation_macro_f1_std": statistics.pstdev(
+            float(row["validation_macro_f1"]) for row in late_rows
+        ),
+        "validation_accuracy_mean": statistics.fmean(
+            float(row["validation_accuracy"]) for row in late_rows
+        ),
+        "validation_accuracy_std": statistics.pstdev(
+            float(row["validation_accuracy"]) for row in late_rows
+        ),
+        "last_validation_macro_f1": float(late_rows[-1]["validation_macro_f1"]),
+        "last_validation_accuracy": float(late_rows[-1]["validation_accuracy"]),
+    }
+    summary["selection_warmup_excluded_epochs"] = [
+        int(row["epoch"])
+        for row in history_rows
+        if row.get("selection_eligible", "True").lower() == "false"
+    ]
     if overfit is not None:
         summary["overfit_gate"] = overfit_gate(gate_rows)
     if shortcut_correlations is not None:
         summary["validation_shortcut_correlations"] = shortcut_correlations
+        summary["per_sample_predictions"] = str(
+            (artifact_dir / "validation_shortcuts.csv").resolve()
+        )
     if prefix_evaluation is not None:
         summary["prefix_evaluation"] = prefix_evaluation
     if delay_modules:

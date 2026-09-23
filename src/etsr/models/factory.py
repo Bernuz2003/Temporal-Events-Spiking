@@ -53,6 +53,12 @@ def build_model(config: dict[str, Any], num_classes: int) -> nn.Module:
         temporal_channel_mixer_surprise_routing=config.get(
             "temporal_channel_mixer_surprise_routing", False
         ),
+        temporal_channel_mixer_routing_stages=tuple(
+            config.get("temporal_channel_mixer_routing_stages", (1, 2))
+        ),
+        temporal_channel_mixer_routing_parameterization=str(
+            config.get("temporal_channel_mixer_routing_parameterization", "independent")
+        ),
         learnable_lif_tau=config.get("learnable_lif_tau", False),
         gated_initial_memory_steps=config.get("gated_initial_memory_steps"),
         multigranular=config.get("multigranular", False),

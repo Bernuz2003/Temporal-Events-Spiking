@@ -54,6 +54,8 @@ class MiniQKFormer(nn.Module):
         temporal_channel_mixer_predictor_channel_groups: int | None = None,
         temporal_channel_mixer_predictor_spatial_kernel_size: int = 1,
         temporal_channel_mixer_surprise_routing: bool = False,
+        temporal_channel_mixer_routing_stages: tuple[int, ...] = (1, 2),
+        temporal_channel_mixer_routing_parameterization: str = "independent",
         learnable_lif_tau: bool = False,
         gated_initial_memory_steps: float | None = None,
         multigranular: bool = False,
@@ -108,11 +110,26 @@ class MiniQKFormer(nn.Module):
             and temporal_channel_mixer_router_hidden_divisor <= 0
         ):
             raise ValueError("temporal mixer router hidden divisor must be positive or null")
-        if not temporal_channel_mixer_dynamic_routing and (
+        if not (
+            temporal_channel_mixer_dynamic_routing
+            or temporal_channel_mixer_surprise_routing
+        ) and (
             temporal_channel_mixer_router_pooling != "global"
             or temporal_channel_mixer_router_hidden_divisor is not None
         ):
             raise ValueError("temporal router geometry requires dynamic routing")
+        if (
+            not temporal_channel_mixer_routing_stages
+            or any(stage not in {1, 2} for stage in temporal_channel_mixer_routing_stages)
+            or tuple(sorted(set(temporal_channel_mixer_routing_stages)))
+            != temporal_channel_mixer_routing_stages
+        ):
+            raise ValueError("temporal routing stages must be an ordered subset of (1, 2)")
+        if temporal_channel_mixer_routing_parameterization not in {
+            "independent",
+            "amplitude_allocation",
+        }:
+            raise ValueError("unsupported temporal routing parameterization")
         if (
             temporal_channel_mixer_predictor_channel_groups is not None
             and temporal_channel_mixer_predictor_channel_groups <= 0
@@ -199,6 +216,7 @@ class MiniQKFormer(nn.Module):
             temporal_channel_mixer_predictive_auxiliary
         )
         self.temporal_channel_mixer_surprise_routing = temporal_channel_mixer_surprise_routing
+        self.temporal_channel_mixer_routing_stages = temporal_channel_mixer_routing_stages
         self.learnable_lif_tau_enabled = learnable_lif_tau
         self.multigranular_enabled = multigranular
         self.multigranular_fusion_name = multigranular_fusion
@@ -219,13 +237,22 @@ class MiniQKFormer(nn.Module):
             temporal_fir_dilation=temporal_fir_dilations[0],
             temporal_channel_mixer_delays=channel_mixer_delays,
             temporal_channel_mixer_learnable_delays=temporal_channel_mixer_learnable_delays,
-            temporal_channel_mixer_dynamic_routing=temporal_channel_mixer_dynamic_routing,
+            temporal_channel_mixer_dynamic_routing=(
+                temporal_channel_mixer_dynamic_routing
+                and 1 in temporal_channel_mixer_routing_stages
+            ),
             temporal_channel_mixer_router_pooling=temporal_channel_mixer_router_pooling,
             temporal_channel_mixer_router_hidden_divisor=temporal_channel_mixer_router_hidden_divisor,
             temporal_channel_mixer_predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
             temporal_channel_mixer_predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
             temporal_channel_mixer_predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
-            temporal_channel_mixer_surprise_routing=temporal_channel_mixer_surprise_routing,
+            temporal_channel_mixer_surprise_routing=(
+                temporal_channel_mixer_surprise_routing
+                and 1 in temporal_channel_mixer_routing_stages
+            ),
+            temporal_channel_mixer_routing_parameterization=(
+                temporal_channel_mixer_routing_parameterization
+            ),
             learnable_tau=learnable_lif_tau,
         )
         self.fine_temporal_branch = (
@@ -281,13 +308,22 @@ class MiniQKFormer(nn.Module):
             temporal_fir_dilation=temporal_fir_dilations[1],
             temporal_channel_mixer_delays=channel_mixer_delays,
             temporal_channel_mixer_learnable_delays=temporal_channel_mixer_learnable_delays,
-            temporal_channel_mixer_dynamic_routing=temporal_channel_mixer_dynamic_routing,
+            temporal_channel_mixer_dynamic_routing=(
+                temporal_channel_mixer_dynamic_routing
+                and 2 in temporal_channel_mixer_routing_stages
+            ),
             temporal_channel_mixer_router_pooling=temporal_channel_mixer_router_pooling,
             temporal_channel_mixer_router_hidden_divisor=temporal_channel_mixer_router_hidden_divisor,
             temporal_channel_mixer_predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
             temporal_channel_mixer_predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
             temporal_channel_mixer_predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
-            temporal_channel_mixer_surprise_routing=temporal_channel_mixer_surprise_routing,
+            temporal_channel_mixer_surprise_routing=(
+                temporal_channel_mixer_surprise_routing
+                and 2 in temporal_channel_mixer_routing_stages
+            ),
+            temporal_channel_mixer_routing_parameterization=(
+                temporal_channel_mixer_routing_parameterization
+            ),
             learnable_tau=learnable_lif_tau,
         )
         self.stage2 = SpikingBlock(
@@ -412,40 +448,96 @@ class MiniQKFormer(nn.Module):
         return torch.stack(valid).mean() if valid else None
 
     def temporal_auxiliary_statistics(
-        self, valid_steps: torch.Tensor
-    ) -> tuple[torch.Tensor | None, dict[str, float]]:
-        """Return the balanced predictor loss and causal-reference diagnostics."""
+        self,
+        valid_steps: torch.Tensor,
+        *,
+        region_weights: dict[str, float] | None = None,
+        stage_weights: dict[str, float] | None = None,
+    ) -> tuple[torch.Tensor | None, dict[str, float], dict[str, torch.Tensor]]:
+        """Return an explicitly stage/region-weighted causal predictor objective."""
 
-        values = self._temporal_prediction_region_values(valid_steps)
-        prediction_regions = [
-            values[key]
-            for key in ("prediction_active", "prediction_tail")
-            if key in values
-        ]
-        if not prediction_regions:
-            return None, {}
-        metrics = self._temporal_prediction_metrics(values)
-        return torch.stack(prediction_regions).mean(), metrics
+        region_weights = region_weights or {"active": 1.0, "tail": 0.25}
+        stage_weights = stage_weights or {"stage1": 1.0, "stage2": 1.0}
+        staged = self._temporal_prediction_region_values_by_stage(valid_steps)
+        metrics: dict[str, float] = {}
+        components: dict[str, torch.Tensor] = {}
+        weighted_terms: list[torch.Tensor] = []
+        weights: list[float] = []
+        for stage, values in staged.items():
+            metrics.update(
+                {
+                    f"{stage}_{name}": value
+                    for name, value in self._temporal_prediction_metrics(values).items()
+                }
+            )
+            for region in ("active", "tail"):
+                key = f"prediction_{region}"
+                weight = stage_weights[stage] * region_weights[region]
+                if key in values and weight > 0:
+                    weighted_terms.append(values[key] * weight)
+                    weights.append(weight)
+        if not weighted_terms:
+            return None, metrics, components
+        total_weight = sum(weights)
+        for region in ("active", "tail"):
+            terms = []
+            for stage, values in staged.items():
+                key = f"prediction_{region}"
+                weight = stage_weights[stage] * region_weights[region]
+                if key in values and weight > 0:
+                    terms.append(values[key] * weight)
+            if terms:
+                # Components are their exact contribution to the total auxiliary objective.
+                # They therefore sum to the returned loss and can be differentiated separately.
+                components[region] = torch.stack(terms).sum() / total_weight
+        combined = self._temporal_prediction_region_values(valid_steps)
+        metrics.update(self._temporal_prediction_metrics(combined))
+        metrics.update(self._temporal_variation_metrics(valid_steps))
+        return torch.stack(weighted_terms).sum() / total_weight, metrics, components
 
     def temporal_prediction_statistics(self, valid_steps: torch.Tensor) -> dict[str, float]:
         """Measure predictor skill against causal persistence and delay-mean references."""
 
-        return self._temporal_prediction_metrics(
+        metrics = self._temporal_prediction_metrics(
             self._temporal_prediction_region_values(valid_steps)
         )
+        for stage, values in self._temporal_prediction_region_values_by_stage(
+            valid_steps
+        ).items():
+            metrics.update(
+                {
+                    f"{stage}_{name}": value
+                    for name, value in self._temporal_prediction_metrics(values).items()
+                }
+            )
+        metrics.update(self._temporal_variation_metrics(valid_steps))
+        return metrics
 
     def _temporal_prediction_region_values(
         self, valid_steps: torch.Tensor
     ) -> dict[str, torch.Tensor]:
-        diagnostics = [
-            module.prediction_diagnostics()
-            for module in self.modules()
-            if isinstance(module, CausalTemporalChannelMixer)
-            and module.predictive_auxiliary
-        ]
-        diagnostics = [value for value in diagnostics if value is not None]
+        staged = self._temporal_prediction_region_values_by_stage(valid_steps)
         collected: dict[str, list[torch.Tensor]] = {}
-        for diagnostic in diagnostics:
+        for values in staged.values():
+            for name, value in values.items():
+                collected.setdefault(name, []).append(value)
+        return {
+            name: torch.stack(region_values).mean()
+            for name, region_values in collected.items()
+        }
+
+    def _temporal_prediction_region_values_by_stage(
+        self, valid_steps: torch.Tensor
+    ) -> dict[str, dict[str, torch.Tensor]]:
+        staged: dict[str, dict[str, torch.Tensor]] = {}
+        for name, module in self.named_modules():
+            if not isinstance(module, CausalTemporalChannelMixer) or not module.predictive_auxiliary:
+                continue
+            diagnostic = module.prediction_diagnostics()
+            if diagnostic is None:
+                continue
+            stage = "stage1" if name.startswith("patch_embed1") else "stage2"
+            collected: dict[str, list[torch.Tensor]] = {}
             reference = diagnostic["prediction_error"]
             positions = torch.arange(reference.shape[0], device=reference.device).unsqueeze(1)
             active_mask = positions < valid_steps.unsqueeze(0)
@@ -460,10 +552,31 @@ class MiniQKFormer(nn.Module):
                     collected.setdefault(f"{name.removesuffix('_error')}_{region}", []).append(
                         per_sample[present].mean()
                     )
-        return {
-            name: torch.stack(region_values).mean()
-            for name, region_values in collected.items()
-        }
+            staged[stage] = {
+                key: torch.stack(region_values).mean()
+                for key, region_values in collected.items()
+            }
+        return staged
+
+    def _temporal_variation_metrics(self, valid_steps: torch.Tensor) -> dict[str, float]:
+        metrics: dict[str, float] = {}
+        for name, module in self.named_modules():
+            if not isinstance(module, CausalTemporalChannelMixer):
+                continue
+            variation = module.last_temporal_variation
+            if variation is None or variation.shape[0] == 0:
+                continue
+            stage = "stage1" if name.startswith("patch_embed1") else "stage2"
+            positions = torch.arange(1, variation.shape[0] + 1, device=variation.device).unsqueeze(1)
+            mask = positions < valid_steps.unsqueeze(0)
+            counts = mask.sum(0)
+            present = counts > 0
+            if bool(present.any().item()):
+                per_sample = (variation * mask).sum(0) / counts.clamp_min(1)
+                metrics[f"temporal_variation_{stage}_active"] = float(
+                    per_sample[present].mean().detach()
+                )
+        return metrics
 
     @staticmethod
     def _temporal_prediction_metrics(

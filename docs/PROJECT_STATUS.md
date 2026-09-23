@@ -1,10 +1,11 @@
 # Stato corrente
 
-**Aggiornato:** 2026-09-19
+**Aggiornato:** 2026-09-23
 
-**Fase:** verifica su SMILIES della ricerca predittiva/condizionale prima della ripresa delle
-augmentation. Protocollo, moduli, diagnostiche, workflow ed export deployabile sono implementati
-nel branch `Predictive-Temporal-Coding`; nessun nuovo training è stato ancora lanciato.
+**Fase:** audit correttivo checkpoint-only della ricerca predittiva/condizionale. Sette
+continuazioni sono state eseguite, ma il loro disegno o la loro misura non consente di usarle come
+evidenza sulle ipotesi. Restano archiviate sotto `artifacts/superseded/` e sono documentate soltanto
+in [`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md).
 
 ## Riferimento empirico
 
@@ -35,10 +36,11 @@ conserva le diagnostiche e i profili storici.
 
 ## Prossimo passo
 
-Eseguire il check CUDA/AMP e le diagnostiche P0 della
-[`PREDICTIVE_TEMPORAL_ROADMAP.md`](PREDICTIVE_TEMPORAL_ROADMAP.md), quindi il controllo R0.
-Solo dopo si aprono i bracci condizionali previsti. Augmentation sospese per nuovi lanci;
-risultati e run già avviati conservati.
+Eseguire il comando unico `predictive-phase1-audit`, che produce A1 autorità dei gradienti, A2
+probe discriminativi di previsione/residuo, A3 movimento diretto della rappresentazione e A4
+decomposizione del margine nella coda. `predictive-continuation` resta bloccato finché
+`artifacts/predictive_phase1_audit/phase1_audit.json` non è completo e coerente con C0. P-F resta
+bloccato fino alla verifica R5 su orizzonti e target alternativi.
 
 Tutte le metriche citate sono development validation. L'implementazione non produce da sola nuova
 evidenza empirica; nessun accesso all'official test.

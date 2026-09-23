@@ -9,6 +9,7 @@ from typing import Any
 
 from etsr.config import load_config, validate_config
 from etsr.runner import profile_checkpoint, train_experiment
+from etsr.training.predictive import validate_predictive_training_authorization
 from etsr.utils.io import write_json
 
 _AUGMENTATION_FAMILIES = {
@@ -352,12 +353,7 @@ def run_predictive_continuation(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Predictive continuation requires a continuation section.")
     recipe_id = requested["training"].get("recipe_id")
     canonical_by_recipe = {
-        "dvslip_predictive_continuation_64_v1": (
-            "configs/dvslip_predictive_continuation_base.yaml"
-        ),
-        "dvslip_predictive_continuation_64_discriminative_lr_v2": (
-            "configs/dvslip_predictive_continuation_discriminative_lr_base.yaml"
-        ),
+        "dvslip_predictive_continuation_64": "configs/dvslip_predictive_continuation_base.yaml",
     }
     if recipe_id not in canonical_by_recipe:
         raise ValueError(f"Unsupported predictive continuation recipe: {recipe_id}")
@@ -372,6 +368,7 @@ def run_predictive_continuation(config: dict[str, Any]) -> dict[str, Any]:
         "parent_checkpoint",
         "freeze_batchnorm_statistics",
         "new_parameter_learning_rate",
+        "phase1_audit_report",
     ):
         if continuation.get(field) != canonical["continuation"].get(field):
             raise ValueError(f"Predictive continuation must preserve canonical {field}.")
@@ -403,12 +400,16 @@ def run_predictive_continuation(config: dict[str, Any]) -> dict[str, Any]:
         "temporal_channel_mixer_predictor_channel_groups",
         "temporal_channel_mixer_predictor_spatial_kernel_size",
         "temporal_channel_mixer_surprise_routing",
+        "temporal_channel_mixer_routing_stages",
+        "temporal_channel_mixer_routing_parameterization",
     }
     stripped_model = {
         key: value for key, value in requested["model"].items() if key not in allowed_model_fields
     }
     if stripped_model != parent["model"]:
         raise ValueError("Predictive continuation may change only registered training/routing fields.")
+
+    validate_predictive_training_authorization(continuation)
 
     from etsr.evaluation.predictive_diagnostic import run_predictive_preflight
 

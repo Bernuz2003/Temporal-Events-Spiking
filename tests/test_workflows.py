@@ -1,4 +1,5 @@
 import copy
+import csv
 import json
 import os
 import subprocess
@@ -13,6 +14,7 @@ from etsr.config import load_config, save_config
 from etsr.data.common import DatasetBundle
 from etsr.models.temporal import CausalTemporalChannelMixer
 from etsr.training.gates import overfit_gate
+from etsr.utils.io import append_csv
 
 
 def healthy_row(**overrides):
@@ -21,6 +23,24 @@ def healthy_row(**overrides):
         "gradient_norm_mean": 0.5, "gradient_nonfinite_fraction": 0.0,
         "amp_overflow_fraction": 0.0, **overrides,
     }
+
+
+def test_append_csv_aligns_reordered_rows_and_expands_the_schema(tmp_path):
+    output = tmp_path / "history.csv"
+    append_csv({"epoch": 1, "first": 10, "second": 20}, output)
+    append_csv({"epoch": 2, "second": 200, "first": 100}, output)
+    append_csv({"epoch": 3, "first": 1000, "third": 3000}, output)
+
+    with output.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+
+    assert reader.fieldnames == ["epoch", "first", "second", "third"]
+    assert rows == [
+        {"epoch": "1", "first": "10", "second": "20", "third": ""},
+        {"epoch": "2", "first": "100", "second": "200", "third": ""},
+        {"epoch": "3", "first": "1000", "second": "", "third": "3000"},
+    ]
 
 
 def test_delay_trajectory_records_continuous_motion_before_hard_change():
@@ -408,6 +428,11 @@ def test_predictive_continuation_failure_blocks_the_full_run(tmp_path, monkeypat
         "etsr.evaluation.predictive_diagnostic.run_predictive_preflight",
         lambda _config, _output: {"passed": True},
     )
+    monkeypatch.setattr(
+        workflows,
+        "validate_predictive_training_authorization",
+        lambda _continuation: tmp_path / "audit.json",
+    )
     monkeypatch.setattr(workflows, "train_experiment", train)
     with pytest.raises(RuntimeError, match="no continuation training"):
         workflows.run_predictive_continuation(config)
@@ -427,10 +452,21 @@ def test_predictive_continuation_rejects_recipe_and_representation_drift():
     with pytest.raises(ValueError, match="preregistered representation"):
         workflows.run_predictive_continuation(config)
 
-    config = load_config("configs/dvslip_predictive_dynamic_tcap_discriminative_lr.yaml")
+    config = load_config("configs/dvslip_predictive_dynamic_tcap.yaml")
     config["continuation"]["new_parameter_learning_rate"] = 2e-4
     with pytest.raises(ValueError, match="canonical new_parameter_learning_rate"):
         workflows.run_predictive_continuation(config)
+
+
+def test_direct_training_cannot_bypass_predictive_phase1_gates(tmp_path):
+    blocked = load_config("configs/dvslip_predictive_fine_future.yaml")
+    with pytest.raises(RuntimeError, match="intentionally blocked"):
+        runner.train_experiment(blocked)
+
+    missing_audit = load_config("configs/dvslip_predictive_r0.yaml")
+    missing_audit["continuation"]["phase1_audit_report"] = str(tmp_path / "missing.json")
+    with pytest.raises(FileNotFoundError, match="has not been produced"):
+        runner.train_experiment(missing_audit)
 
 
 def test_runner_overfit_early_stops_and_records_actual_subset(tmp_path, monkeypatch):
@@ -463,6 +499,13 @@ def test_runner_overfit_early_stops_and_records_actual_subset(tmp_path, monkeypa
     assert resolved["runtime"]["overfit_train_indices"] == [0, 1, 2, 3]
     assert resolved["training"]["amp"] is False
     assert resolved["augmentation"]["horizontal_flip_probability"] == 0
+    assert summary["late_window"]["declared_size"] == 16
+    assert summary["late_window"]["observed_size"] == 5
+    assert summary["late_window"]["first_epoch"] == 1
+    assert summary["late_window"]["last_epoch"] == 5
+    with (Path(summary["artifact_dir"]) / "history.csv").open(newline="") as handle:
+        history = list(csv.DictReader(handle))
+    assert [row["selection_eligible"] for row in history] == ["True"] * 5
 
 
 def test_backfill_uses_resolved_run_config_preserves_legacy_and_reports_missing(tmp_path, monkeypatch):

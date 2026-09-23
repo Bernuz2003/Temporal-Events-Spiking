@@ -1,8 +1,10 @@
 # Roadmap operativa: supervisione predittiva e memoria temporale condizionale
 
-**Definita:** 2026-09-19. **Stato:** protocollo e infrastruttura implementati nel branch
-`Predictive-Temporal-Coding`; test CPU superati, verifica CUDA/AMP SMILIES ancora necessaria.
-Questo documento non attesta l'esecuzione di nuovi esperimenti.
+**Definita:** 2026-09-19. **Stato al 2026-09-23:** la prima esecuzione è stata invalidata come
+evidenza dal contratto
+[`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md), che prevale su questa
+roadmap per correzioni, ordine dei run e criteri decisionali. Le sezioni sotto restano il razionale
+delle ipotesi e non autorizzano la riesecuzione dell'albero originario.
 
 La fase precede la ripresa delle augmentation. Mantiene come riferimento **F+DWC-3+TCAP-d8** e
 riapre soltanto le ipotesi descritte qui. Motivazioni, anteriorità e limiti teorici sono nella
@@ -65,11 +67,11 @@ fra architetture addestrate tutte da zero.
 
 | Elemento | Scelta fissata per tutti i bracci |
 |---|---|
-| Recipe di fase | `dvslip_predictive_continuation_64_v1`, implementata e vincolata dal workflow dedicato |
+| Recipe di fase corretta | `dvslip_predictive_continuation_64`, vincolata dal workflow dedicato |
 | Dati e input deployato | split development esistente; E0, 40×50 ms; mean/fixed-window |
 | Augmentation | solo flip orizzontale 0,5 già presente in C0; niente nuove augmentation |
 | Ottimizzazione | AdamW nuovo, senza momenti ereditati; batch 16, accumulo 2 |
-| Schedule | 64 epoche; LR massimo `1e-4`, minimo `1e-6`, cosine; warmup 2 epoche da fattore 0,01 |
+| Schedule | 64 epoche; LR ereditato `1e-5`, LR nuovi parametri `1e-4`, cosine proporzionale fino a `1e-6` sul gruppo ereditato; warmup 2 epoche |
 | Altri parametri | weight decay `5e-4`, label smoothing 0,1, clipping 1,0, AMP |
 | BatchNorm student | running mean/variance di C0 fisse in tutti i bracci; affine apprendibile |
 | Teacher | pesi e statistiche fissi; modalità eval; nessuna augmentation indipendente |

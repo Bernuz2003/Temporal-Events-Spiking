@@ -1,23 +1,26 @@
 # Decisioni attive
 
-**Aggiornate:** 2026-09-19
+**Aggiornate:** 2026-09-23
 
 ## Decisioni correnti della fase predittiva
 
 1. F+DWC-3+TCAP-d8 è il riferimento congelato. F+TCAP e MG+TCAP citati sotto sono riferimenti
    storici della discovery, non il modello corrente.
-2. Prima della ripresa augmentation si segue soltanto
-   [`PREDICTIVE_TEMPORAL_ROADMAP.md`](PREDICTIVE_TEMPORAL_ROADMAP.md): continuazione comune R0,
-   supervisione predittiva, routing dinamico e surprise con controlli; una sola fusione.
+2. Prima della ripresa augmentation prevale
+   [`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). La prima esecuzione
+   non è evidenza sulle ipotesi; i suoi artifact sono conservati sotto `artifacts/superseded/`.
 3. Il confronto è con uguale training aggiuntivo del finalista, non con B. BN running fissa
    in tutti i bracci; teacher eval. Nuove augmentation escluse da questa fase.
 4. PLIF informa diagnostiche dei prefissi e un fallback di supervisione tardiva. Non si
    reintroduce il neuron model e non si impone una costante `last_event+K`.
-5. Tetto screening: otto continuazioni da 32 epoche, con limite aggiuntivo in GPU-ore. Controlli,
-   soglie, repliche e trasferimento condizionale sono definiti nel protocollo operativo.
-6. Si promuove un solo vincitore confermato, poi si riprendono le augmentation sulla candidata.
+5. Prima di ogni training vanno completate A1–A4 su C0, R0 e S0. Il prossimo braccio viene scelto
+   dal corredo di evidenza, non da un gate single-seed di +1 pp; la superiorità richiede più seed.
+6. Le correzioni attive sono: ramp escluso dalla selezione, gradienti per blocco/regione,
+   obiettivo S active-dominant, routing solo stage2 con ampiezza separata dall'allocazione softmax,
+   surprise locale e rapporto costante fra learning rate discriminativi.
+7. Si promuove un solo vincitore confermato, poi si riprendono le augmentation sulla candidata.
    B non riceve screen duplicati. I negativi validi restano parte dell'evidenza.
-7. Official test escluso. Profiling dal proprio best; nessun risparmio attribuito automaticamente
+8. Official test escluso. Profiling dal proprio best; nessun risparmio attribuito automaticamente
    a gate soft. La disponibilità del teacher limita cosa può essere trasferito fra dataset.
 
 ## Decisioni della discovery al 13 settembre — contesto storico

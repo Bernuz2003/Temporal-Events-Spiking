@@ -36,12 +36,27 @@ def build_parser() -> argparse.ArgumentParser:
     predictive_probe.add_argument("--output", required=True)
     predictive_probe.add_argument("--train-samples", type=int, default=512)
     predictive_probe.add_argument("--validation-samples", type=int, default=256)
+    predictive_probe.add_argument(
+        "--mode", choices=("fine_future", "fine_same", "coarse_future")
+    )
+    predictive_probe.add_argument("--horizon", type=int)
     predictive_check = subparsers.add_parser(
         "predictive-check",
         help="Verify parent equivalence, causal prefixes and new-module gradients",
     )
     predictive_check.add_argument("--config", required=True)
     predictive_check.add_argument("--output", required=True)
+    phase1_audit = subparsers.add_parser(
+        "predictive-phase1-audit",
+        help="Produce the mandatory checkpoint-only A1-A4 evidence bundle",
+    )
+    for label in ("c0", "r0", "s0"):
+        phase1_audit.add_argument(f"--{label}-config", required=True)
+        phase1_audit.add_argument(f"--{label}-checkpoint", required=True)
+    phase1_audit.add_argument("--output", required=True)
+    phase1_audit.add_argument("--fit-samples", type=int, default=512)
+    phase1_audit.add_argument("--holdout-samples", type=int, default=256)
+    phase1_audit.add_argument("--feature-samples", type=int, default=256)
     tcap_predictive_probe = subparsers.add_parser(
         "tcap-predictive-probe",
         help="Fit and evaluate the checkpoint-only causal TCAP history predictor",
@@ -251,9 +266,17 @@ def main() -> None:
         from etsr.config import load_config
         from etsr.evaluation.predictive_diagnostic import run_cross_resolution_probe
 
+        config = load_config(args.config)
+        if args.mode is not None:
+            config["continuation"]["objective"]["mode"] = args.mode
+        if args.horizon is not None:
+            if args.horizon <= 0:
+                raise ValueError("--horizon must be positive")
+            config["continuation"]["objective"]["horizon_steps"] = args.horizon
+            config["continuation"]["objective"]["alignment_horizon_steps"] = args.horizon
         print(
             run_cross_resolution_probe(
-                load_config(args.config),
+                config,
                 args.output,
                 max_train_samples=args.train_samples,
                 max_validation_samples=args.validation_samples,
@@ -267,6 +290,28 @@ def main() -> None:
         print(report)
         if not report["passed"]:
             raise SystemExit("Predictive preflight failed; see the JSON report.")
+    elif args.command == "predictive-phase1-audit":
+        from etsr.evaluation.predictive_phase1_audit import run_predictive_phase1_audit
+
+        report = run_predictive_phase1_audit(
+            c0_config=args.c0_config,
+            c0_checkpoint=args.c0_checkpoint,
+            r0_config=args.r0_config,
+            r0_checkpoint=args.r0_checkpoint,
+            s0_config=args.s0_config,
+            s0_checkpoint=args.s0_checkpoint,
+            output_dir=args.output,
+            fit_samples=args.fit_samples,
+            holdout_samples=args.holdout_samples,
+            feature_samples=args.feature_samples,
+        )
+        print(
+            {
+                "output": str((Path(args.output) / "phase1_audit.json").resolve()),
+                "complete": report["complete"],
+                "official_test_used": report["official_test_used"],
+            }
+        )
     elif args.command == "tcap-predictive-probe":
         from etsr.config import load_config
         from etsr.evaluation.predictive_diagnostic import run_tcap_predictive_probe

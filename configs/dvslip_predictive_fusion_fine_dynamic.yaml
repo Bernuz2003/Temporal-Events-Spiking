@@ -7,3 +7,5 @@ model:
   temporal_channel_mixer_dynamic_routing: true
   temporal_channel_mixer_router_pooling: local
   temporal_channel_mixer_router_hidden_divisor: 2
+  temporal_channel_mixer_routing_stages: [2]
+  temporal_channel_mixer_routing_parameterization: amplitude_allocation

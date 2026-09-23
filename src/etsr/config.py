@@ -379,8 +379,27 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError(
             "model.temporal_channel_mixer_router_hidden_divisor must be positive or null"
         )
-    if not dynamic_routing and (router_pooling != "global" or router_hidden_divisor is not None):
+    if not (dynamic_routing or surprise_routing) and (
+        router_pooling != "global" or router_hidden_divisor is not None
+    ):
         raise ConfigError("Temporal router geometry requires dynamic routing")
+    routing_stages = model.get("temporal_channel_mixer_routing_stages", [1, 2])
+    if (
+        not isinstance(routing_stages, list)
+        or not routing_stages
+        or any(type(stage) is not int or stage not in {1, 2} for stage in routing_stages)
+        or sorted(set(routing_stages)) != routing_stages
+    ):
+        raise ConfigError("model.temporal_channel_mixer_routing_stages must be [1], [2] or [1, 2]")
+    routing_parameterization = model.get(
+        "temporal_channel_mixer_routing_parameterization", "independent"
+    )
+    if routing_parameterization not in {"independent", "amplitude_allocation"}:
+        raise ConfigError("Unsupported temporal routing parameterization")
+    if not (dynamic_routing or surprise_routing) and (
+        routing_stages != [1, 2] or routing_parameterization != "independent"
+    ):
+        raise ConfigError("Temporal routing controls require an enabled router")
     predictor_groups = model.get("temporal_channel_mixer_predictor_channel_groups")
     if predictor_groups is not None and (
         type(predictor_groups) is not int
@@ -547,6 +566,11 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError("dataset.batch_size must be positive")
     if training.get("select_metric", "macro_f1") not in ("accuracy", "macro_f1"):
         raise ConfigError("training.select_metric must be accuracy or macro_f1")
+    late_window = training.get("late_summary_window")
+    if late_window is not None and (
+        type(late_window) is not int or not 1 <= late_window <= epochs
+    ):
+        raise ConfigError("training.late_summary_window must be an integer within the run")
 
     if continuation is not None:
         _validate_predictive_continuation(config, objective_mode)
@@ -559,6 +583,18 @@ def _validate_predictive_continuation(config: dict[str, Any], objective_mode: st
     for field in ("parent_config", "parent_checkpoint"):
         if not isinstance(continuation.get(field), str) or not continuation[field].strip():
             raise ConfigError(f"continuation.{field} must be a non-empty path")
+    audit_report = continuation.get("phase1_audit_report")
+    if audit_report is None and "runtime" not in config:
+        raise ConfigError(
+            "continuation.phase1_audit_report must name the completed A1-A4 report"
+        )
+    if audit_report is not None and (not isinstance(audit_report, str) or not audit_report.strip()):
+        raise ConfigError("continuation.phase1_audit_report must be a non-empty path")
+    blocked_reason = continuation.get("blocked_reason")
+    if blocked_reason is not None and (
+        not isinstance(blocked_reason, str) or not blocked_reason.strip()
+    ):
+        raise ConfigError("continuation.blocked_reason must be a non-empty string")
     if continuation.get("freeze_batchnorm_statistics") is not True:
         raise ConfigError("Predictive continuation requires fixed BatchNorm running statistics")
     new_parameter_learning_rate = continuation.get("new_parameter_learning_rate")
@@ -577,9 +613,36 @@ def _validate_predictive_continuation(config: dict[str, Any], objective_mode: st
     weight = objective.get("weight", 0.0)
     if type(weight) not in (int, float) or isinstance(weight, bool) or not 0.0 <= weight <= 1.0:
         raise ConfigError("continuation.objective.weight must be in [0, 1]")
+    auxiliary_declared = (
+        objective_mode != "none"
+        or bool(config["model"].get("temporal_channel_mixer_predictive_auxiliary", False))
+    )
+    if auxiliary_declared and float(weight) <= 0.0:
+        raise ConfigError("A declared predictive auxiliary objective requires positive weight")
+    if not auxiliary_declared and float(weight) > 0.0:
+        raise ConfigError("Predictive objective weight is positive but no auxiliary is configured")
     ramp = objective.get("ramp_epochs", 0)
     if type(ramp) is not int or ramp < 0 or ramp > int(config["training"]["epochs"]):
         raise ConfigError("continuation.objective.ramp_epochs must fit the training horizon")
+    for field, required in (
+        ("temporal_region_weights", {"active", "tail"}),
+        ("temporal_stage_weights", {"stage1", "stage2"}),
+    ):
+        values = objective.get(field)
+        if values is None:
+            continue
+        if (
+            not isinstance(values, dict)
+            or set(values) != required
+            or any(
+                type(value) not in (int, float)
+                or isinstance(value, bool)
+                or value < 0
+                for value in values.values()
+            )
+            or sum(values.values()) <= 0
+        ):
+            raise ConfigError(f"continuation.objective.{field} has invalid weights")
     if objective_mode != "none":
         for field in ("teacher_config", "teacher_checkpoint"):
             if not isinstance(continuation.get(field), str) or not continuation[field].strip():

@@ -157,6 +157,10 @@ def test_conditional_tcap_profile_counts_router_once_and_surprise_primitives():
     surprise.load_state_dict(fixed.state_dict(), strict=False)
     surprise_profile = profile_model(surprise, loader, torch.device("cpu"), 1)
     operations = surprise_profile["operations_per_sample"]
+    assert operations["elementwise_multiply"] > fixed_profile["operations_per_sample"][
+        "elementwise_multiply"
+    ]
+    assert surprise_profile["inference_non_linearities"]["sigmoid_per_sample"] > 0
     for field in (
         "surprise_error_subtract",
         "surprise_absolute_value",

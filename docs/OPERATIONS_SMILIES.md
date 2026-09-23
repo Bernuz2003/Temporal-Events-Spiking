@@ -105,68 +105,32 @@ invariati. Non cambiare kernel, ritardi o soglia del gate.
 
 ## Fase predictive-temporal
 
-Questa fase usa esclusivamente `predictive-continuation`: il workflow carica C0, esegue
-automaticamente il preflight di equivalenza/causalità/gradienti, applica il bounded overfit e
-avvia le 64 epoche solo se il gate passa. Il best di training conserva i moduli ausiliari;
-`deployment.pt` e `deployment_config_resolved.yaml` rimuovono predictor cross-resolution e ogni
-predittore TCAP non usato in inferenza. Prima di ogni campagna eseguire sul commit scelto:
+La prima esecuzione è archiviata sotto `artifacts/superseded/`. Prima di qualunque nuovo training
+va prodotto il pacchetto checkpoint-only A1–A4 richiesto da
+[`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). Sul server che
+contiene C0, R0-v2 e S0:
 
 ```bash
+mkdir -p artifacts/superseded
+for run in dvslip_predictive_r0__20260919_195045_458075__seed42 dvslip_predictive_r0_overfit__20260919_194957_361550__seed42 dvslip_predictive_fine_future__20260920_092926_401100__seed42 dvslip_predictive_fine_future_overfit__20260920_092834_335457__seed42 dvslip_predictive_dynamic_tcap__20260920_092918_912891__seed42 dvslip_predictive_dynamic_tcap_overfit__20260920_092834_060043__seed42 dvslip_predictive_r0_discriminative_lr__20260921_110121_131705__seed42 dvslip_predictive_r0_discriminative_lr_overfit__20260921_110011_141178__seed42 dvslip_predictive_dynamic_tcap_discriminative_lr__20260921_105916_470165__seed42 dvslip_predictive_dynamic_tcap_discriminative_lr_overfit__20260921_105749_046500__seed42 dvslip_predictive_s0__20260922_210709_490368__seed42 dvslip_predictive_s0_overfit__20260922_210538_689565__seed42 dvslip_predictive_s1__20260922_210647_463018__seed42 dvslip_predictive_s1_overfit__20260922_210556_078149__seed42; do test ! -d "artifacts/$run" || mv "artifacts/$run" artifacts/superseded/; done
+for directory in predictive_diagnostics predictive_preflight; do test ! -d "artifacts/$directory" || mv "artifacts/$directory" artifacts/superseded/; done
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/dataset_workflow.sh dvslip check
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-phase1-audit -- predictive-phase1-audit --c0-config artifacts/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/config_resolved.yaml --c0-checkpoint checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt --r0-config artifacts/superseded/dvslip_predictive_r0_discriminative_lr__20260921_110121_131705__seed42/config_resolved.yaml --r0-checkpoint checkpoints/dvslip_predictive_r0_discriminative_lr__20260921_110121_131705__seed42/best.pt --s0-config artifacts/superseded/dvslip_predictive_s0__20260922_210709_490368__seed42/config_resolved.yaml --s0-checkpoint checkpoints/dvslip_predictive_s0__20260922_210709_490368__seed42/best.pt --output artifacts/predictive_phase1_audit --fit-samples 512 --holdout-samples 256 --feature-samples 256
 ```
 
-Le due diagnostiche P0 non addestrano il classificatore. Il probe fine usa due sottoinsiemi
-disgiunti del development-train e scrive anche la normalizzazione per canale richiesta da P-F.
-La diagnostica TCAP fitta i coefficienti convessi della baseline compressa e valuta storia/errore;
-non sostituisce il test addestrato del predictor MIMO/spaziale configurato nei bracci S.
+Il comando produce `phase1_audit.json` e i CSV per-sample A4. Solo dopo la lettura del report si
+sceglie il prossimo braccio. `predictive-continuation` verifica automaticamente presenza,
+completezza e hash C0 del report; P-F e i target future restano inoltre bloccati da R5.
 
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-p0-fine -- predictive-probe --config configs/dvslip_predictive_fine_future.yaml --output artifacts/predictive_diagnostics/fine_future_probe.json --train-samples 512 --validation-samples 256
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-p0-tcap -- tcap-predictive-probe --config configs/dvslip_f_tcap_stage1_dwc3_d8.yaml --checkpoint checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt --output artifacts/predictive_diagnostics/tcap_predictive_probe.json --fit-samples 256 --holdout-samples 256
-```
+Se A1–A4 rendono ancora pertinente P-F, il probe esistente permette il confronto senza nuove
+configurazioni di training, variando in CLI `--mode` e `--horizon`. Eseguire almeno orizzonti
+1/2/4 per `fine_future` e `coarse_future`, poi aggiornare in luogo il solo target selezionato.
 
-Se P0 è valido, avviare prima il solo controllo R0. P-F usa il predictor spaziale training-only;
-D usa il router locale `C→C/2→4`. Possono partire in parallelo soltanto
-dopo che R0 ha confermato la ricetta comune; il file prodotto dal probe fine è un input tracciato
-di P-F.
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-r0 -- predictive-continuation --config configs/dvslip_predictive_r0.yaml
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-fine-future -- predictive-continuation --config configs/dvslip_predictive_fine_future.yaml
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-dynamic-tcap -- predictive-continuation --config configs/dvslip_predictive_dynamic_tcap.yaml
-```
-
-Dopo D, confrontare i gate dinamici con i loro valori medi sul train usando il checkpoint
-deployabile del run, senza riaddestramento:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-dynamic-routing-diagnostic -- dynamic-routing-diagnostic --config artifacts/<run-D>/deployment_config_resolved.yaml --checkpoint checkpoints/<run-D>/deployment.pt --output artifacts/<run-D>/dynamic_routing_diagnostic.json
-```
-
-Confronto confermativo a learning rate discriminativi, da eseguire su due server distinti dopo
-che `dataset_workflow.sh dvslip check` è passato sul commit corrente:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-r0-dlr -- predictive-continuation --config configs/dvslip_predictive_r0_discriminative_lr.yaml
-```
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-dynamic-tcap-dlr -- predictive-continuation --config configs/dvslip_predictive_dynamic_tcap_discriminative_lr.yaml
-```
-
-Il confronto confermativo ha chiuso D sotto la soglia prestazionale. La campagna selezionata usa
-quindi S0/S1 senza router di contenuto e il fallback L, tutti con la recipe discriminativa v2.
-I tre run possono partire in parallelo dopo il check; le configurazioni S dinamiche non vanno
-lanciate. I controlli P-0/P-C restano sospesi.
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-late-prefix -- predictive-continuation --config configs/dvslip_predictive_late_prefix.yaml
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0 -- predictive-continuation --config configs/dvslip_predictive_s0.yaml
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s1 -- predictive-continuation --config configs/dvslip_predictive_s1.yaml
-```
-
-Le tre config `dvslip_predictive_fusion_*` rappresentano i soli esiti possibili della diramazione,
-non tre run da lanciare: si sceglie una sola config dopo aver identificato i due componenti positivi.
+Ogni continuazione corretta usa la recipe canonica `dvslip_predictive_continuation_64`: LR
+ereditato `1e-5`, LR nuovi parametri `1e-4`, rapporto conservato fino alla fine. Il preflight
+misura ora gradienti condivisi per blocco e regione; il best esclude le epoche di ramp. D e S1
+instradano soltanto stage2 con parametrizzazione ampiezza più allocazione softmax; S usa pesi
+active-dominant. Non lanciare in parallelo l'intero albero.
 
 ## Monitoraggio e ripresa
 

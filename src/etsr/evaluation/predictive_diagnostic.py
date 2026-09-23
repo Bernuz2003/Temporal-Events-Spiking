@@ -17,7 +17,7 @@ from etsr.models.mini_qkformer import MiniQKFormer
 from etsr.models.temporal import CausalTemporalChannelMixer
 from etsr.reproducibility import git_commit, seed_everything
 from etsr.training.checkpointing import load_model_state
-from etsr.training.engine import evaluate, make_criterion
+from etsr.training.engine import evaluate, make_criterion, objective_gradient_diagnostics
 from etsr.training.predictive import (
     PredictiveTrainingObjective,
     freeze_batchnorm_running_statistics,
@@ -352,7 +352,7 @@ def run_predictive_preflight(
         teacher,
         {**continuation, "representation": config["representation"]},
     )
-    loader = build_loader(bundle.validation, no_aug["dataset"], shuffle=False)
+    loader = build_loader(bundle.train, no_aug["dataset"], shuffle=False)
     frames, targets, _indices = next(iter(loader))
     frames = move_encoded_input(frames, device)
     targets = targets.to(device)
@@ -396,6 +396,39 @@ def run_predictive_preflight(
         torch.nn.CrossEntropyLoss(label_smoothing=0.1),
         epoch=max(1, int(continuation["objective"].get("ramp_epochs", 0))),
     )
+    objective_declared = (
+        objective.mode != "none"
+        or bool(config["model"].get("temporal_channel_mixer_predictive_auxiliary", False))
+        or objective.weight > 0.0
+    )
+    gradient_authority: dict[str, dict[str, float]] = {}
+    for region, component in result.auxiliary_components.items():
+        if component.requires_grad:
+            gradient_authority[region] = objective_gradient_diagnostics(
+                candidate,
+                result.classification_loss,
+                component,
+                objective.weight,
+            )
+    shared_blocks = (
+        "stage1_shared",
+        "tcap1_weights",
+        "stage2_shared",
+        "tcap2_weights",
+        "head",
+    )
+    measured_regions = {
+        region: any(
+            values.get(f"gradient_{block}_weighted_auxiliary_norm", 0.0) > 1e-12
+            for block in shared_blocks
+        )
+        for region, values in gradient_authority.items()
+    }
+    shared_gradient_authority_passed = (
+        not objective_declared
+        or (bool(measured_regions) and all(measured_regions.values()))
+    )
+
     result.total_loss.backward()
     diagnostic_tokens = (
         "predictive_head",
@@ -425,12 +458,17 @@ def run_predictive_preflight(
         )
         if any(token in name for name, _parameter in candidate.named_parameters()):
             gradient_family_norms[token] = squared_norm**0.5
-    nonzero_gradients = all(value > 1e-12 for value in gradient_family_norms.values())
+    new_parameter_families_expected = bool(gradient_family_norms)
+    nonzero_gradients = (
+        all(value > 1e-12 for value in gradient_family_norms.values())
+        if new_parameter_families_expected
+        else True
+    )
     teacher_gradients_absent = teacher is None or all(
         parameter.grad is None for parameter in teacher.parameters()
     )
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "experiment": config["experiment"]["name"],
         "parent_checkpoint": str(Path(continuation["parent_checkpoint"]).resolve()),
         "parent_checkpoint_sha256": sha256_file(continuation["parent_checkpoint"]),
@@ -444,6 +482,10 @@ def run_predictive_preflight(
         ) <= 1e-6,
         "total_loss_finite": bool(torch.isfinite(result.total_loss).item()),
         "objective_metrics": result.metrics,
+        "objective_declared": objective_declared,
+        "shared_gradient_authority_by_region": gradient_authority,
+        "shared_gradient_regions_measured": measured_regions,
+        "shared_gradient_authority_passed": shared_gradient_authority_passed,
         "new_parameter_gradient_norms": gradient_norms,
         "new_parameter_gradient_family_norms": gradient_family_norms,
         "new_parameter_gradients_finite": finite_gradients,
@@ -459,6 +501,7 @@ def run_predictive_preflight(
             report["total_loss_finite"],
             report["new_parameter_gradients_finite"],
             report["new_parameter_gradient_families_nonzero"],
+            report["shared_gradient_authority_passed"],
             report["teacher_gradients_absent"],
         )
     )
@@ -782,8 +825,11 @@ def run_dynamic_routing_diagnostic(
 ) -> dict[str, Any]:
     """Compare learned content-dependent TCAP gates with train-mean constant gates."""
 
-    if not config["model"].get("temporal_channel_mixer_dynamic_routing", False):
-        raise ValueError("Dynamic-routing diagnostic requires a dynamic TCAP checkpoint.")
+    if not (
+        config["model"].get("temporal_channel_mixer_dynamic_routing", False)
+        or config["model"].get("temporal_channel_mixer_surprise_routing", False)
+    ):
+        raise ValueError("Routing diagnostic requires a conditional TCAP checkpoint.")
     seed_everything(int(config["experiment"]["seed"]), True)
     no_aug = copy.deepcopy(config)
     no_aug["augmentation"] = {"horizontal_flip_probability": 0.0}
@@ -802,7 +848,7 @@ def run_dynamic_routing_diagnostic(
             stats = module.last_routing_statistics
             if stats is None:
                 return
-            observations = output.shape[0] * output.shape[1]
+            observations = int(stats["gate_observation_count"])
             values = stats["gate_mean_by_delay"].double().cpu() * observations
             gate_sums[name] = gate_sums.get(name, torch.zeros_like(values)) + values
             contributions = stats.get("effective_contribution_mean_abs_by_delay")
@@ -816,7 +862,9 @@ def run_dynamic_routing_diagnostic(
         return collect
 
     for name, module in model.named_modules():
-        if isinstance(module, CausalTemporalChannelMixer) and module.content_router is not None:
+        if isinstance(module, CausalTemporalChannelMixer) and (
+            module.content_router is not None or module.surprise_router is not None
+        ):
             handles.append(module.register_forward_hook(hook(name)))
     for frames, _targets, _indices in build_loader(
         bundle.train, no_aug["dataset"], shuffle=False
@@ -833,19 +881,32 @@ def run_dynamic_routing_diagnostic(
     load_model_state(checkpoint_path, constant, device)
     constant.eval().requires_grad_(False)
     for name, module in constant.named_modules():
-        if isinstance(module, CausalTemporalChannelMixer) and module.content_router is not None:
+        if isinstance(module, CausalTemporalChannelMixer) and (
+            module.content_router is not None or module.surprise_router is not None
+        ):
+            for router in (module.content_router, module.surprise_router):
+                if router is not None:
+                    for parameter in router.parameters():
+                        parameter.zero_()
+            selected_router = (
+                module.content_router
+                if module.content_router is not None
+                else module.surprise_router
+            )
             final = (
-                module.content_router[-1]
-                if isinstance(module.content_router, torch.nn.Sequential)
-                else module.content_router
+                selected_router[-1]
+                if isinstance(selected_router, torch.nn.Sequential)
+                else selected_router
             )
-            mean = gate_means[name].clamp(1e-5, 2 - 1e-5).to(
-                final.bias.device,
-                final.bias.dtype,
-            )
-            for parameter in module.content_router.parameters():
-                parameter.zero_()
-            final.bias.copy_(torch.log(mean / (2 - mean)))
+            mean = gate_means[name].to(final.bias.device, final.bias.dtype)
+            if module.routing_parameterization == "independent":
+                mean = mean.clamp(1e-5, 2 - 1e-5)
+                bias = torch.log(mean / (2 - mean))
+            else:
+                amplitude = mean.mean().clamp_min(1e-5)
+                allocation = (mean / mean.sum().clamp_min(1e-12)).clamp_min(1e-12)
+                bias = torch.cat((amplitude.log().reshape(1), allocation.log()))
+            final.bias.copy_(bias)
 
     loader = build_loader(bundle.validation, no_aug["dataset"], shuffle=False)
     criterion = make_criterion(config["training"])

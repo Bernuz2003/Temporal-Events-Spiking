@@ -1,4 +1,4 @@
-extends: dvslip_predictive_continuation_discriminative_lr_base.yaml
+extends: dvslip_predictive_continuation_base.yaml
 
 experiment:
   name: dvslip_predictive_late_prefix

@@ -399,6 +399,16 @@ diventerebbe una variante locale.
 Horowitz 17.949,51 µJ attività / 30.145,89 µJ densa. Non è confrontato numericamente con DVS-Lip
 perché durata, classi e protocollo differiscono.
 
+## Prima esecuzione Predictive-Temporal-Coding — superseded
+
+I sette full della prima esecuzione (R0-v1, P-F, D-v1, R0-v2, D-v2, S0 e S1) e i relativi
+bounded-overfit/preflight sono conservati sotto `artifacts/superseded/`. Non costituiscono evidenza
+a favore o contro P, D o S per i difetti di selezione, autorità del gradiente, formulazione e
+risoluzione statistica descritti in
+[`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). Nessun nuovo full è
+autorizzato prima del pacchetto checkpoint-only A1–A4; la nuova esecuzione mantiene i nomi canonici
+senza suffissi di correzione.
+
 ## Regola di aggiornamento
 
 Un full run entra nella tabella solo con `summary.json`, config risolta, ambiente, storia,

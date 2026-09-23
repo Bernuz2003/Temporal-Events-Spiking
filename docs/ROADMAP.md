@@ -1,6 +1,6 @@
 # Roadmap decisiva
 
-**Aggiornata:** 2026-09-19
+**Aggiornata:** 2026-09-23
 
 ## Riferimento e priorità corrente
 
@@ -8,22 +8,22 @@ Il riferimento congelato è **F+DWC-3+TCAP-d8**, E0, tap `[1,2,4,8]`: DVS-Lip se
 55,18% Macro-F1, terna 42/43/44 55,54 ± 0,90%; DVS-Gesture seed 42 88,81% Macro-F1.
 Sono risultati development, non official-test. La prima discovery è conclusa.
 
-Prima di riprendere augmentation si apre soltanto la fase delimitata da
-[`PREDICTIVE_TEMPORAL_ROADMAP.md`](PREDICTIVE_TEMPORAL_ROADMAP.md). La
-[review](PREDICTIVE_TEMPORAL_RESEARCH_REVIEW.md) ne espone motivazioni e limiti.
+Prima di riprendere augmentation si applica il contratto correttivo di
+[`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). I risultati della
+prima esecuzione sono superseded: A1–A4 checkpoint-only devono precedere ogni nuovo training e
+selezionano un solo prossimo braccio con il relativo controllo appaiato.
 
 ## Ordine vincolante
 
-1. Diagnostiche causali e di predicibilità sui checkpoint esistenti; verifica del costo.
-2. Controllo di continuazione R0 dal checkpoint congelato, stessa recipe dei candidati.
-3. Supervisione futura cross-resolution e TCAP dinamico, isolati; controlli attributivi solo
-   dove l'esito giustifica proseguire. Fallback di supervisione dei prefissi motivato da PLIF.
-4. Errore predittivo per il routing solo se la diagnostica ne sostiene l'utilità, con controllo
-   che riceve la stessa auxiliary loss. Nessuna regola imposta «alta sorpresa → meno memoria».
-5. Unica fusione dei componenti positivi; replica del solo vincitore e R0 ai seed 43/44;
+1. Audit A1–A4 su C0, R0-v2 e S0 archiviati, senza training.
+2. Lettura congiunta di autorità dei gradienti, probe di previsione/residuo, movimento delle
+   feature e contributo della coda; scelta motivata di un solo braccio.
+3. Preflight corretto e controllo appaiato; P-F resta bloccato fino al probe R5 su target e
+   orizzonti alternativi.
+4. Solo se la firma meccanicistica è coerente, replica del vincitore e controllo ai seed 43/44;
    trasferimento DVS-Gesture del metodo effettivamente supportato dai teacher disponibili.
-6. Congelamento di struttura e ricetta; ripresa delle augmentation sulla sola candidata.
-7. Eventuale compressione/quantizzazione; official test in un'unica campagna finale.
+5. Congelamento di struttura e ricetta; ripresa delle augmentation sulla sola candidata.
+6. Eventuale compressione/quantizzazione; official test in un'unica campagna finale.
 
 Non si riaddestra B per questi raffinamenti. Spatial erasing conserva il segnale positivo sul
 vecchio riferimento; Temporal Maskout resta negativo nella configurazione provata. Non si
@@ -31,11 +31,9 @@ assume additività delle augmentation con un nuovo modello. Run già avviati pos
 
 ## Budget e stop
 
-Il protocollo dettagliato ammette al massimo **8 continuazioni da 32 epoche per lo screening**,
-più 4 per la conferma appaiata Lip e fino a 2 per il trasferimento Gesture. I rami sono
-condizionali, non una lista da eseguire integralmente. Il tetto di GPU-ore della discovery
-include probe, gate e teacher: tre volte il training del C0 seed 42, circa 26,92 ore dal suo log.
-Throughput e hardware del server vanno registrati; numero di epoche e tempo effettivo non coincidono.
+La riesecuzione non replica l'albero originario. Ogni continuazione ammessa usa 64 epoche e deve
+produrre il corredo di evidenza dell'audit; il budget residuo autorizza soltanto il braccio indicato
+da A1–A4 e il controllo necessario, prima di un'eventuale conferma multi-seed.
 
 Le soglie di screening, attribuzione, fusione e replica sono fissate nel documento operativo.
 Non si aprono sweep per salvare un esito negativo. Un bug rende il run non valido; un negativo

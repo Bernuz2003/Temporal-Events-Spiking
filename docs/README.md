@@ -12,6 +12,7 @@ in Git; snapshot, duplicati e documenti della fase DVS-Gesture/DVS-GC sono stati
 | [`DATA_AUGMENTATION_RESEARCH.md`](DATA_AUGMENTATION_RESEARCH.md) | catalogo, evidenza e stato delle augmentation per dataset |
 | [`PREDICTIVE_TEMPORAL_RESEARCH_REVIEW.md`](PREDICTIVE_TEMPORAL_RESEARCH_REVIEW.md) | valutazione critica di novità, supervisione predittiva e memoria condizionale; proposte da discutere |
 | [`PREDICTIVE_TEMPORAL_ROADMAP.md`](PREDICTIVE_TEMPORAL_ROADMAP.md) | protocollo attivo pre-augmentation: ipotesi, controlli, budget, fusioni e conferma |
+| [`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md) | difetti accertati della prima esecuzione predittiva, contratto di correzione e politica di riesecuzione |
 | [`DECISIONS.md`](DECISIONS.md) | decisioni attive che vincolano il lavoro futuro |
 | [`EXPERIMENT_LEDGER.md`](EXPERIMENT_LEDGER.md) | registro compatto dei run e della profilazione |
 | [`SOURCES.md`](SOURCES.md) | letteratura usata e limiti dei confronti |

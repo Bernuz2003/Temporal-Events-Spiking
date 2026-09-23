@@ -9,6 +9,9 @@ model:
   predictive_head_hidden_channels: 128
 
 continuation:
+  blocked_reason: >-
+    This target is available for the R5 feasibility probe and cannot be trained before the
+    alternative-horizon comparison has selected a target.
   teacher_config: configs/dvslip_f_tcap_stage1_dwc3_d8.yaml
   teacher_checkpoint: checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt
   objective:

@@ -15,6 +15,9 @@ model:
   predictive_head_hidden_channels: 128
 
 continuation:
+  blocked_reason: >-
+    R5 requires a new target-feasibility comparison across alternative horizons and coarse
+    future targets before this branch can be trained.
   teacher_config: configs/dvslip_f_multigranular_temporal_capacity.yaml
   teacher_checkpoint: checkpoints/dvslip_f_multigranular_temporal_capacity__20260912_135802_779469__seed42/best.pt
   objective:

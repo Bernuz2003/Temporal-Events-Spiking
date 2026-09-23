@@ -210,17 +210,29 @@ class _HardwareProfiler:
             self.totals["multivalued_mac_potential"] += macs
             self.totals["state_reads"] += history_reads
             self.totals["recurrent_state_updates"] += output.numel()
-            if module.dynamic_routing:
+            has_conditional_gating = (
+                module.content_router is not None or module.surprise_router is not None
+            )
+            if has_conditional_gating:
                 spatial_positions = math.prod(output.shape[3:]) if output.ndim > 3 else 1
                 routed_positions = spatial_positions if module.router_pooling == "local" else 1
-                router_macs = (
-                    output.shape[0]
-                    * output.shape[1]
-                    * routed_positions
-                    * module.channels
-                    * len(module.delays)
+                router_outputs = len(module.delays) + int(
+                    module.routing_parameterization == "amplitude_allocation"
                 )
-                pooling_adds = output.numel() if module.router_pooling == "global" else 0
+                router_macs = 0
+                if module.content_router is not None:
+                    router_macs = (
+                        output.shape[0]
+                        * output.shape[1]
+                        * routed_positions
+                        * module.channels
+                        * router_outputs
+                    )
+                pooling_adds = (
+                    output.numel()
+                    if module.content_router is not None and module.router_pooling == "global"
+                    else 0
+                )
                 gate_multiplies = output.numel() * len(module.delays)
                 layer["content_router_mac"] += router_macs
                 layer["global_pool_add"] += pooling_adds
@@ -228,12 +240,12 @@ class _HardwareProfiler:
                 # Router Linear/Conv MACs are already included by their ordinary hooks.
                 self.totals["elementwise_add"] += pooling_adds
                 self.totals["elementwise_multiply"] += gate_multiplies
-                self.totals["sigmoid"] += (
-                    output.shape[0]
-                    * output.shape[1]
-                    * routed_positions
-                    * len(module.delays)
-                )
+                routed_observations = output.shape[0] * output.shape[1] * routed_positions
+                if module.routing_parameterization == "independent":
+                    self.totals["sigmoid"] += routed_observations * len(module.delays)
+                else:
+                    self.totals["exponential"] += routed_observations
+                    self.totals["softmax"] += routed_observations * len(module.delays)
             if module.predictive_auxiliary:
                 predictor_multiplies = (
                     output.numel() * len(module.delays)
@@ -254,7 +266,7 @@ class _HardwareProfiler:
                 surprise_mean_scales = 2 * observations
                 surprise_logit_adds = (
                     output.shape[0] * output.shape[1] * len(module.delays)
-                    if module.dynamic_routing
+                    if module.content_router is not None
                     else 0
                 )
                 layer["surprise_gate_multiply"] += surprise_gate_multiplies
@@ -604,10 +616,11 @@ class _HardwareProfiler:
                 "threshold_comparisons_per_sample": lif_evaluations,
                 "sigmoid_per_sample": self.totals["sigmoid"] / samples,
                 "tanh_per_sample": self.totals["tanh"] / samples,
-                "exp_lut_per_sample": 0,
+                "exp_lut_per_sample": self.totals["exponential"] / samples,
+                "softmax_elements_per_sample": self.totals["softmax"] / samples,
                 "note": (
                     "surrogate sigmoid is training-only; gated-readout and conditional TCAP "
-                    "sigmoids/tanh are inference operations"
+                    "sigmoid/exp/softmax/tanh are inference operations"
                 ),
             },
             "limitations": [

@@ -258,19 +258,46 @@ def test_optimizer_can_assign_a_distinct_lr_to_new_continuation_parameters():
     assert sum(parameter.numel() for parameter in groups["new"]["params"]) == 8
 
 
+def test_discriminative_lr_ratio_survives_the_entire_cosine_schedule():
+    model = nn.Sequential(nn.Linear(2, 3), nn.Linear(3, 2))
+    optimizer = make_optimizer(
+        model,
+        {"learning_rate": 1e-5, "weight_decay": 5e-4},
+        new_parameter_names={"1.weight", "1.bias"},
+        new_parameter_learning_rate=1e-4,
+    )
+    scheduler = make_scheduler(
+        optimizer,
+        {
+            "epochs": 8,
+            "learning_rate": 1e-5,
+            "warmup_epochs": 2,
+            "warmup_start_factor": 0.01,
+            "min_learning_rate": 1e-6,
+        },
+    )
+    for _ in range(9):
+        rates = {group["group_name"]: group["lr"] for group in optimizer.param_groups}
+        assert rates["new"] / rates["inherited"] == pytest.approx(10.0)
+        optimizer.step()
+        scheduler.step()
+
+
 def test_objective_gradient_diagnostics_report_scale_and_shared_alignment():
-    model = nn.Linear(2, 1, bias=False)
+    model = nn.Module()
+    model.head = nn.Linear(2, 1, bias=False)
     inputs = torch.tensor([[1.0, 2.0], [2.0, -1.0]])
-    outputs = model(inputs)
+    outputs = model.head(inputs)
     classification = outputs.square().mean()
     auxiliary = (outputs - 1.0).square().mean()
 
     metrics = _objective_gradient_diagnostics(model, classification, auxiliary, 0.1)
 
-    assert metrics["classification_gradient_norm"] > 0.0
-    assert metrics["auxiliary_gradient_norm"] > 0.0
-    assert metrics["weighted_auxiliary_gradient_norm"] == pytest.approx(
-        0.1 * metrics["auxiliary_gradient_norm"]
+    assert metrics["gradient_head_classification_norm"] > 0.0
+    assert metrics["gradient_head_weighted_auxiliary_norm"] > 0.0
+    assert metrics["gradient_head_ratio"] == pytest.approx(
+        metrics["gradient_head_weighted_auxiliary_norm"]
+        / metrics["gradient_head_classification_norm"]
     )
     assert -1.0 <= metrics["classification_auxiliary_gradient_cosine"] <= 1.0
 

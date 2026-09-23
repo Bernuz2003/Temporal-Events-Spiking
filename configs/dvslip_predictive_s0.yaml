@@ -1,4 +1,4 @@
-extends: dvslip_predictive_continuation_discriminative_lr_base.yaml
+extends: dvslip_predictive_continuation_base.yaml
 
 experiment:
   name: dvslip_predictive_s0
@@ -13,3 +13,9 @@ continuation:
     mode: none
     weight: 0.1
     ramp_epochs: 4
+    temporal_region_weights:
+      active: 1.0
+      tail: 0.25
+    temporal_stage_weights:
+      stage1: 1.0
+      stage2: 1.0

@@ -15,6 +15,50 @@ from etsr.models.mini_qkformer import MiniQKFormer
 from etsr.reproducibility import git_commit
 from etsr.utils.io import sha256_file
 
+_PHASE1_AUDIT_SECTIONS = {
+    "A1_gradient_authority",
+    "A2_discriminative_probes",
+    "A3_representation_movement",
+    "A4_tail_margin",
+}
+
+
+def validate_predictive_training_authorization(continuation: dict[str, Any]) -> Path:
+    """Require the phase-1 audit contract before any predictive training entry point."""
+
+    blocked_reason = continuation.get("blocked_reason")
+    if blocked_reason:
+        raise RuntimeError(
+            "Predictive branch is intentionally blocked by the phase-1 audit: "
+            f"{blocked_reason}"
+        )
+    report_value = continuation.get("phase1_audit_report")
+    if not isinstance(report_value, str) or not report_value.strip():
+        raise ValueError(
+            "Predictive training requires continuation.phase1_audit_report from A1-A4."
+        )
+    audit_path = Path(report_value)
+    if not audit_path.is_file():
+        raise FileNotFoundError(
+            "The mandatory checkpoint-only A1-A4 audit has not been produced: "
+            f"{audit_path}"
+        )
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    checkpoints = audit.get("checkpoints")
+    c0 = checkpoints.get("c0") if isinstance(checkpoints, dict) else None
+    if (
+        audit.get("schema_version") != 1
+        or audit.get("complete") is not True
+        or set(audit.get("sections", ())) != _PHASE1_AUDIT_SECTIONS
+        or audit.get("official_test_used") is not False
+        or not isinstance(c0, dict)
+        or not isinstance(c0.get("sha256"), str)
+    ):
+        raise ValueError(f"Incomplete or incompatible phase-1 audit report: {audit_path}")
+    if c0["sha256"] != sha256_file(continuation["parent_checkpoint"]):
+        raise ValueError("Phase-1 audit and continuation use different C0 checkpoints.")
+    return audit_path
+
 
 def freeze_batchnorm_running_statistics(module: nn.Module) -> None:
     """Keep checkpoint running statistics fixed while retaining affine gradients."""
@@ -60,6 +104,7 @@ class PredictiveBatchResult:
     total_loss: torch.Tensor
     classification_loss: torch.Tensor
     auxiliary_loss: torch.Tensor
+    auxiliary_components: dict[str, torch.Tensor]
     metrics: dict[str, float]
 
 
@@ -85,6 +130,18 @@ class PredictiveTrainingObjective:
         self.alignment_horizon = int(config.get("alignment_horizon_steps", self.horizon))
         self.prefix_steps = tuple(int(value) for value in config.get("prefix_steps", (20, 30)))
         self.temperature = float(config.get("temperature", 2.0))
+        self.temporal_region_weights = {
+            str(name): float(value)
+            for name, value in config.get(
+                "temporal_region_weights", {"active": 1.0, "tail": 0.25}
+            ).items()
+        }
+        self.temporal_stage_weights = {
+            str(name): float(value)
+            for name, value in config.get(
+                "temporal_stage_weights", {"stage1": 1.0, "stage2": 1.0}
+            ).items()
+        }
         self.target_mean: torch.Tensor | None = None
         self.target_std: torch.Tensor | None = None
         normalization_report = config.get("normalization_report")
@@ -123,6 +180,14 @@ class PredictiveTrainingObjective:
             raise ValueError("predictive horizons must be positive and consistently aligned")
         if self.mode != "none" and teacher is None:
             raise ValueError("A frozen teacher is required for a predictive objective")
+        for label, weights, required in (
+            ("temporal_region_weights", self.temporal_region_weights, {"active", "tail"}),
+            ("temporal_stage_weights", self.temporal_stage_weights, {"stage1", "stage2"}),
+        ):
+            if set(weights) != required or any(value < 0 for value in weights.values()):
+                raise ValueError(f"{label} must contain non-negative weights for {sorted(required)}")
+            if sum(weights.values()) <= 0:
+                raise ValueError(f"{label} must retain at least one positive weight")
 
     def effective_weight(self, epoch: int) -> float:
         if self.ramp_epochs <= 0:
@@ -131,6 +196,11 @@ class PredictiveTrainingObjective:
             return self.weight
         progress = (epoch - 1) / (self.ramp_epochs - 1)
         return self.weight * min(1.0, max(0.0, progress))
+
+    def selection_eligible(self, epoch: int) -> bool:
+        """Return whether the nominal auxiliary objective is fully enabled."""
+
+        return self.weight <= 0.0 or self.effective_weight(epoch) >= self.weight - 1e-12
 
     def __call__(
         self,
@@ -147,6 +217,7 @@ class PredictiveTrainingObjective:
         logits = model.logits_from_stage1(context, frames)
         classification = criterion(logits, targets)
         auxiliary_terms: list[torch.Tensor] = []
+        auxiliary_components: dict[str, torch.Tensor] = {}
         metrics: dict[str, float] = {"classification_loss": float(classification.detach())}
 
         if self.mode != "none":
@@ -181,16 +252,25 @@ class PredictiveTrainingObjective:
                 (last_occupied_steps(frames) - self.alignment_horizon).clamp_min(0),
             )
             auxiliary_terms.append(auxiliary)
+            auxiliary_components["active"] = auxiliary
             metrics.update(
                 predictive_loss=float(auxiliary.detach()),
                 predictive_pair_coverage=coverage,
             )
 
-        temporal_auxiliary, temporal_metrics = model.temporal_auxiliary_statistics(
-            last_occupied_steps(frames)
+        temporal_auxiliary, temporal_metrics, temporal_components = (
+            model.temporal_auxiliary_statistics(
+                last_occupied_steps(frames),
+                region_weights=self.temporal_region_weights,
+                stage_weights=self.temporal_stage_weights,
+            )
         )
         if temporal_auxiliary is not None:
             auxiliary_terms.append(temporal_auxiliary)
+            for region, component in temporal_components.items():
+                auxiliary_components[region] = (
+                    auxiliary_components.get(region, component.new_zeros(())) + component
+                )
             metrics["temporal_prediction_loss"] = float(temporal_auxiliary.detach())
             metrics.update(temporal_metrics)
 
@@ -207,6 +287,7 @@ class PredictiveTrainingObjective:
             total_loss=total,
             classification_loss=classification,
             auxiliary_loss=auxiliary_total,
+            auxiliary_components=auxiliary_components,
             metrics=metrics,
         )
 
@@ -244,6 +325,7 @@ class PredictiveTrainingObjective:
             total_loss=classification + weight * auxiliary,
             classification_loss=classification,
             auxiliary_loss=auxiliary,
+            auxiliary_components={"active": auxiliary},
             metrics={
                 "classification_loss": float(classification.detach()),
                 "auxiliary_loss": float(auxiliary.detach()),

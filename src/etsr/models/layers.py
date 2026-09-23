@@ -45,6 +45,7 @@ class ConvBNLIF2d(nn.Module):
         temporal_channel_mixer_predictor_channel_groups: int | None = None,
         temporal_channel_mixer_predictor_spatial_kernel_size: int = 1,
         temporal_channel_mixer_surprise_routing: bool = False,
+        temporal_channel_mixer_routing_parameterization: str = "independent",
         learnable_tau: bool = False,
     ) -> None:
         super().__init__()
@@ -78,6 +79,7 @@ class ConvBNLIF2d(nn.Module):
                 predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
                 predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
                 surprise_routing=temporal_channel_mixer_surprise_routing,
+                routing_parameterization=temporal_channel_mixer_routing_parameterization,
             )
             if temporal_channel_mixer_delays is not None
             else None
@@ -116,6 +118,7 @@ class ConvBNMaxPoolLIF2d(nn.Module):
         temporal_channel_mixer_predictor_channel_groups: int | None = None,
         temporal_channel_mixer_predictor_spatial_kernel_size: int = 1,
         temporal_channel_mixer_surprise_routing: bool = False,
+        temporal_channel_mixer_routing_parameterization: str = "independent",
         learnable_tau: bool = False,
     ) -> None:
         super().__init__()
@@ -145,6 +148,7 @@ class ConvBNMaxPoolLIF2d(nn.Module):
                 predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
                 predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
                 surprise_routing=temporal_channel_mixer_surprise_routing,
+                routing_parameterization=temporal_channel_mixer_routing_parameterization,
             )
             if temporal_channel_mixer_delays is not None
             else None
@@ -184,6 +188,7 @@ class InitialPatchEmbedding(nn.Module):
         temporal_channel_mixer_predictor_channel_groups: int | None = None,
         temporal_channel_mixer_predictor_spatial_kernel_size: int = 1,
         temporal_channel_mixer_surprise_routing: bool = False,
+        temporal_channel_mixer_routing_parameterization: str = "independent",
         learnable_tau: bool = False,
     ):
         super().__init__()
@@ -238,6 +243,9 @@ class InitialPatchEmbedding(nn.Module):
             temporal_channel_mixer_predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
             temporal_channel_mixer_predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
             temporal_channel_mixer_surprise_routing=temporal_channel_mixer_surprise_routing,
+            temporal_channel_mixer_routing_parameterization=(
+                temporal_channel_mixer_routing_parameterization
+            ),
             learnable_tau=learnable_tau,
         )
         self.shortcut = ConvBNLIF2d(
@@ -274,6 +282,7 @@ class PyramidalPatchEmbedding(nn.Module):
         temporal_channel_mixer_predictor_channel_groups: int | None = None,
         temporal_channel_mixer_predictor_spatial_kernel_size: int = 1,
         temporal_channel_mixer_surprise_routing: bool = False,
+        temporal_channel_mixer_routing_parameterization: str = "independent",
         learnable_tau: bool = False,
     ) -> None:
         super().__init__()
@@ -314,6 +323,9 @@ class PyramidalPatchEmbedding(nn.Module):
             temporal_channel_mixer_predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
             temporal_channel_mixer_predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
             temporal_channel_mixer_surprise_routing=temporal_channel_mixer_surprise_routing,
+            temporal_channel_mixer_routing_parameterization=(
+                temporal_channel_mixer_routing_parameterization
+            ),
             learnable_tau=learnable_tau,
         )
         self.shortcut = ConvBNLIF2d(
@@ -460,6 +472,7 @@ class PatchEmbeddingStage(nn.Module):
         temporal_channel_mixer_predictor_channel_groups: int | None = None,
         temporal_channel_mixer_predictor_spatial_kernel_size: int = 1,
         temporal_channel_mixer_surprise_routing: bool = False,
+        temporal_channel_mixer_routing_parameterization: str = "independent",
         learnable_tau: bool = False,
     ):
         super().__init__()
@@ -492,6 +505,9 @@ class PatchEmbeddingStage(nn.Module):
             temporal_channel_mixer_predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
             temporal_channel_mixer_predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
             temporal_channel_mixer_surprise_routing=temporal_channel_mixer_surprise_routing,
+            temporal_channel_mixer_routing_parameterization=(
+                temporal_channel_mixer_routing_parameterization
+            ),
             learnable_tau=learnable_tau,
         )
         self.shortcut = ConvBNLIF2d(

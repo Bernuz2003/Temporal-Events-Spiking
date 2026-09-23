@@ -113,12 +113,19 @@ def make_scheduler(
     epochs = int(config["epochs"])
     warmup_epochs = int(config.get("warmup_epochs", 0))
     minimum_lr = float(config.get("min_learning_rate", 0.0))
+    base_learning_rate = float(
+        config.get("learning_rate", optimizer.defaults.get("lr", optimizer.param_groups[0]["lr"]))
+    )
+    minimum_factor = minimum_lr / base_learning_rate
+
+    def cosine_factor(step: int) -> float:
+        progress = min(1.0, max(0.0, step / max(1, epochs - warmup_epochs)))
+        return minimum_factor + (1.0 - minimum_factor) * (
+            1.0 + math.cos(math.pi * progress)
+        ) / 2.0
+
     if warmup_epochs == 0:
-        return torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=max(1, epochs),
-            eta_min=minimum_lr,
-        )
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, cosine_factor)
 
     warmup = torch.optim.lr_scheduler.LinearLR(
         optimizer,
@@ -126,11 +133,7 @@ def make_scheduler(
         end_factor=1.0,
         total_iters=warmup_epochs,
     )
-    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=max(1, epochs - warmup_epochs),
-        eta_min=minimum_lr,
-    )
+    cosine = torch.optim.lr_scheduler.LambdaLR(optimizer, cosine_factor)
     return torch.optim.lr_scheduler.SequentialLR(
         optimizer,
         schedulers=[warmup, cosine],
@@ -142,15 +145,20 @@ def make_criterion(config: dict[str, Any]) -> nn.Module:
     return nn.CrossEntropyLoss(label_smoothing=float(config.get("label_smoothing", 0.0)))
 
 
-def _objective_gradient_diagnostics(
+def objective_gradient_diagnostics(
     model: nn.Module,
     classification_loss: torch.Tensor,
     auxiliary_loss: torch.Tensor,
     auxiliary_weight: float,
 ) -> dict[str, float]:
-    """Measure CE/auxiliary gradient scale and alignment on one diagnostic batch."""
+    """Compare CE and weighted auxiliary gradients on identical parameter blocks."""
 
-    parameters = tuple(parameter for parameter in model.parameters() if parameter.requires_grad)
+    named_parameters = [
+        (name, parameter)
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+    ]
+    parameters = tuple(parameter for _name, parameter in named_parameters)
     classification_gradients = torch.autograd.grad(
         classification_loss,
         parameters,
@@ -163,42 +171,91 @@ def _objective_gradient_diagnostics(
         retain_graph=True,
         allow_unused=True,
     )
-    classification_squared = classification_loss.new_zeros((), dtype=torch.float64)
-    auxiliary_squared = classification_loss.new_zeros((), dtype=torch.float64)
-    shared_dot = classification_loss.new_zeros((), dtype=torch.float64)
-    shared_classification_squared = classification_loss.new_zeros((), dtype=torch.float64)
-    shared_auxiliary_squared = classification_loss.new_zeros((), dtype=torch.float64)
-    for classification_gradient, auxiliary_gradient in zip(
+    records = dict(zip((name for name, _parameter in named_parameters), zip(
         classification_gradients, auxiliary_gradients, strict=True
+    ), strict=True))
+
+    def block(name: str) -> str | None:
+        if name.startswith("head."):
+            return "head"
+        if ".temporal_channel_mixer.weight" in name:
+            return "tcap1_weights" if name.startswith("patch_embed1") else "tcap2_weights"
+        training_only = (
+            "predictive_head",
+            "content_router",
+            "predictor_logits",
+            "predictor_spatial",
+            "predictor_projections",
+            "surprise_router",
+        )
+        if any(token in name for token in training_only):
+            return None
+        if name.startswith(("patch_embed1.", "stage1.")):
+            return "stage1_shared"
+        if name.startswith(("patch_embed2.", "stage2.")):
+            return "stage2_shared"
+        return None
+
+    output: dict[str, float] = {}
+    global_dot = classification_loss.new_zeros((), dtype=torch.float64)
+    global_shared_ce = classification_loss.new_zeros((), dtype=torch.float64)
+    global_shared_aux = classification_loss.new_zeros((), dtype=torch.float64)
+    for block_name in (
+        "stage1_shared",
+        "tcap1_weights",
+        "stage2_shared",
+        "tcap2_weights",
+        "head",
     ):
-        if classification_gradient is not None:
-            classification_squared += classification_gradient.detach().double().square().sum()
-        if auxiliary_gradient is not None:
-            auxiliary_squared += auxiliary_gradient.detach().double().square().sum()
-        if classification_gradient is not None and auxiliary_gradient is not None:
-            classification_double = classification_gradient.detach().double()
-            auxiliary_double = auxiliary_gradient.detach().double()
-            shared_dot += (classification_double * auxiliary_double).sum()
-            shared_classification_squared += classification_double.square().sum()
-            shared_auxiliary_squared += auxiliary_double.square().sum()
-    classification_norm = classification_squared.sqrt()
-    auxiliary_norm = auxiliary_squared.sqrt()
-    shared_denominator = (
-        shared_classification_squared.sqrt() * shared_auxiliary_squared.sqrt()
+        ce_squared = classification_loss.new_zeros((), dtype=torch.float64)
+        aux_squared = classification_loss.new_zeros((), dtype=torch.float64)
+        dot = classification_loss.new_zeros((), dtype=torch.float64)
+        for name, (ce_gradient, aux_gradient) in records.items():
+            if block(name) != block_name:
+                continue
+            if ce_gradient is not None:
+                ce = ce_gradient.detach().double()
+                ce_squared += ce.square().sum()
+            if aux_gradient is not None:
+                aux = aux_gradient.detach().double()
+                aux_squared += aux.square().sum()
+            if ce_gradient is not None and aux_gradient is not None:
+                shared_ce = ce_gradient.detach().double()
+                shared_aux = aux_gradient.detach().double()
+                dot += (shared_ce * shared_aux).sum()
+                global_shared_ce += shared_ce.square().sum()
+                global_shared_aux += shared_aux.square().sum()
+        ce_norm = ce_squared.sqrt()
+        aux_norm = aux_squared.sqrt()
+        weighted_aux_norm = aux_norm * abs(auxiliary_weight)
+        denominator = ce_norm * aux_norm
+        cosine = dot / denominator if bool((denominator > 0).item()) else dot.new_tensor(float("nan"))
+        ratio = (
+            weighted_aux_norm / ce_norm
+            if bool((ce_norm > 0).item())
+            else ce_norm.new_tensor(float("nan"))
+        )
+        prefix = f"gradient_{block_name}"
+        output.update(
+            {
+                f"{prefix}_classification_norm": float(ce_norm.cpu()),
+                f"{prefix}_weighted_auxiliary_norm": float(weighted_aux_norm.cpu()),
+                f"{prefix}_ratio": float(ratio.cpu()),
+                f"{prefix}_cosine": float(cosine.cpu()),
+            }
+        )
+        global_dot += dot
+    global_denominator = global_shared_ce.sqrt() * global_shared_aux.sqrt()
+    output["classification_auxiliary_gradient_cosine"] = float(
+        (global_dot / global_denominator).cpu()
+        if bool((global_denominator > 0).item())
+        else float("nan")
     )
-    cosine = (
-        shared_dot / shared_denominator
-        if bool((shared_denominator > 0).item())
-        else shared_dot.new_tensor(float("nan"))
-    )
-    return {
-        "classification_gradient_norm": float(classification_norm.cpu()),
-        "auxiliary_gradient_norm": float(auxiliary_norm.cpu()),
-        "weighted_auxiliary_gradient_norm": float(
-            (auxiliary_norm * abs(auxiliary_weight)).cpu()
-        ),
-        "classification_auxiliary_gradient_cosine": float(cosine.cpu()),
-    }
+    return output
+
+
+# Kept as an internal compatibility alias for existing callers and archived test contracts.
+_objective_gradient_diagnostics = objective_gradient_diagnostics
 
 
 def _accumulate_routing_statistics(
@@ -234,6 +291,15 @@ def _accumulate_routing_statistics(
                 statistics["gate_within_sample_variance_mean_by_delay"] * sample_count
             ),
         }
+        for source, destination in (
+            ("amplitude_mean", "amplitude_sum"),
+            ("amplitude_second_moment", "amplitude_second_moment_sum"),
+            ("allocation_mean_by_delay", "allocation_sum"),
+            ("allocation_second_moment_by_delay", "allocation_second_moment_sum"),
+        ):
+            value = statistics.get(source)
+            if isinstance(value, torch.Tensor):
+                weighted[destination] = value.detach().float() * observations
         contributions = statistics.get("effective_contribution_mean_abs_by_delay")
         if isinstance(contributions, torch.Tensor):
             weighted["effective_contribution_sum"] = contributions.detach().float() * observations
@@ -279,6 +345,28 @@ def _finalize_routing_statistics(
             if "effective_contribution_sum" in values
             else None
         )
+        amplitude_mean = (
+            values["amplitude_sum"] / observations if "amplitude_sum" in values else None
+        )
+        amplitude_std = (
+            (
+                values["amplitude_second_moment_sum"] / observations
+                - amplitude_mean.square()
+            ).clamp_min(0).sqrt()
+            if amplitude_mean is not None
+            else None
+        )
+        allocation_mean = (
+            values["allocation_sum"] / observations if "allocation_sum" in values else None
+        )
+        allocation_std = (
+            (
+                values["allocation_second_moment_sum"] / observations
+                - allocation_mean.square()
+            ).clamp_min(0).sqrt()
+            if allocation_mean is not None
+            else None
+        )
         surprise_count = int(values.get("surprise_observation_count", 0))
         surprise_mean = None
         surprise_std = None
@@ -304,6 +392,12 @@ def _finalize_routing_statistics(
             }
             if contribution is not None:
                 row["effective_contribution_mean_abs"] = float(contribution[index].cpu())
+            if amplitude_mean is not None and amplitude_std is not None:
+                row["routing_amplitude_mean"] = float(amplitude_mean.cpu())
+                row["routing_amplitude_std"] = float(amplitude_std.cpu())
+            if allocation_mean is not None and allocation_std is not None:
+                row["routing_allocation_mean"] = float(allocation_mean[index].cpu())
+                row["routing_allocation_std"] = float(allocation_std[index].cpu())
             if surprise_mean is not None and surprise_std is not None:
                 mean_value = float(surprise_mean.cpu())
                 std_value = float(surprise_std.cpu())
@@ -408,12 +502,28 @@ def train_one_epoch(
             and batch_result is not None
             and batch_result.auxiliary_loss.requires_grad
         ):
-            objective_gradient_metrics = _objective_gradient_diagnostics(
+            objective_gradient_metrics = objective_gradient_diagnostics(
                 model,
                 batch_result.classification_loss,
                 batch_result.auxiliary_loss,
                 float(batch_result.metrics["auxiliary_weight"]),
             )
+            for region, component in batch_result.auxiliary_components.items():
+                if not component.requires_grad:
+                    continue
+                regional = objective_gradient_diagnostics(
+                    model,
+                    batch_result.classification_loss,
+                    component,
+                    float(batch_result.metrics["auxiliary_weight"]),
+                )
+                objective_gradient_metrics.update(
+                    {
+                        f"gradient_{region}_{name.removeprefix('gradient_')}": value
+                        for name, value in regional.items()
+                        if name.startswith("gradient_")
+                    }
+                )
 
         batch_size = int(targets.numel())
         if batch_result is not None:
