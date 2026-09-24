@@ -114,10 +114,12 @@ archiviata sotto `artifacts/superseded/`; il report dell'audit è in
 residuo della campagna precedente e da job concorrenti. Prima di ogni lancio `nvidia-smi` deve
 mostrare la GPU libera; `run_command.sh` rifiuta inoltre un worktree non pulito.
 
-### 1. Consigliato: rieseguire l'audit con A1 stratificato
+### 1. Obbligatorio: rigenerare l'audit con A1 stratificato
 
-La versione registrata di A1 misurava 16 campioni di una sola parola. Il codice corrente media
-quattro batch stratificati su 64 classi; A2 va mantenuto alla taglia corretta.
+La versione registrata di A1 misurava 16 campioni di una sola parola. Il contratto corrente accetta
+soltanto lo schema 2: quattro batch stratificati su 64 classi e A2 con 8192/2048 campioni. Il report
+presente, schema 1, blocca intenzionalmente ogni ingresso di training finché questo comando non lo
+rigenera.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-phase1-audit -- \
@@ -150,21 +152,30 @@ done
 
 ### 3. Bracci del seed 42
 
-Continuazioni da C0 (L15 e il suo controllo R0) e bracci da zero con la ricetta di C0. Sostituire
-gli indici delle GPU con quelli liberi, uno per job.
+Continuazioni da C0 (L15 e il suo controllo R0) e bracci da zero con la ricetta di C0. I server sono
+macchine fisiche distinte: su ciascuna si usa la GPU locale `0`. Con quattro server, la prima ondata
+contiene R0, L15, D e S0; S1 parte sulla prima macchina che si libera, dopo che S0 ha prodotto il
+proprio controllo diretto **e** ha mostrato una skill predittiva di validation finita e positiva
+rispetto ai riferimenti causali. Se S0 non apprende il meccanismo, S1 non riceve un full run.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-r0 -- predictive-continuation --config configs/dvslip_predictive_r0.yaml
-CUDA_VISIBLE_DEVICES=1 bash scripts/smilies/run_command.sh dvslip-predictive-late-prefix -- predictive-continuation --config configs/dvslip_predictive_late_prefix.yaml
-CUDA_VISIBLE_DEVICES=2 bash scripts/smilies/run_command.sh dvslip-predictive-dynamic-tcap -- predictive-scratch --config configs/dvslip_predictive_dynamic_tcap.yaml
-CUDA_VISIBLE_DEVICES=3 bash scripts/smilies/run_command.sh dvslip-predictive-s0 -- predictive-scratch --config configs/dvslip_predictive_s0.yaml
-CUDA_VISIBLE_DEVICES=4 bash scripts/smilies/run_command.sh dvslip-predictive-s1 -- predictive-scratch --config configs/dvslip_predictive_s1.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-late-prefix -- predictive-continuation --config configs/dvslip_predictive_late_prefix.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-dynamic-tcap -- predictive-scratch --config configs/dvslip_predictive_dynamic_tcap.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0 -- predictive-scratch --config configs/dvslip_predictive_s0.yaml
+```
+
+Seconda ondata, soltanto dopo la lettura della firma meccanicistica di S0:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s1 -- predictive-scratch --config configs/dvslip_predictive_s1.yaml
 ```
 
 Ogni workflow esegue preflight, gate bounded (finestra finale a peso ausiliario pieno), run completo
 e profiling del checkpoint deployabile, e scrive `predictive_workflow.json`. Nella storia per epoca
-di S0 e S1 vanno letti `auxiliary_nominal_weight`, `authority_shared_ratio`,
-`authority_shared_cosine` e `train_temporal_variation_stage{1,2}_active`.
+di S0 e S1 vanno letti `auxiliary_nominal_weight`, `authority_nominal_shared_ratio`,
+`authority_shared_ratio` effettivo dopo il ramp, `authority_shared_cosine` e
+`train_temporal_variation_stage{1,2}_active`.
 
 ### 4. Seed 43 e 44, solo per i bracci con firma coerente
 

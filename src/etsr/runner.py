@@ -790,10 +790,10 @@ def train_experiment(
             freeze_batchnorm_statistics=freeze_batchnorm_statistics,
         )
         logger.info(
-            "Auxiliary authority before training | unit ratio %.3e | weight %.4g | shared ratio %.3e",
+            "Auxiliary authority before training | unit ratio %.3e | weight %.4g | nominal shared ratio %.3e",
             record["unit_ratio"],
             record["weight"],
-            record["shared_ratio"],
+            record["nominal_shared_ratio"],
         )
     total_epochs = int(config["training"]["epochs"])
     delay_anneal_epochs = int(config["training"].get("delay_anneal_epochs", total_epochs))
@@ -910,7 +910,11 @@ def train_experiment(
                 {
                     "auxiliary_nominal_weight": predictive_objective.weight,
                     "authority_unit_ratio": authority_record["unit_ratio"],
-                    "authority_shared_ratio": authority_record["shared_ratio"],
+                    "authority_nominal_shared_ratio": authority_record[
+                        "nominal_shared_ratio"
+                    ],
+                    "authority_shared_ratio": authority_record["unit_ratio"]
+                    * predictive_objective.effective_weight(epoch),
                     "authority_shared_cosine": authority_record["shared_cosine"],
                 }
             )

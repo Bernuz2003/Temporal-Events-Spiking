@@ -526,7 +526,7 @@ def _write_phase1_audit(path: Path) -> Path:
     path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "complete": True,
                 "sections": [
                     "A1_gradient_authority",
@@ -536,6 +536,12 @@ def _write_phase1_audit(path: Path) -> Path:
                 ],
                 "official_test_used": False,
                 "checkpoints": {"c0": {"sha256": "0" * 64}},
+                "A1_gradient_authority": {
+                    "batch_selection": "class_stratified_disjoint_batches",
+                    "batches": 4,
+                    "distinct_classes": 64,
+                },
+                "A2_discriminative_probes": {"fit_samples": 8192, "holdout_samples": 2048},
             }
         )
     )
@@ -576,14 +582,15 @@ def test_runner_scratch_branch_calibrates_and_persists_auxiliary_authority(tmp_p
     assert predictive["backbone_initialization"] == "c0_topology_same_seed"
     calibration = predictive["authority_calibration"]
     assert [record["epoch"] for record in calibration] == [0, 2, 3]
-    assert calibration[0]["shared_ratio"] == pytest.approx(0.25, rel=1e-6)
+    assert calibration[0]["nominal_shared_ratio"] == pytest.approx(0.25, rel=1e-6)
     assert predictive["final_nominal_weight"] == calibration[-1]["weight"]
 
     artifact_dir = Path(summary["artifact_dir"])
     with (artifact_dir / "history.csv").open(newline="") as handle:
         history = list(csv.DictReader(handle))
     assert [row["selection_eligible"] for row in history] == ["False", "True", "True"]
-    assert float(history[0]["authority_shared_ratio"]) == pytest.approx(0.25, rel=1e-6)
+    assert float(history[0]["authority_nominal_shared_ratio"]) == pytest.approx(0.25, rel=1e-6)
+    assert float(history[0]["authority_shared_ratio"]) == 0.0
     assert all(row["auxiliary_nominal_weight"] for row in history)
     assert all(row["train_temporal_variation_stage1_active"] for row in history)
     assert summary["best_epoch"] >= 2

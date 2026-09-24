@@ -126,7 +126,7 @@ def test_phase1_training_authorization_checks_report_and_parent_hash(tmp_path):
     report.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "complete": True,
                 "sections": [
                     "A1_gradient_authority",
@@ -136,6 +136,12 @@ def test_phase1_training_authorization_checks_report_and_parent_hash(tmp_path):
                 ],
                 "official_test_used": False,
                 "checkpoints": {"c0": {"sha256": sha256_file(parent)}},
+                "A1_gradient_authority": {
+                    "batch_selection": "class_stratified_disjoint_batches",
+                    "batches": 4,
+                    "distinct_classes": 64,
+                },
+                "A2_discriminative_probes": {"fit_samples": 8192, "holdout_samples": 2048},
             }
         )
     )
@@ -144,6 +150,15 @@ def test_phase1_training_authorization_checks_report_and_parent_hash(tmp_path):
     assert validate_predictive_training_authorization(predictive, continuation) == report
     # A from-scratch branch has no parent: the report must still be complete and valid.
     assert validate_predictive_training_authorization(predictive, None) == report
+
+    invalid = json.loads(report.read_text())
+    invalid["A1_gradient_authority"]["batch_selection"] = "first_unshuffled_batch"
+    report.write_text(json.dumps(invalid))
+    with pytest.raises(ValueError, match="Regenerate the stratified A1"):
+        validate_predictive_training_authorization(predictive, None)
+
+    invalid["A1_gradient_authority"]["batch_selection"] = "class_stratified_disjoint_batches"
+    report.write_text(json.dumps(invalid))
 
     invalid = json.loads(report.read_text())
     invalid["checkpoints"]["c0"]["sha256"] = "wrong"
@@ -755,7 +770,7 @@ def test_authority_calibration_sets_the_shared_ratio_without_side_effects():
     assert all(parameter.grad is None for parameter in model.parameters())
     assert model.training
     assert record["updated"] and record["unit_ratio"] > 0.0
-    assert record["shared_ratio"] == pytest.approx(0.25, rel=1e-6)
+    assert record["nominal_shared_ratio"] == pytest.approx(0.25, rel=1e-6)
     assert objective.weight == pytest.approx(0.25 / record["unit_ratio"])
 
     # After the first calibration the weight moves by at most max_step_factor per epoch.

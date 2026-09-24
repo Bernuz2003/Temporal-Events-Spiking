@@ -420,8 +420,8 @@ def run_predictive_phase1_audit(
     s0_config: str | Path,
     s0_checkpoint: str | Path,
     output_dir: str | Path,
-    fit_samples: int = 512,
-    holdout_samples: int = 256,
+    fit_samples: int = 8192,
+    holdout_samples: int = 2048,
     feature_samples: int = 256,
     ridge: float = 1e-2,
 ) -> dict[str, Any]:
@@ -429,6 +429,8 @@ def run_predictive_phase1_audit(
 
     if min(fit_samples, holdout_samples, feature_samples) <= 0 or ridge <= 0:
         raise ValueError("Audit sample counts and ridge must be positive.")
+    if fit_samples != 8192 or holdout_samples != 2048:
+        raise ValueError("Phase-1 audit schema 2 requires exactly 8192 fit and 2048 holdout samples.")
     output = ensure_dir(output_dir)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     seed_everything(42, True)
@@ -470,7 +472,7 @@ def run_predictive_phase1_audit(
     if not a1["measured"]:
         raise RuntimeError("A1 produced no auxiliary gradient family; audit is incomplete.")
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "complete": True,
         "sections": ["A1_gradient_authority", "A2_discriminative_probes", "A3_representation_movement", "A4_tail_margin"],
         "A1_gradient_authority": a1,

@@ -59,8 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
         phase1_audit.add_argument(f"--{label}-config", required=True)
         phase1_audit.add_argument(f"--{label}-checkpoint", required=True)
     phase1_audit.add_argument("--output", required=True)
-    phase1_audit.add_argument("--fit-samples", type=int, default=512)
-    phase1_audit.add_argument("--holdout-samples", type=int, default=256)
+    phase1_audit.add_argument("--fit-samples", type=int, default=8192)
+    phase1_audit.add_argument("--holdout-samples", type=int, default=2048)
     phase1_audit.add_argument("--feature-samples", type=int, default=256)
     tcap_predictive_probe = subparsers.add_parser(
         "tcap-predictive-probe",

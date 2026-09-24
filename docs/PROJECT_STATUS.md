@@ -47,15 +47,16 @@ conserva le diagnostiche e i profili storici.
 
 ## Prossimo passo
 
-Quattro bracci, ciascuno da solo sulla propria GPU, seed 42:
-**L15** in continuazione da C0 con il controllo **R0**; **D**, **S0** e **S1** da zero con la ricetta
-di C0, confrontati con i seed archiviati di C0 (S1 anche con S0). Prima di ogni lancio si legge il
-preflight (`predictive-check`), che misura inizializzazione, causalità e autorità dell'obiettivo
-ausiliario. I seed 43 e 44 seguono solo per i bracci con firma meccanicistica coerente. Comandi in
-[`OPERATIONS_SMILIES.md`](OPERATIONS_SMILIES.md).
+Prima si rigenera obbligatoriamente l'audit nello schema 2: A1 stratificato su 64 classi e A2 a
+8192/2048 campioni. Il report schema 1 presente viene rifiutato dagli ingressi di training.
 
-Consigliato prima dei lanci: rieseguire l'audit, perché la versione corretta di A1 usa batch
-stratificati per classe; la versione registrata misurava una sola parola (audit, sezione 12.1).
+Seguono quattro bracci scientifici, ma cinque job includendo il controllo R0, seed 42: **L15** in
+continuazione da C0 con **R0**; **D**, **S0** e **S1** da zero con la ricetta di C0. Sulle quattro
+macchine la prima ondata è R0/L15/D/S0; S1 parte sulla prima macchina libera e viene confrontato
+anche con S0, ma solo se S0 apprende davvero una skill predittiva di validation. Prima di ogni lancio
+si legge il preflight (`predictive-check`). I seed 43 e 44 seguono solo per i bracci con firma
+meccanicistica coerente. Comandi in
+[`OPERATIONS_SMILIES.md`](OPERATIONS_SMILIES.md).
 
 Tutte le metriche citate sono development validation. L'implementazione non produce da sola nuova
 evidenza empirica; nessun accesso all'official test.

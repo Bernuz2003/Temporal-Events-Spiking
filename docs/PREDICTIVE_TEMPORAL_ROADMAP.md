@@ -7,7 +7,8 @@ roadmap per correzioni, ordine dei run e criteri decisionali. Le sezioni sotto r
 delle ipotesi e non autorizzano la riesecuzione dell'albero originario.
 
 In particolare sono superati: la scelta di un'unica continuazione per tutti i bracci (§3) — D, S0 e
-S1 si addestrano ora da zero con la ricetta di C0; il tetto in GPU-ore (§3, §11), rimosso; il gate
+S1 si addestrano ora da zero con la ricetta di C0; il vecchio tetto in GPU-ore (§3, §11), sostituito
+dal programma chiuso e dalle stop rule dell'audit; il gate
 di +1 pp (§9); la formulazione originale di L a due prefissi (§8), ora L15; i controlli P-0 e P-C
 (§5), rispettivamente chiuso e sospeso. Bracci, regimi e controlli vigenti sono nella sezione 12
 dell'audit.

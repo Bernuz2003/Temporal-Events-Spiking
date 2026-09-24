@@ -25,6 +25,12 @@ _PHASE1_AUDIT_SECTIONS = {
     "A3_representation_movement",
     "A4_tail_margin",
 }
+_PHASE1_AUDIT_SCHEMA_VERSION = 2
+_PHASE1_A1_SELECTION = "class_stratified_disjoint_batches"
+_PHASE1_A1_MINIMUM_BATCHES = 4
+_PHASE1_A1_MINIMUM_CLASSES = 64
+_PHASE1_A2_FIT_SAMPLES = 8192
+_PHASE1_A2_HOLDOUT_SAMPLES = 2048
 
 
 # Model fields that may differ from the frozen C0 topology in this phase. Everything else must
@@ -180,15 +186,32 @@ def validate_predictive_training_authorization(
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
     checkpoints = audit.get("checkpoints")
     c0 = checkpoints.get("c0") if isinstance(checkpoints, dict) else None
+    a1 = audit.get("A1_gradient_authority")
+    a2 = audit.get("A2_discriminative_probes")
+    def integer_at_least(mapping: dict[str, Any] | None, field: str, minimum: int) -> bool:
+        value = mapping.get(field) if isinstance(mapping, dict) else None
+        return type(value) is int and value >= minimum
+
     if (
-        audit.get("schema_version") != 1
+        audit.get("schema_version") != _PHASE1_AUDIT_SCHEMA_VERSION
         or audit.get("complete") is not True
         or set(audit.get("sections", ())) != _PHASE1_AUDIT_SECTIONS
         or audit.get("official_test_used") is not False
         or not isinstance(c0, dict)
         or not isinstance(c0.get("sha256"), str)
+        or not isinstance(a1, dict)
+        or a1.get("batch_selection") != _PHASE1_A1_SELECTION
+        or not integer_at_least(a1, "batches", _PHASE1_A1_MINIMUM_BATCHES)
+        or not integer_at_least(a1, "distinct_classes", _PHASE1_A1_MINIMUM_CLASSES)
+        or not isinstance(a2, dict)
+        or a2.get("fit_samples") != _PHASE1_A2_FIT_SAMPLES
+        or a2.get("holdout_samples") != _PHASE1_A2_HOLDOUT_SAMPLES
     ):
-        raise ValueError(f"Incomplete or incompatible phase-1 audit report: {audit_path}")
+        raise ValueError(
+            "Incomplete or incompatible phase-1 audit report. Regenerate the stratified "
+            f"A1 and the {_PHASE1_A2_FIT_SAMPLES}/{_PHASE1_A2_HOLDOUT_SAMPLES} A2: "
+            f"{audit_path}"
+        )
     if continuation is not None and c0["sha256"] != sha256_file(continuation["parent_checkpoint"]):
         raise ValueError("Phase-1 audit and continuation use different C0 checkpoints.")
     return audit_path
@@ -466,7 +489,7 @@ class PredictiveTrainingObjective:
             "unit_ratio": unit_ratio,
             "previous_weight": previous,
             "weight": previous,
-            "shared_ratio": unit_ratio * previous,
+            "nominal_shared_ratio": unit_ratio * previous,
             "shared_cosine": diagnostics["gradient_shared_cosine"],
             "updated": False,
         }
@@ -483,7 +506,7 @@ class PredictiveTrainingObjective:
             weight = min(max(weight, self.authority["min_weight"]), self.authority["max_weight"])
             self.weight = weight
             self.calibrated = True
-            record.update(weight=weight, shared_ratio=unit_ratio * weight, updated=True)
+            record.update(weight=weight, nominal_shared_ratio=unit_ratio * weight, updated=True)
         self.calibration_history.append(record)
         return record
 

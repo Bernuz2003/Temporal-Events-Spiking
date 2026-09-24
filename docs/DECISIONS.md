@@ -17,14 +17,16 @@
    della ricetta è coperta da un test: lo scheduler corrente riproduce esattamente quello di C0 in
    tutte le 128 epoche. I bracci da zero partono dall'inizializzazione del backbone e dal flusso di
    dati della topologia C0 allo stesso seed.
-5. **Nessun tetto in GPU-ore.** La disciplina sta nel disegno: ogni braccio risponde a una domanda,
-   ha il proprio controllo, gira da solo sulla propria GPU. L'unità statistica di un'affermazione di
-   superiorità è il seed, non l'epoca: seed 42 per primo, 43 e 44 per i bracci con firma coerente.
+5. **Programma chiuso.** Il vecchio tetto numerico in GPU-ore non è applicabile ai nuovi bracci
+   scratch da 128 epoche, ma non autorizza una ricerca aperta: R0/L15/D/S0 al seed 42; S1 soltanto
+   dopo una skill predittiva valida di S0; seed 43 e 44 soltanto per i bracci con firma coerente.
+   L'unità statistica di un'affermazione di superiorità è il seed, non l'epoca.
 6. Nessun gate di +1 pp su seed singolo. Ogni decisione legge insieme il corredo di evidenza della
    sezione 9 dell'audit e viene registrata qui con il ragionamento.
 7. **Verdetti.** P-F e P-0 chiusi (target fine non predicibile a nessun orizzonte). P-C sospeso.
-   L15, D, S0 e S1 da eseguire nella forma corretta. Una sola fusione, strutturata
-   (sorpresa → ampiezza, contenuto → allocazione), solo dopo due componenti positivi.
+   L15, D e S0 da eseguire nella forma corretta; S1 resta condizionato alla validazione del
+   meccanismo di S0. Una sola fusione, strutturata (sorpresa → ampiezza, contenuto → allocazione),
+   solo dopo due componenti positivi.
 8. **Correzioni attive.** Ramp escluso dalla selezione e dalla finestra del gate di overfit;
    gradienti per blocco e regione su supporto identico; batch diagnostici stratificati per classe;
    autorità ausiliaria calibrata e rimisurata ogni epoca, con minimo verificato dal preflight;

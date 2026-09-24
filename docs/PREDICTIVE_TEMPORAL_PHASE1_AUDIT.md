@@ -338,9 +338,10 @@ neppure una prova che l'ipotesi sia falsa.
 Circa 47 GPU-ore spese contro 44,86 pianificate e 53,83 di tetto invalicabile, per zero risultati
 interpretabili.
 
-**Superato il 2026-09-24:** il tetto in GPU-ore è stato rimosso (`DECISIONS.md`). La disciplina non
-sta più nel costo ma nel disegno: ogni braccio risponde a una domanda, ha il proprio controllo, e
-un'affermazione di superiorità richiede più seed.
+**Superato il 2026-09-24:** il vecchio tetto numerico non governa la nuova campagna
+(`DECISIONS.md`), ma non è stato sostituito da un budget indefinito. La disciplina è il programma
+chiuso della sezione 12.7: seed 42, stop rule meccanicistiche e repliche soltanto per i bracci
+positivi.
 
 ---
 
@@ -523,8 +524,8 @@ prima esecuzione. I risultati della prima esecuzione non vengono citati come bas
 riferimento o come tendenza. Questo documento è il solo luogo in cui quelle cifre compaiono.
 
 **Ordine.** L'audit della sezione 8 precede qualunque training. La riesecuzione non riparte da sette
-continuazioni: segue il programma della sezione 12.7, deciso sull'esito dell'audit. Il vincolo di
-budget di §5 P3 è stato rimosso.
+continuazioni: segue il programma chiuso della sezione 12.7, deciso sull'esito dell'audit. Il valore
+numerico di budget di §5 P3 non viene riutilizzato come soglia della nuova campagna.
 
 **Regime.** Per R8 alcuni bracci non sono più continuazioni: D, S0 e S1 si addestrano da zero con la
 ricetta di C0. Conservano i nomi di esperimento originali; la regola di non confrontabilità con la
@@ -672,11 +673,14 @@ mostrato non informativa per meccanismi di questo tipo: è stata ritirata.
 | S0 | da zero, ricetta C0 | C0 seed 42/43/44 | la predizione modella la rappresentazione se agisce mentre si forma? |
 | S1 | da zero, ricetta C0 | S0 e C0 | l'errore predittivo aggiunge valore al controllo della memoria? |
 
-Seed 42 per primo; 43 e 44 per ciò che mostra la firma meccanicistica attesa. Controlli di
-attribuzione solo se un braccio funziona: D con gate statici riaddestrato, per separare adattività
-e riscalamento; L con distillazione a finestra piena (`prefix_steps: [40]`, nessun codice
-aggiuntivo), per separare la supervisione del prefisso dalla distillazione generica. Dopo due
-componenti positivi, un'unica fusione strutturata: sorpresa → ampiezza, contenuto → allocazione.
+Seed 42 per primo; 43 e 44 per ciò che mostra la firma meccanicistica attesa. S1 viene avviato solo
+se S0 dimostra sul validation set abilità predittiva finita e positiva rispetto ai riferimenti
+causali: senza un predittore utile, la sorpresa di S1 non ha un meccanismo interpretabile da
+instradare. Controlli di attribuzione solo se un braccio funziona: D con gate statici riaddestrato,
+per separare adattività e riscalamento; L con distillazione a finestra piena
+(`prefix_steps: [40]`, nessun codice aggiuntivo), per separare la supervisione del prefisso dalla
+distillazione generica. Dopo due componenti positivi, un'unica fusione strutturata: sorpresa →
+ampiezza, contenuto → allocazione.
 
 I bracci da zero partono dall'inizializzazione del backbone della topologia C0 allo stesso seed e dal
 suo stesso flusso di dati e augmentation; lo scheduler corrente riproduce esattamente quello con cui
@@ -702,4 +706,3 @@ e le statistiche per canale includono i passi futuri; perturbare la seconda met�
 sposta il prefisso fino a 4,0. Il modello deployato usa statistiche running ed è causale, e C0 è
 stato addestrato nello stesso modo: la condizione è comune a controllo e bracci. Il preflight la
 misura e la riporta, senza farne un gate.
-

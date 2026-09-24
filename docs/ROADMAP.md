@@ -10,13 +10,14 @@ Sono risultati development, non official-test. La prima discovery è conclusa.
 
 Prima di riprendere augmentation si applica il contratto correttivo di
 [`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). I risultati della
-prima esecuzione sono superseded. L'audit A1–A4 e i probe R5 sono completi, e la sezione 12 del
-contratto fissa bracci, regimi e controlli della riesecuzione.
+prima esecuzione sono superseded. Gli esiti scientifici A1–A4 e R5 sono documentati; il bundle di
+autorizzazione va rigenerato nello schema 2 prima dei training. La sezione 12 del contratto fissa
+bracci, regimi e controlli della riesecuzione.
 
 ## Ordine vincolante
 
-1. ✅ Audit A1–A4 e probe R5 (esito: audit, sezione 12). Consigliata una nuova esecuzione di A1
-   con batch stratificati per classe.
+1. Rigenerare il bundle A1–A4 nello schema 2: A1 su quattro batch stratificati/64 classi e A2 a
+   8192/2048 campioni. Il report schema 1 documenta l'analisi, ma non autorizza training.
 2. Seed 42: L15 in continuazione con controllo R0; D, S0 e S1 da zero con la ricetta di C0,
    confrontati con i seed archiviati di C0 (S1 anche con S0). Preflight letto prima di ogni lancio.
 3. Seed 43 e 44 per i bracci con firma meccanicistica coerente; controlli di attribuzione
@@ -32,9 +33,10 @@ assume additività delle augmentation con un nuovo modello. Run già avviati pos
 
 ## Budget e stop
 
-La riesecuzione non replica l'albero originario. Non c'è più un tetto in GPU-ore: le continuazioni
-usano 64 epoche, i bracci da zero la ricetta completa di C0 (128 epoche), e ogni run produce il
-corredo di evidenza dell'audit. Un job per GPU.
+La riesecuzione non replica l'albero originario né apre un budget indefinito. Il vecchio tetto,
+incompatibile con i bracci scratch da 128 epoche, è sostituito da un programma chiuso: R0/L15/D/S0
+al seed 42; S1 solo se S0 mostra la firma predittiva attesa; repliche soltanto dei bracci positivi.
+Le continuazioni usano 64 epoche e ogni run produce il corredo di evidenza dell'audit.
 
 Le soglie di screening, attribuzione, fusione e replica sono fissate nel documento operativo.
 Non si aprono sweep per salvare un esito negativo. Un bug rende il run non valido; un negativo
