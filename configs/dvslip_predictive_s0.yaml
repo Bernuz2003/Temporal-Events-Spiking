@@ -1,21 +1,31 @@
-extends: dvslip_predictive_continuation_base.yaml
+extends: dvslip_f_tcap_stage1_dwc3_d8.yaml
 
 experiment:
   name: dvslip_predictive_s0
 
+# S0, trained from scratch with the frozen C0 recipe. The causal TCAP predictor loss acts only
+# on stage2 and only in the active region (audit A1/A2), with explicit gradient authority on the
+# shared backbone instead of a fixed weight (audit A1/A3). `weight` is the starting value: the
+# run calibrates it before epoch 1 and re-measures it on a fixed stratified batch every epoch.
 model:
   temporal_channel_mixer_predictive_auxiliary: true
   temporal_channel_mixer_predictor_channel_groups: 1
   temporal_channel_mixer_predictor_spatial_kernel_size: 3
+  temporal_channel_mixer_predictive_stages: [2]
 
-continuation:
+predictive:
+  phase1_audit_report: artifacts/predictive_phase1_audit/phase1_audit.json
   objective:
     mode: none
     weight: 0.1
-    ramp_epochs: 4
+    ramp_epochs: 8
     temporal_region_weights:
       active: 1.0
-      tail: 0.25
+      tail: 0.0
     temporal_stage_weights:
-      stage1: 1.0
+      stage1: 0.0
       stage2: 1.0
+    authority:
+      target_ratio: 0.25
+      max_step_factor: 2.0
+      max_weight: 1.0e+6

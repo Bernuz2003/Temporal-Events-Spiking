@@ -25,6 +25,29 @@ def seed_everything(seed: int, deterministic: bool = True) -> None:
     torch.use_deterministic_algorithms(deterministic)
 
 
+def capture_random_state() -> dict[str, Any]:
+    """Snapshot every global RNG stream used by training and data augmentation."""
+
+    state: dict[str, Any] = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def restore_random_state(state: dict[str, Any]) -> None:
+    """Restore a snapshot produced by :func:`capture_random_state`."""
+
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"].cpu())
+    if "cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all([value.cpu() for value in state["cuda"]])
+
+
 def git_commit() -> str | None:
     try:
         return subprocess.check_output(

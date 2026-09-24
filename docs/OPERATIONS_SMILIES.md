@@ -105,32 +105,79 @@ invariati. Non cambiare kernel, ritardi o soglia del gate.
 
 ## Fase predictive-temporal
 
-La prima esecuzione è archiviata sotto `artifacts/superseded/`. Prima di qualunque nuovo training
-va prodotto il pacchetto checkpoint-only A1–A4 richiesto da
-[`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). Sul server che
-contiene C0, R0-v2 e S0:
+Programma e motivazioni: sezione 12 di
+[`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). La prima esecuzione è
+archiviata sotto `artifacts/superseded/`; il report dell'audit è in
+`artifacts/predictive_phase1_audit/phase1_audit.json` ed è richiesto da ogni ingresso di training.
+
+**Un job per GPU.** I due fallimenti dell'audit del 23 settembre erano OOM causati da un processo
+residuo della campagna precedente e da job concorrenti. Prima di ogni lancio `nvidia-smi` deve
+mostrare la GPU libera; `run_command.sh` rifiuta inoltre un worktree non pulito.
+
+### 1. Consigliato: rieseguire l'audit con A1 stratificato
+
+La versione registrata di A1 misurava 16 campioni di una sola parola. Il codice corrente media
+quattro batch stratificati su 64 classi; A2 va mantenuto alla taglia corretta.
 
 ```bash
-mkdir -p artifacts/superseded
-for run in dvslip_predictive_r0__20260919_195045_458075__seed42 dvslip_predictive_r0_overfit__20260919_194957_361550__seed42 dvslip_predictive_fine_future__20260920_092926_401100__seed42 dvslip_predictive_fine_future_overfit__20260920_092834_335457__seed42 dvslip_predictive_dynamic_tcap__20260920_092918_912891__seed42 dvslip_predictive_dynamic_tcap_overfit__20260920_092834_060043__seed42 dvslip_predictive_r0_discriminative_lr__20260921_110121_131705__seed42 dvslip_predictive_r0_discriminative_lr_overfit__20260921_110011_141178__seed42 dvslip_predictive_dynamic_tcap_discriminative_lr__20260921_105916_470165__seed42 dvslip_predictive_dynamic_tcap_discriminative_lr_overfit__20260921_105749_046500__seed42 dvslip_predictive_s0__20260922_210709_490368__seed42 dvslip_predictive_s0_overfit__20260922_210538_689565__seed42 dvslip_predictive_s1__20260922_210647_463018__seed42 dvslip_predictive_s1_overfit__20260922_210556_078149__seed42; do test ! -d "artifacts/$run" || mv "artifacts/$run" artifacts/superseded/; done
-for directory in predictive_diagnostics predictive_preflight; do test ! -d "artifacts/$directory" || mv "artifacts/$directory" artifacts/superseded/; done
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/dataset_workflow.sh dvslip check
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-phase1-audit -- predictive-phase1-audit --c0-config artifacts/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/config_resolved.yaml --c0-checkpoint checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt --r0-config artifacts/superseded/dvslip_predictive_r0_discriminative_lr__20260921_110121_131705__seed42/config_resolved.yaml --r0-checkpoint checkpoints/dvslip_predictive_r0_discriminative_lr__20260921_110121_131705__seed42/best.pt --s0-config artifacts/superseded/dvslip_predictive_s0__20260922_210709_490368__seed42/config_resolved.yaml --s0-checkpoint checkpoints/dvslip_predictive_s0__20260922_210709_490368__seed42/best.pt --output artifacts/predictive_phase1_audit --fit-samples 512 --holdout-samples 256 --feature-samples 256
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-phase1-audit -- \
+  predictive-phase1-audit \
+  --c0-config     artifacts/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/config_resolved.yaml \
+  --c0-checkpoint checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt \
+  --r0-config     artifacts/superseded/dvslip_predictive_r0_discriminative_lr__20260921_110121_131705__seed42/config_resolved.yaml \
+  --r0-checkpoint checkpoints/dvslip_predictive_r0_discriminative_lr__20260921_110121_131705__seed42/best.pt \
+  --s0-config     artifacts/superseded/dvslip_predictive_s0__20260922_210709_490368__seed42/config_resolved.yaml \
+  --s0-checkpoint checkpoints/dvslip_predictive_s0__20260922_210709_490368__seed42/best.pt \
+  --output        artifacts/predictive_phase1_audit \
+  --fit-samples 8192 --holdout-samples 2048 --feature-samples 256
 ```
 
-Il comando produce `phase1_audit.json` e i CSV per-sample A4. Solo dopo la lettura del report si
-sceglie il prossimo braccio. `predictive-continuation` verifica automaticamente presenza,
-completezza e hash C0 del report; P-F e i target future restano inoltre bloccati da R5.
+### 2. Preflight da leggere prima di ogni lancio
 
-Se A1–A4 rendono ancora pertinente P-F, il probe esistente permette il confronto senza nuove
-configurazioni di training, variando in CLI `--mode` e `--horizon`. Eseguire almeno orizzonti
-1/2/4 per `fine_future` e `coarse_future`, poi aggiornare in luogo il solo target selezionato.
+Il preflight è eseguito anche dai workflow, ma lanciarlo da solo permette di leggere il report prima
+che parta il training. Campi da leggere: `initialization_passed`, `causal_prefix_passed`,
+`diagnostic_batch_classes` (16), `shared_gradient_ratio` rispetto a `minimum_shared_gradient_ratio`,
+`authority_calibration`, e `training_batchnorm_prefix_max_abs_difference`, che per i bracci da
+zero è atteso diverso da zero e va solo registrato.
 
-Ogni continuazione corretta usa la recipe canonica `dvslip_predictive_continuation_64`: LR
-ereditato `1e-5`, LR nuovi parametri `1e-4`, rapporto conservato fino alla fine. Il preflight
-misura ora gradienti condivisi per blocco e regione; il best esclude le epoche di ramp. D e S1
-instradano soltanto stage2 con parametrizzazione ampiezza più allocazione softmax; S usa pesi
-active-dominant. Non lanciare in parallelo l'intero albero.
+```bash
+for arm in r0 late_prefix dynamic_tcap s0 s1; do
+  CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh --foreground \
+    predictive-check --config configs/dvslip_predictive_$arm.yaml \
+    --output artifacts/predictive_preflight/dvslip_predictive_${arm}__seed42.json
+done
+```
+
+### 3. Bracci del seed 42
+
+Continuazioni da C0 (L15 e il suo controllo R0) e bracci da zero con la ricetta di C0. Sostituire
+gli indici delle GPU con quelli liberi, uno per job.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-r0 -- predictive-continuation --config configs/dvslip_predictive_r0.yaml
+CUDA_VISIBLE_DEVICES=1 bash scripts/smilies/run_command.sh dvslip-predictive-late-prefix -- predictive-continuation --config configs/dvslip_predictive_late_prefix.yaml
+CUDA_VISIBLE_DEVICES=2 bash scripts/smilies/run_command.sh dvslip-predictive-dynamic-tcap -- predictive-scratch --config configs/dvslip_predictive_dynamic_tcap.yaml
+CUDA_VISIBLE_DEVICES=3 bash scripts/smilies/run_command.sh dvslip-predictive-s0 -- predictive-scratch --config configs/dvslip_predictive_s0.yaml
+CUDA_VISIBLE_DEVICES=4 bash scripts/smilies/run_command.sh dvslip-predictive-s1 -- predictive-scratch --config configs/dvslip_predictive_s1.yaml
+```
+
+Ogni workflow esegue preflight, gate bounded (finestra finale a peso ausiliario pieno), run completo
+e profiling del checkpoint deployabile, e scrive `predictive_workflow.json`. Nella storia per epoca
+di S0 e S1 vanno letti `auxiliary_nominal_weight`, `authority_shared_ratio`,
+`authority_shared_cosine` e `train_temporal_variation_stage{1,2}_active`.
+
+### 4. Seed 43 e 44, solo per i bracci con firma coerente
+
+I bracci da zero si replicano con la stessa configurazione; i loro controlli sono i seed 43 e 44
+archiviati di C0.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0-43 -- replicate --config configs/dvslip_predictive_s0.yaml --seed 43
+```
+
+Le continuazioni non si replicano così: un seed diverso richiede il C0 dello stesso seed come parent
+e come teacher, e il gate dell'audit confronta l'hash del parent con il C0 esaminato dall'audit
+(seed 42). Va deciso prima, se servirà.
 
 ## Monitoraggio e ripresa
 

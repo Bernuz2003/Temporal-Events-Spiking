@@ -1,10 +1,16 @@
 # Roadmap operativa: supervisione predittiva e memoria temporale condizionale
 
-**Definita:** 2026-09-19. **Stato al 2026-09-23:** la prima esecuzione è stata invalidata come
+**Definita:** 2026-09-19. **Stato al 2026-09-24:** la prima esecuzione è stata invalidata come
 evidenza dal contratto
 [`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md), che prevale su questa
 roadmap per correzioni, ordine dei run e criteri decisionali. Le sezioni sotto restano il razionale
 delle ipotesi e non autorizzano la riesecuzione dell'albero originario.
+
+In particolare sono superati: la scelta di un'unica continuazione per tutti i bracci (§3) — D, S0 e
+S1 si addestrano ora da zero con la ricetta di C0; il tetto in GPU-ore (§3, §11), rimosso; il gate
+di +1 pp (§9); la formulazione originale di L a due prefissi (§8), ora L15; i controlli P-0 e P-C
+(§5), rispettivamente chiuso e sospeso. Bracci, regimi e controlli vigenti sono nella sezione 12
+dell'audit.
 
 La fase precede la ripresa delle augmentation. Mantiene come riferimento **F+DWC-3+TCAP-d8** e
 riapre soltanto le ipotesi descritte qui. Motivazioni, anteriorità e limiti teorici sono nella

@@ -3,7 +3,10 @@ extends: dvslip_predictive_fine_future.yaml
 experiment:
   name: dvslip_predictive_fine_same
 
-continuation:
+predictive:
+  blocked_reason: >-
+    Closed by the phase-1 audit: this branch was defined only as the control of fine-future
+    prediction, whose target is infeasible at every probed horizon.
   objective:
     mode: fine_same
     normalization_report: artifacts/predictive_diagnostics/fine_same_probe.json

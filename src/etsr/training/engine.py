@@ -22,6 +22,7 @@ from etsr.evaluation.metrics import ClassificationAccumulator, ClassificationRes
 from etsr.models.temporal import CausalTemporalChannelMixer
 from etsr.training.augmentation import EventMix
 from etsr.training.checkpointing import load_model_state
+from etsr.training.gradient_diagnostics import objective_gradient_diagnostics
 from etsr.training.predictive import (
     PredictiveTrainingObjective,
     freeze_batchnorm_running_statistics,
@@ -145,116 +146,8 @@ def make_criterion(config: dict[str, Any]) -> nn.Module:
     return nn.CrossEntropyLoss(label_smoothing=float(config.get("label_smoothing", 0.0)))
 
 
-def objective_gradient_diagnostics(
-    model: nn.Module,
-    classification_loss: torch.Tensor,
-    auxiliary_loss: torch.Tensor,
-    auxiliary_weight: float,
-) -> dict[str, float]:
-    """Compare CE and weighted auxiliary gradients on identical parameter blocks."""
-
-    named_parameters = [
-        (name, parameter)
-        for name, parameter in model.named_parameters()
-        if parameter.requires_grad
-    ]
-    parameters = tuple(parameter for _name, parameter in named_parameters)
-    classification_gradients = torch.autograd.grad(
-        classification_loss,
-        parameters,
-        retain_graph=True,
-        allow_unused=True,
-    )
-    auxiliary_gradients = torch.autograd.grad(
-        auxiliary_loss,
-        parameters,
-        retain_graph=True,
-        allow_unused=True,
-    )
-    records = dict(zip((name for name, _parameter in named_parameters), zip(
-        classification_gradients, auxiliary_gradients, strict=True
-    ), strict=True))
-
-    def block(name: str) -> str | None:
-        if name.startswith("head."):
-            return "head"
-        if ".temporal_channel_mixer.weight" in name:
-            return "tcap1_weights" if name.startswith("patch_embed1") else "tcap2_weights"
-        training_only = (
-            "predictive_head",
-            "content_router",
-            "predictor_logits",
-            "predictor_spatial",
-            "predictor_projections",
-            "surprise_router",
-        )
-        if any(token in name for token in training_only):
-            return None
-        if name.startswith(("patch_embed1.", "stage1.")):
-            return "stage1_shared"
-        if name.startswith(("patch_embed2.", "stage2.")):
-            return "stage2_shared"
-        return None
-
-    output: dict[str, float] = {}
-    global_dot = classification_loss.new_zeros((), dtype=torch.float64)
-    global_shared_ce = classification_loss.new_zeros((), dtype=torch.float64)
-    global_shared_aux = classification_loss.new_zeros((), dtype=torch.float64)
-    for block_name in (
-        "stage1_shared",
-        "tcap1_weights",
-        "stage2_shared",
-        "tcap2_weights",
-        "head",
-    ):
-        ce_squared = classification_loss.new_zeros((), dtype=torch.float64)
-        aux_squared = classification_loss.new_zeros((), dtype=torch.float64)
-        dot = classification_loss.new_zeros((), dtype=torch.float64)
-        for name, (ce_gradient, aux_gradient) in records.items():
-            if block(name) != block_name:
-                continue
-            if ce_gradient is not None:
-                ce = ce_gradient.detach().double()
-                ce_squared += ce.square().sum()
-            if aux_gradient is not None:
-                aux = aux_gradient.detach().double()
-                aux_squared += aux.square().sum()
-            if ce_gradient is not None and aux_gradient is not None:
-                shared_ce = ce_gradient.detach().double()
-                shared_aux = aux_gradient.detach().double()
-                dot += (shared_ce * shared_aux).sum()
-                global_shared_ce += shared_ce.square().sum()
-                global_shared_aux += shared_aux.square().sum()
-        ce_norm = ce_squared.sqrt()
-        aux_norm = aux_squared.sqrt()
-        weighted_aux_norm = aux_norm * abs(auxiliary_weight)
-        denominator = ce_norm * aux_norm
-        cosine = dot / denominator if bool((denominator > 0).item()) else dot.new_tensor(float("nan"))
-        ratio = (
-            weighted_aux_norm / ce_norm
-            if bool((ce_norm > 0).item())
-            else ce_norm.new_tensor(float("nan"))
-        )
-        prefix = f"gradient_{block_name}"
-        output.update(
-            {
-                f"{prefix}_classification_norm": float(ce_norm.cpu()),
-                f"{prefix}_weighted_auxiliary_norm": float(weighted_aux_norm.cpu()),
-                f"{prefix}_ratio": float(ratio.cpu()),
-                f"{prefix}_cosine": float(cosine.cpu()),
-            }
-        )
-        global_dot += dot
-    global_denominator = global_shared_ce.sqrt() * global_shared_aux.sqrt()
-    output["classification_auxiliary_gradient_cosine"] = float(
-        (global_dot / global_denominator).cpu()
-        if bool((global_denominator > 0).item())
-        else float("nan")
-    )
-    return output
-
-
-# Kept as an internal compatibility alias for existing callers and archived test contracts.
+# Implemented in etsr.training.gradient_diagnostics so that the predictive objective can
+# calibrate its authority without importing the training engine.
 _objective_gradient_diagnostics = objective_gradient_diagnostics
 
 

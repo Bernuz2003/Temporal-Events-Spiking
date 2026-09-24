@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 
 import pytest
@@ -7,6 +8,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from etsr.config import ConfigError, load_config, validate_config
+from etsr.data.common import DatasetSubset
 from etsr.evaluation.predictive_diagnostic import (
     _fit_convex_tcap_predictors,
     _fit_dense_ridge,
@@ -15,58 +17,88 @@ from etsr.evaluation.predictive_diagnostic import (
 from etsr.models.factory import build_model
 from etsr.models.mini_qkformer import MiniQKFormer
 from etsr.models.temporal import CausalTemporalChannelMixer
-from etsr.reproducibility import git_commit
+from etsr.reproducibility import capture_random_state, git_commit, restore_random_state
 from etsr.training.engine import evaluate
 from etsr.training.predictive import (
     PredictiveTrainingObjective,
     _balanced_masked_loss,
+    base_model_config,
+    class_stratified_indices,
+    dataset_targets,
+    fixed_window_prefix_logits,
+    load_backbone_state,
     validate_predictive_training_authorization,
 )
 from etsr.utils.io import sha256_file
 
 
-def test_predictive_configs_inherit_the_frozen_continuation_recipe():
+def test_predictive_configs_follow_the_audited_regimes():
+    c0 = load_config("configs/dvslip_f_tcap_stage1_dwc3_d8.yaml")
     r0 = load_config("configs/dvslip_predictive_r0.yaml")
+    late_prefix = load_config("configs/dvslip_predictive_late_prefix.yaml")
     future = load_config("configs/dvslip_predictive_fine_future.yaml")
+    same = load_config("configs/dvslip_predictive_fine_same.yaml")
+    coarse = load_config("configs/dvslip_predictive_coarse_future.yaml")
     dynamic = load_config("configs/dvslip_predictive_dynamic_tcap.yaml")
-    surprise = load_config("configs/dvslip_predictive_s1.yaml")
-    assert r0["training"]["epochs"] == 64
-    assert r0["training"]["recipe_id"] == "dvslip_predictive_continuation_64"
-    assert r0["training"]["learning_rate"] == 1e-5
-    assert r0["continuation"]["new_parameter_learning_rate"] == 1e-4
-    assert r0["continuation"]["phase1_audit_report"].endswith("phase1_audit.json")
-    assert r0["model"]["temporal_channel_mixer_delays"] == [1, 2, 4, 8]
+    s0 = load_config("configs/dvslip_predictive_s0.yaml")
+    s1 = load_config("configs/dvslip_predictive_s1.yaml")
+
+    # Continuations from frozen C0: R0 and L15, plus the recorded P designs.
+    for continuation in (r0, late_prefix, future, same, coarse):
+        assert continuation["training"]["recipe_id"] == "dvslip_predictive_continuation_64"
+        assert continuation["training"]["epochs"] == 64
+        assert continuation["training"]["learning_rate"] == 1e-5
+        assert continuation["continuation"]["new_parameter_learning_rate"] == 1e-4
+        assert "objective" not in continuation["continuation"]
+        assert continuation["predictive"]["phase1_audit_report"].endswith("phase1_audit.json")
+        validate_config(continuation)
+    objective = late_prefix["predictive"]["objective"]
+    assert objective["prefix_steps"] == [30]
+    assert objective["prefix_readout"] == "fixed_window_denominator"
+    assert future["predictive"]["blocked_reason"].startswith("Closed")
+    assert same["predictive"]["blocked_reason"].startswith("Closed")
+    assert coarse["predictive"]["blocked_reason"].startswith("Suspended")
     assert future["representation"]["name"] == "multigranular_count_frame"
-    assert not future["model"].get("multigranular", False)
-    assert future["model"]["predictive_head"]
-    assert future["model"]["predictive_head_spatial_kernel_size"] == 3
     assert future["model"]["predictive_head_hidden_channels"] == 128
-    assert dynamic["model"]["temporal_channel_mixer_router_pooling"] == "local"
-    assert dynamic["model"]["temporal_channel_mixer_router_hidden_divisor"] == 2
+
+    # From-scratch branches: frozen C0 recipe and topology plus registered phase fields only.
+    for scratch in (dynamic, s0, s1):
+        assert "continuation" not in scratch
+        for section in ("dataset", "representation", "augmentation", "training", "evaluation"):
+            assert scratch[section] == c0[section]
+        assert base_model_config(scratch["model"]) == c0["model"]
+        validate_config(scratch)
     assert dynamic["model"]["temporal_channel_mixer_routing_stages"] == [2]
-    assert (
-        dynamic["model"]["temporal_channel_mixer_routing_parameterization"]
-        == "amplitude_allocation"
-    )
-    assert surprise["model"]["temporal_channel_mixer_predictor_channel_groups"] == 1
-    assert surprise["model"]["temporal_channel_mixer_predictor_spatial_kernel_size"] == 3
+    assert dynamic["model"]["temporal_channel_mixer_routing_parameterization"] == "amplitude_allocation"
+    assert dynamic["predictive"]["objective"]["weight"] == 0.0
+    s0_objective = s0["predictive"]["objective"]
+    assert s0_objective["temporal_region_weights"] == {"active": 1.0, "tail": 0.0}
+    assert s0_objective["temporal_stage_weights"] == {"stage1": 0.0, "stage2": 1.0}
+    assert s0_objective["authority"]["target_ratio"] == 0.25
+    assert s1["predictive"]["objective"] == s0_objective
+    assert s1["model"]["temporal_channel_mixer_surprise_routing"]
+    assert s1["model"]["temporal_channel_mixer_router_pooling"] == "local"
+    assert s1["model"]["temporal_channel_mixer_routing_stages"] == [2]
+    assert not s1["model"].get("temporal_channel_mixer_dynamic_routing", False)
 
-    stable_s0 = load_config("configs/dvslip_predictive_s0.yaml")
-    stable_s1 = load_config("configs/dvslip_predictive_s1.yaml")
-    stable_late_prefix = load_config("configs/dvslip_predictive_late_prefix.yaml")
-    for candidate in (stable_s0, stable_s1, stable_late_prefix):
-        assert candidate["training"]["recipe_id"] == "dvslip_predictive_continuation_64"
-        assert candidate["training"]["learning_rate"] == 1e-5
-        assert candidate["continuation"]["new_parameter_learning_rate"] == 1e-4
-    assert not stable_s0["model"].get("temporal_channel_mixer_dynamic_routing", False)
-    assert not stable_s1["model"].get("temporal_channel_mixer_dynamic_routing", False)
-    assert stable_s1["model"]["temporal_channel_mixer_surprise_routing"]
-    assert stable_s1["model"]["temporal_channel_mixer_router_pooling"] == "local"
-    assert stable_s1["model"]["temporal_channel_mixer_routing_stages"] == [2]
-    assert future["continuation"]["blocked_reason"]
-
-    r0["continuation"].pop("phase1_audit_report")
+    r0["predictive"].pop("phase1_audit_report")
     with pytest.raises(ConfigError, match="must name the completed A1-A4 report"):
+        validate_config(r0)
+
+
+def test_predictive_modules_cannot_train_without_an_objective():
+    s0 = load_config("configs/dvslip_predictive_s0.yaml")
+    s0.pop("predictive")
+    with pytest.raises(ConfigError, match="trained only by a predictive objective"):
+        validate_config(s0)
+    s1 = load_config("configs/dvslip_predictive_s1.yaml")
+    s1["predictive"]["objective"]["weight"] = 0.0
+    s1["predictive"]["objective"].pop("authority")
+    with pytest.raises(ConfigError, match="positive weight or authority"):
+        validate_config(s1)
+    r0 = load_config("configs/dvslip_predictive_r0.yaml")
+    r0["continuation"]["objective"] = {"mode": "none", "weight": 0.0}
+    with pytest.raises(ConfigError, match="belongs to the predictive section"):
         validate_config(r0)
 
 
@@ -107,21 +139,23 @@ def test_phase1_training_authorization_checks_report_and_parent_hash(tmp_path):
             }
         )
     )
-    continuation = {
-        "parent_checkpoint": str(parent),
-        "phase1_audit_report": str(report),
-    }
-    assert validate_predictive_training_authorization(continuation) == report
+    predictive = {"phase1_audit_report": str(report)}
+    continuation = {"parent_checkpoint": str(parent)}
+    assert validate_predictive_training_authorization(predictive, continuation) == report
+    # A from-scratch branch has no parent: the report must still be complete and valid.
+    assert validate_predictive_training_authorization(predictive, None) == report
 
     invalid = json.loads(report.read_text())
     invalid["checkpoints"]["c0"]["sha256"] = "wrong"
     report.write_text(json.dumps(invalid))
     with pytest.raises(ValueError, match="different C0 checkpoints"):
-        validate_predictive_training_authorization(continuation)
+        validate_predictive_training_authorization(predictive, continuation)
 
-    continuation["blocked_reason"] = "requires a different causal target"
+    predictive["blocked_reason"] = "requires a different causal target"
     with pytest.raises(RuntimeError, match="intentionally blocked"):
-        validate_predictive_training_authorization(continuation)
+        validate_predictive_training_authorization(predictive, None)
+    with pytest.raises(ValueError, match="requires a predictive section"):
+        validate_predictive_training_authorization(None, None)
 
 
 def test_dynamic_tcap_starts_as_exact_fixed_tcap_and_is_causal():
@@ -629,3 +663,170 @@ def test_cuda_amp_cross_resolution_objective_at_dvslip_shape():
     assert all(gradient is not None for gradient in predictor_gradients)
     assert all(torch.isfinite(gradient).all() for gradient in predictor_gradients)
     assert sum(float(gradient.abs().sum()) for gradient in predictor_gradients) > 0.0
+
+
+def _tiny_stage2_predictive_model(*, surprise: bool = False) -> MiniQKFormer:
+    return MiniQKFormer(
+        in_channels=2,
+        num_classes=5,
+        embed_dim=32,
+        num_heads=4,
+        frontend="pyramidal",
+        temporal_channel_mixer=True,
+        temporal_channel_mixer_delays=(1, 2),
+        temporal_channel_mixer_predictive_auxiliary=True,
+        temporal_channel_mixer_predictor_channel_groups=1,
+        temporal_channel_mixer_predictor_spatial_kernel_size=3,
+        temporal_channel_mixer_predictive_stages=(2,),
+        temporal_channel_mixer_surprise_routing=surprise,
+        temporal_channel_mixer_router_pooling="local" if surprise else "global",
+        temporal_channel_mixer_routing_stages=(2,) if surprise else (1, 2),
+        temporal_channel_mixer_routing_parameterization=(
+            "amplitude_allocation" if surprise else "independent"
+        ),
+        stage1_mixer="depthwise_conv",
+    )
+
+
+_AUTHORITY_OBJECTIVE = {
+    "mode": "none",
+    "weight": 0.1,
+    "ramp_epochs": 4,
+    "temporal_region_weights": {"active": 1.0, "tail": 0.0},
+    "temporal_stage_weights": {"stage1": 0.0, "stage2": 1.0},
+    "authority": {"target_ratio": 0.25, "max_step_factor": 2.0},
+}
+
+
+def test_fixed_window_prefix_logits_equal_the_full_window_readout_of_the_prefix():
+    torch.manual_seed(21)
+    model = _tiny_model(multigranular=False).eval()
+    frames = torch.rand(2, 6, 2, 32, 32)
+    total = frames.shape[1]
+    with torch.no_grad():
+        spatial = model._encode(frames).mean(dim=(3, 4))
+        for steps in (3, 5):
+            corrected = fixed_window_prefix_logits(model, model(frames[:, :steps]), steps, total)
+            expected = model.head(spatial[:steps].sum(0) / total)
+            torch.testing.assert_close(corrected, expected)
+        full = model(frames)
+        torch.testing.assert_close(fixed_window_prefix_logits(model, full, total, total), full)
+
+
+def test_full_window_prefix_distillation_vanishes_when_student_equals_teacher():
+    torch.manual_seed(22)
+    student = _tiny_model(multigranular=False).eval()
+    teacher = _tiny_model(multigranular=False)
+    teacher.load_state_dict(student.state_dict())
+    teacher.eval().requires_grad_(False)
+    objective = PredictiveTrainingObjective(
+        {
+            "mode": "late_prefix",
+            "weight": 0.1,
+            "prefix_steps": (6,),
+            "prefix_readout": "fixed_window_denominator",
+        },
+        teacher,
+    )
+    result = objective(
+        student, torch.rand(2, 6, 2, 32, 32), torch.tensor([0, 1]), torch.nn.CrossEntropyLoss(), 1
+    )
+    assert float(result.auxiliary_loss) == pytest.approx(0.0, abs=1e-6)
+    assert result.metrics["prefix_kl_6"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_authority_calibration_sets_the_shared_ratio_without_side_effects():
+    torch.manual_seed(23)
+    model = _tiny_stage2_predictive_model()
+    frames = torch.rand(4, 6, 2, 32, 32)
+    targets = torch.tensor([0, 1, 2, 3])
+    objective = PredictiveTrainingObjective(copy.deepcopy(_AUTHORITY_OBJECTIVE))
+    parameters = {name: value.clone() for name, value in model.state_dict().items()}
+    model.train()
+    rng = torch.get_rng_state()
+
+    record = objective.calibrate(
+        model, frames, targets, torch.nn.CrossEntropyLoss(), epoch=0,
+        freeze_batchnorm_statistics=False,
+    )
+
+    assert torch.equal(torch.get_rng_state(), rng)
+    assert all(torch.equal(parameters[name], value) for name, value in model.state_dict().items())
+    assert all(parameter.grad is None for parameter in model.parameters())
+    assert model.training
+    assert record["updated"] and record["unit_ratio"] > 0.0
+    assert record["shared_ratio"] == pytest.approx(0.25, rel=1e-6)
+    assert objective.weight == pytest.approx(0.25 / record["unit_ratio"])
+
+    # After the first calibration the weight moves by at most max_step_factor per epoch.
+    objective.weight *= 10.0
+    bounded = objective.calibrate(
+        model, frames, targets, torch.nn.CrossEntropyLoss(), epoch=2,
+        freeze_batchnorm_statistics=False,
+    )
+    assert bounded["weight"] == pytest.approx(bounded["previous_weight"] / 2.0)
+    # Selection eligibility follows ramp progress, not the calibrated weight.
+    assert [objective.selection_eligible(epoch) for epoch in range(1, 6)] == [
+        False, False, False, True, True,
+    ]
+    restored = PredictiveTrainingObjective(copy.deepcopy(_AUTHORITY_OBJECTIVE))
+    restored.load_state_dict(objective.state_dict())
+    assert restored.weight == objective.weight
+    assert restored.calibrated and len(restored.calibration_history) == 2
+
+
+def test_stage2_predictive_stages_leave_no_untrained_predictor_in_stage1():
+    model = _tiny_stage2_predictive_model(surprise=True)
+    mixers = [module for module in model.modules() if isinstance(module, CausalTemporalChannelMixer)]
+    assert [mixer.predictive_auxiliary for mixer in mixers] == [False, True]
+    assert [mixer.surprise_router is not None for mixer in mixers] == [False, True]
+    # V_delta is still recorded in stage1, which receives the stage2 loss by backpropagation.
+    assert all(mixer.record_temporal_variation for mixer in mixers)
+    with pytest.raises(ValueError, match="predictor in every routed stage"):
+        MiniQKFormer(
+            in_channels=2, num_classes=5, embed_dim=32, num_heads=4, frontend="pyramidal",
+            temporal_channel_mixer=True, temporal_channel_mixer_delays=(1, 2),
+            temporal_channel_mixer_predictive_auxiliary=True,
+            temporal_channel_mixer_predictive_stages=(2,),
+            temporal_channel_mixer_surprise_routing=True,
+            temporal_channel_mixer_routing_stages=(1, 2),
+            stage1_mixer="depthwise_conv",
+        )
+
+
+def test_class_stratified_indices_span_classes_in_sorted_and_nested_datasets():
+    targets = [target for target in range(5) for _ in range(4)]  # class-sorted, like DVS-Lip
+    dataset = TensorDataset(torch.zeros(len(targets), 1), torch.tensor(targets))
+    dataset.targets = targets
+    assert sorted(targets[index] for index in class_stratified_indices(dataset, 3)) == [0, 2, 4]
+    everything = class_stratified_indices(dataset, 7)
+    assert len(set(everything)) == 7
+    assert {targets[index] for index in everything} == set(range(5))
+    subset = DatasetSubset(dataset, list(range(8, 20)))  # classes 2, 3 and 4
+    assert dataset_targets(subset) == targets[8:20]
+    chosen = class_stratified_indices(subset, 3)
+    assert sorted(dataset_targets(subset)[index] for index in chosen) == [2, 3, 4]
+
+
+def test_scratch_branch_reuses_the_c0_topology_initialization_and_data_stream():
+    c0 = load_config("configs/dvslip_f_tcap_stage1_dwc3_d8.yaml")["model"]
+    s1 = load_config("configs/dvslip_predictive_s1.yaml")["model"]
+    assert base_model_config(s1) == c0
+
+    torch.manual_seed(42)
+    reference = build_model(c0, 100)
+    reference_draw = torch.rand(8)
+
+    torch.manual_seed(42)
+    base = build_model(base_model_config(s1), 100)
+    state = capture_random_state()
+    model = build_model(s1, 100)
+    new_names = load_backbone_state(model, base.state_dict())
+    restore_random_state(state)
+
+    assert torch.equal(torch.rand(8), reference_draw)
+    model_state = model.state_dict()
+    assert all(torch.equal(model_state[name], value) for name, value in reference.state_dict().items())
+    assert new_names and all(
+        "surprise_router" in name or ".predictor_" in name for name in new_names
+    )

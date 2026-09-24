@@ -16,6 +16,8 @@ continuation:
   parent_checkpoint: checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt
   freeze_batchnorm_statistics: true
   new_parameter_learning_rate: 0.0001
+
+predictive:
   phase1_audit_report: artifacts/predictive_phase1_audit/phase1_audit.json
   objective:
     mode: none

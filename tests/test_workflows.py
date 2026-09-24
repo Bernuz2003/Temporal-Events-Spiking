@@ -12,6 +12,7 @@ from torch.utils.data import TensorDataset
 from etsr import runner, workflows
 from etsr.config import load_config, save_config
 from etsr.data.common import DatasetBundle
+from etsr.models.factory import build_model
 from etsr.models.temporal import CausalTemporalChannelMixer
 from etsr.training.gates import overfit_gate
 from etsr.utils.io import append_csv
@@ -410,10 +411,7 @@ def test_supervised_refinement_accepts_only_declared_multi_family_combinations(m
         workflows.run_supervised_refinement(config)
 
 
-def test_predictive_continuation_failure_blocks_the_full_run(tmp_path, monkeypatch):
-    config = load_config("configs/dvslip_predictive_r0.yaml")
-    calls = []
-
+def _failing_gate(tmp_path, calls):
     def train(candidate):
         calls.append(copy.deepcopy(candidate))
         directory = tmp_path / "gate"
@@ -424,6 +422,10 @@ def test_predictive_continuation_failure_blocks_the_full_run(tmp_path, monkeypat
             "overfit_gate": {"passed": False},
         }
 
+    return train
+
+
+def _bypass_audit_and_preflight(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "etsr.evaluation.predictive_diagnostic.run_predictive_preflight",
         lambda _config, _output: {"passed": True},
@@ -431,14 +433,39 @@ def test_predictive_continuation_failure_blocks_the_full_run(tmp_path, monkeypat
     monkeypatch.setattr(
         workflows,
         "validate_predictive_training_authorization",
-        lambda _continuation: tmp_path / "audit.json",
+        lambda _predictive, _continuation: tmp_path / "audit.json",
     )
-    monkeypatch.setattr(workflows, "train_experiment", train)
-    with pytest.raises(RuntimeError, match="no continuation training"):
+
+
+def test_predictive_continuation_failure_blocks_the_full_run(tmp_path, monkeypatch):
+    config = load_config("configs/dvslip_predictive_r0.yaml")
+    calls = []
+    _bypass_audit_and_preflight(tmp_path, monkeypatch)
+    monkeypatch.setattr(workflows, "train_experiment", _failing_gate(tmp_path, calls))
+    with pytest.raises(RuntimeError, match="no full training"):
         workflows.run_predictive_continuation(config)
     assert len(calls) == 1
     assert calls[0]["training"]["overfit"]["stop_on_pass"]
     assert calls[0]["training"]["epochs"] == 50
+
+
+def test_predictive_scratch_failure_blocks_the_full_run(tmp_path, monkeypatch):
+    config = load_config("configs/dvslip_predictive_s1.yaml")
+    calls = []
+    _bypass_audit_and_preflight(tmp_path, monkeypatch)
+    monkeypatch.setattr(workflows, "train_experiment", _failing_gate(tmp_path, calls))
+    with pytest.raises(RuntimeError, match="no full training"):
+        workflows.run_predictive_scratch(config)
+    assert len(calls) == 1
+    gate = calls[0]
+    assert gate["training"]["epochs"] == 500
+    assert gate["training"]["recipe_id"] == "dvslip_e0_128_overfit"
+    assert gate["training"]["overfit"] == {
+        "class_count": 16,
+        "samples_per_class": 4,
+        "stop_on_pass": True,
+    }
+    assert "continuation" not in gate
 
 
 def test_predictive_continuation_rejects_recipe_and_representation_drift():
@@ -452,10 +479,35 @@ def test_predictive_continuation_rejects_recipe_and_representation_drift():
     with pytest.raises(ValueError, match="preregistered representation"):
         workflows.run_predictive_continuation(config)
 
-    config = load_config("configs/dvslip_predictive_dynamic_tcap.yaml")
+    config = load_config("configs/dvslip_predictive_late_prefix.yaml")
     config["continuation"]["new_parameter_learning_rate"] = 2e-4
     with pytest.raises(ValueError, match="canonical new_parameter_learning_rate"):
         workflows.run_predictive_continuation(config)
+
+    config = load_config("configs/dvslip_predictive_s0.yaml")
+    with pytest.raises(ValueError, match="continuation and predictive sections"):
+        workflows.run_predictive_continuation(config)
+
+
+def test_predictive_scratch_rejects_recipe_topology_and_regime_drift():
+    config = load_config("configs/dvslip_predictive_s0.yaml")
+    config["training"]["epochs"] = 64
+    with pytest.raises(ValueError, match="frozen C0 training"):
+        workflows.run_predictive_scratch(config)
+
+    config = load_config("configs/dvslip_predictive_dynamic_tcap.yaml")
+    config["model"]["temporal_channel_mixer_delays"] = [1, 2, 4]
+    with pytest.raises(ValueError, match="only registered phase fields"):
+        workflows.run_predictive_scratch(config)
+
+    config = load_config("configs/dvslip_predictive_late_prefix.yaml")
+    with pytest.raises(ValueError, match="must not declare a continuation"):
+        workflows.run_predictive_scratch(config)
+
+    config = load_config("configs/dvslip_predictive_s1.yaml")
+    config["predictive"]["phase1_audit_report"] = "artifacts/other_audit.json"
+    with pytest.raises(ValueError, match="canonical phase-1 audit report"):
+        workflows.run_predictive_scratch(config)
 
 
 def test_direct_training_cannot_bypass_predictive_phase1_gates(tmp_path):
@@ -463,10 +515,88 @@ def test_direct_training_cannot_bypass_predictive_phase1_gates(tmp_path):
     with pytest.raises(RuntimeError, match="intentionally blocked"):
         runner.train_experiment(blocked)
 
-    missing_audit = load_config("configs/dvslip_predictive_r0.yaml")
-    missing_audit["continuation"]["phase1_audit_report"] = str(tmp_path / "missing.json")
-    with pytest.raises(FileNotFoundError, match="has not been produced"):
-        runner.train_experiment(missing_audit)
+    for name in ("r0", "s0", "dynamic_tcap"):
+        missing_audit = load_config(f"configs/dvslip_predictive_{name}.yaml")
+        missing_audit["predictive"]["phase1_audit_report"] = str(tmp_path / "missing.json")
+        with pytest.raises(FileNotFoundError, match="has not been produced"):
+            runner.train_experiment(missing_audit)
+
+
+def _write_phase1_audit(path: Path) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "complete": True,
+                "sections": [
+                    "A1_gradient_authority",
+                    "A2_discriminative_probes",
+                    "A3_representation_movement",
+                    "A4_tail_margin",
+                ],
+                "official_test_used": False,
+                "checkpoints": {"c0": {"sha256": "0" * 64}},
+            }
+        )
+    )
+    return path
+
+
+def test_runner_scratch_branch_calibrates_and_persists_auxiliary_authority(tmp_path, monkeypatch):
+    torch.manual_seed(0)
+    targets = torch.tensor([0, 0, 1, 1])
+    dataset = TensorDataset(torch.rand(4, 6, 2, 32, 32), targets, torch.arange(4))
+    dataset.targets = targets.tolist()
+    bundle = DatasetBundle(dataset, dataset, None, ["a", "b"])
+    monkeypatch.setattr(runner, "build_dataset_bundle", lambda config: bundle)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    config = load_config("configs/dvslip_predictive_s0.yaml")
+    config["predictive"]["phase1_audit_report"] = str(_write_phase1_audit(tmp_path / "audit.json"))
+    config["predictive"]["objective"]["ramp_epochs"] = 2
+    config["experiment"].update(
+        {
+            "artifact_root": str(tmp_path / "artifacts"),
+            "checkpoint_root": str(tmp_path / "checkpoints"),
+        }
+    )
+    config.pop("evaluation")
+    config["dataset"].update({"num_workers": 0, "batch_size": 2})
+    config["training"].update({"epochs": 3, "warmup_epochs": 1})
+    config["training"]["overfit"] = {
+        "class_count": 2,
+        "samples_per_class": 2,
+        "stop_on_pass": False,
+    }
+
+    summary = runner.train_experiment(config)
+
+    predictive = summary["predictive"]
+    assert predictive["regime"] == "from_scratch"
+    assert predictive["backbone_initialization"] == "c0_topology_same_seed"
+    calibration = predictive["authority_calibration"]
+    assert [record["epoch"] for record in calibration] == [0, 2, 3]
+    assert calibration[0]["shared_ratio"] == pytest.approx(0.25, rel=1e-6)
+    assert predictive["final_nominal_weight"] == calibration[-1]["weight"]
+
+    artifact_dir = Path(summary["artifact_dir"])
+    with (artifact_dir / "history.csv").open(newline="") as handle:
+        history = list(csv.DictReader(handle))
+    assert [row["selection_eligible"] for row in history] == ["False", "True", "True"]
+    assert float(history[0]["authority_shared_ratio"]) == pytest.approx(0.25, rel=1e-6)
+    assert all(row["auxiliary_nominal_weight"] for row in history)
+    assert all(row["train_temporal_variation_stage1_active"] for row in history)
+    assert summary["best_epoch"] >= 2
+
+    state = torch.load(summary["last_checkpoint"], map_location="cpu", weights_only=False)
+    assert state["objective_state"]["weight"] == predictive["final_nominal_weight"]
+    deployment = load_config(artifact_dir / "deployment_config_resolved.yaml")
+    assert "predictive" not in deployment and "continuation" not in deployment
+    assert "temporal_channel_mixer_predictive_auxiliary" not in deployment["model"]
+    assert "temporal_channel_mixer_predictive_stages" not in deployment["model"]
+    # The profiler rebuilds the deployed model from these two files: they must match strictly.
+    deployed = torch.load(summary["deployment_checkpoint"], map_location="cpu", weights_only=False)
+    build_model(deployment["model"], 2).load_state_dict(deployed["model"])
 
 
 def test_runner_overfit_early_stops_and_records_actual_subset(tmp_path, monkeypatch):

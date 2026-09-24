@@ -41,13 +41,22 @@ un controllo capace di separarla dalla modifica architetturale.
 
 ## Fase post-freeze
 
-**Eccezione preregistrata 2026-09-19:** prima di riprendere augmentation si applicherà il
-protocollo `dvslip_predictive_continuation_32_v1` definito nella
-[roadmap predittiva](PREDICTIVE_TEMPORAL_ROADMAP.md). È una continuazione di C0 con controllo
-appaiato, BN running fissa e recipe comune, non un nuovo full `dvslip_e0_128`. Il workflow
-`predictive-continuation` applica il preflight causale/gradienti, il gate bounded e il profiling
-del checkpoint deployabile. CE e loss ausiliarie sono registrate separatamente; i pesi allenati
-nel gate non entrano nel run di produzione.
+**Fase predittiva, eccezione registrata 2026-09-19 e rivista 2026-09-24:** prima di riprendere
+augmentation si applica il contratto
+[`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md), con due regimi.
+
+- `predictive-continuation`, recipe `dvslip_predictive_continuation_64`: continuazione di C0 per 64
+  epoche, LR ereditato 1e-5 e nuovi parametri 1e-4 con rapporto costante, BN a statistiche fisse,
+  controllo R0. Gate bounded al massimo di 50 epoche.
+- `predictive-scratch`: la ricetta `dvslip_e0_128` di C0 senza alcuna modifica; cambiano soltanto i
+  campi di modello registrati e la sezione `predictive`. I controlli sono i seed archiviati di C0.
+  Gate bounded come per `candidate`, al massimo di 500 epoche.
+
+Entrambi i workflow richiedono il report dell'audit, eseguono il preflight (inizializzazione,
+causalità a statistiche BN fisse, gradienti dei nuovi moduli, autorità minima dell'obiettivo
+ausiliario), il gate bounded — la cui finestra finale deve essere a peso ausiliario pieno — e il
+profiling del checkpoint deployabile. CE e loss ausiliarie sono registrate separatamente; i pesi
+allenati nel gate non entrano nel run di produzione.
 
 Dopo la conferma multi-seed si crea un nuovo `recipe_id`. Ogni raffinamento viene applicato alla
 sola candidata congelata e confrontato con il run della stessa struttura e dello stesso seed senza

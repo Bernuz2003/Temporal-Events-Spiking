@@ -8,10 +8,13 @@ model:
   predictive_head_spatial_kernel_size: 3
   predictive_head_hidden_channels: 128
 
-continuation:
+predictive:
   blocked_reason: >-
-    This target is available for the R5 feasibility probe and cannot be trained before the
-    alternative-horizon comparison has selected a target.
+    Suspended by the phase-1 audit. The coarse future target is feasible (affine R2 0.249 at
+    h=2, 3.6x the fine target) and h=2 is retained, but its gradient authority and direction
+    were never measured and it acts on stage1, where A2 finds little class information. To
+    reopen: rerun the h=2 probe on the launch commit into normalization_report, and decide in
+    light of the from-scratch S0 result.
   teacher_config: configs/dvslip_f_tcap_stage1_dwc3_d8.yaml
   teacher_checkpoint: checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt
   objective:

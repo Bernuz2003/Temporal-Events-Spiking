@@ -1,27 +1,41 @@
 # Decisioni attive
 
-**Aggiornate:** 2026-09-23
+**Aggiornate:** 2026-09-24
 
 ## Decisioni correnti della fase predittiva
 
-1. F+DWC-3+TCAP-d8 è il riferimento congelato. F+TCAP e MG+TCAP citati sotto sono riferimenti
+1. F+DWC-3+TCAP-d8 è il riferimento congelato (C0). F+TCAP e MG+TCAP citati sotto sono riferimenti
    storici della discovery, non il modello corrente.
-2. Prima della ripresa augmentation prevale
-   [`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). La prima esecuzione
-   non è evidenza sulle ipotesi; i suoi artifact sono conservati sotto `artifacts/superseded/`.
-3. Il confronto è con uguale training aggiuntivo del finalista, non con B. BN running fissa
-   in tutti i bracci; teacher eval. Nuove augmentation escluse da questa fase.
-4. PLIF informa diagnostiche dei prefissi e un fallback di supervisione tardiva. Non si
-   reintroduce il neuron model e non si impone una costante `last_event+K`.
-5. Prima di ogni training vanno completate A1–A4 su C0, R0 e S0. Il prossimo braccio viene scelto
-   dal corredo di evidenza, non da un gate single-seed di +1 pp; la superiorità richiede più seed.
-6. Le correzioni attive sono: ramp escluso dalla selezione, gradienti per blocco/regione,
-   obiettivo S active-dominant, routing solo stage2 con ampiezza separata dall'allocazione softmax,
-   surprise locale e rapporto costante fra learning rate discriminativi.
-7. Si promuove un solo vincitore confermato, poi si riprendono le augmentation sulla candidata.
+2. Prevale [`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). La prima
+   esecuzione non è evidenza sulle ipotesi; i suoi artifact sono conservati sotto
+   `artifacts/superseded/`. L'audit A1–A4 e i probe R5 sono completi; l'esito è nella sua sezione 12.
+3. **Regime per meccanismo.** L15 è una continuazione da C0, con BN a statistiche fisse, teacher in
+   eval e controllo R0. D, S0 e S1 si addestrano **da zero** con la ricetta congelata di C0: in
+   continuazione la rappresentazione non si muove (A3), e un router inserito a identità parte da un
+   punto stazionario. I controlli dei bracci da zero sono i seed archiviati di C0 (42/43/44).
+4. **Nessuna riproduzione di C0.** Il checkpoint congelato resta la base di confronto. L'equivalenza
+   della ricetta è coperta da un test: lo scheduler corrente riproduce esattamente quello di C0 in
+   tutte le 128 epoche. I bracci da zero partono dall'inizializzazione del backbone e dal flusso di
+   dati della topologia C0 allo stesso seed.
+5. **Nessun tetto in GPU-ore.** La disciplina sta nel disegno: ogni braccio risponde a una domanda,
+   ha il proprio controllo, gira da solo sulla propria GPU. L'unità statistica di un'affermazione di
+   superiorità è il seed, non l'epoca: seed 42 per primo, 43 e 44 per i bracci con firma coerente.
+6. Nessun gate di +1 pp su seed singolo. Ogni decisione legge insieme il corredo di evidenza della
+   sezione 9 dell'audit e viene registrata qui con il ragionamento.
+7. **Verdetti.** P-F e P-0 chiusi (target fine non predicibile a nessun orizzonte). P-C sospeso.
+   L15, D, S0 e S1 da eseguire nella forma corretta. Una sola fusione, strutturata
+   (sorpresa → ampiezza, contenuto → allocazione), solo dopo due componenti positivi.
+8. **Correzioni attive.** Ramp escluso dalla selezione e dalla finestra del gate di overfit;
+   gradienti per blocco e regione su supporto identico; batch diagnostici stratificati per classe;
+   autorità ausiliaria calibrata e rimisurata ogni epoca, con minimo verificato dal preflight;
+   obiettivo S solo stage2 e solo regione attiva; routing solo stage2 con ampiezza separata
+   dall'allocazione; sorpresa locale; rapporto costante fra learning rate discriminativi; L15 al
+   solo prefisso di 1,5 s letto su denominatore fisso; gate dell'audit su ogni ingresso di training.
+9. Si promuove un solo vincitore confermato, poi si riprendono le augmentation sulla candidata.
    B non riceve screen duplicati. I negativi validi restano parte dell'evidenza.
-8. Official test escluso. Profiling dal proprio best; nessun risparmio attribuito automaticamente
-   a gate soft. La disponibilità del teacher limita cosa può essere trasferito fra dataset.
+10. Official test escluso. Profiling dal checkpoint deployabile del proprio best; nessun risparmio
+    attribuito automaticamente a gate soft. La disponibilità del teacher limita cosa può essere
+    trasferito fra dataset.
 
 ## Decisioni della discovery al 13 settembre — contesto storico
 

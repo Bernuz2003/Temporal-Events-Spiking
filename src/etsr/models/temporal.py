@@ -159,6 +159,7 @@ class CausalTemporalChannelMixer(nn.Module):
         self.router_pooling = router_pooling
         self.router_hidden_divisor = router_hidden_divisor
         self.predictive_auxiliary = predictive_auxiliary
+        self.record_temporal_variation = predictive_auxiliary
         self.predictor_channel_groups = predictor_channel_groups
         self.predictor_spatial_kernel_size = predictor_spatial_kernel_size
         self.surprise_routing = surprise_routing
@@ -453,7 +454,7 @@ class CausalTemporalChannelMixer(nn.Module):
             raise ValueError(f"Temporal mixer state must have shape {expected}.")
         if state.dtype != sequence.dtype or state.device != sequence.device:
             raise ValueError("Temporal mixer state must match sequence dtype and device.")
-        if self.predictive_auxiliary:
+        if self.record_temporal_variation:
             self._record_temporal_variation(sequence)
         else:
             self.last_temporal_variation = None

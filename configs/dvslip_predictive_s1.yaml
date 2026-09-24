@@ -3,6 +3,8 @@ extends: dvslip_predictive_s0.yaml
 experiment:
   name: dvslip_predictive_s1
 
+# S1 = S0 plus local surprise routing in stage2. Same predictor, loss and authority as S0, so
+# the comparison with S0 isolates the value of the prediction error for memory control.
 model:
   temporal_channel_mixer_surprise_routing: true
   temporal_channel_mixer_router_pooling: local

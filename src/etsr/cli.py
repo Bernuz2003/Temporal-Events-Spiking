@@ -28,6 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a gated predictive/conditional continuation and profile its best checkpoint",
     )
     predictive.add_argument("--config", required=True)
+    predictive_scratch = subparsers.add_parser(
+        "predictive-scratch",
+        help="Run a gated from-scratch predictive/conditional branch with the frozen C0 recipe",
+    )
+    predictive_scratch.add_argument("--config", required=True)
     predictive_probe = subparsers.add_parser(
         "predictive-probe",
         help="Fit the train-only cross-resolution linear probe and evaluate validation predictability",
@@ -42,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     predictive_probe.add_argument("--horizon", type=int)
     predictive_check = subparsers.add_parser(
         "predictive-check",
-        help="Verify parent equivalence, causal prefixes and new-module gradients",
+        help="Verify initialization, causality, new-module gradients and auxiliary authority",
     )
     predictive_check.add_argument("--config", required=True)
     predictive_check.add_argument("--output", required=True)
@@ -262,18 +267,23 @@ def main() -> None:
         from etsr.workflows import run_predictive_continuation
 
         print(run_predictive_continuation(load_config(args.config)))
+    elif args.command == "predictive-scratch":
+        from etsr.config import load_config
+        from etsr.workflows import run_predictive_scratch
+
+        print(run_predictive_scratch(load_config(args.config)))
     elif args.command == "predictive-probe":
         from etsr.config import load_config
         from etsr.evaluation.predictive_diagnostic import run_cross_resolution_probe
 
         config = load_config(args.config)
         if args.mode is not None:
-            config["continuation"]["objective"]["mode"] = args.mode
+            config["predictive"]["objective"]["mode"] = args.mode
         if args.horizon is not None:
             if args.horizon <= 0:
                 raise ValueError("--horizon must be positive")
-            config["continuation"]["objective"]["horizon_steps"] = args.horizon
-            config["continuation"]["objective"]["alignment_horizon_steps"] = args.horizon
+            config["predictive"]["objective"]["horizon_steps"] = args.horizon
+            config["predictive"]["objective"]["alignment_horizon_steps"] = args.horizon
         print(
             run_cross_resolution_probe(
                 config,

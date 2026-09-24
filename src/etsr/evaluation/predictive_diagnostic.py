@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 from pathlib import Path
 from typing import Any
 
@@ -17,11 +18,15 @@ from etsr.models.mini_qkformer import MiniQKFormer
 from etsr.models.temporal import CausalTemporalChannelMixer
 from etsr.reproducibility import git_commit, seed_everything
 from etsr.training.checkpointing import load_model_state
-from etsr.training.engine import evaluate, make_criterion, objective_gradient_diagnostics
+from etsr.training.engine import evaluate, make_criterion
+from etsr.training.gradient_diagnostics import objective_gradient_diagnostics
 from etsr.training.predictive import (
     PredictiveTrainingObjective,
+    base_model_config,
+    diagnostic_batch,
     freeze_batchnorm_running_statistics,
     last_occupied_steps,
+    load_backbone_state,
 )
 from etsr.utils.io import ensure_dir, sha256_file, write_json
 
@@ -173,9 +178,10 @@ def run_cross_resolution_probe(
     """Fit a train-only linear probe and evaluate it on development validation."""
 
     continuation = config.get("continuation")
-    if not isinstance(continuation, dict):
-        raise ValueError("Predictive probe requires a continuation configuration.")
-    objective = continuation["objective"]
+    predictive = config.get("predictive")
+    if not isinstance(continuation, dict) or not isinstance(predictive, dict):
+        raise ValueError("Predictive probe requires continuation and predictive sections.")
+    objective = predictive["objective"]
     mode = str(objective["mode"])
     if mode not in {"fine_future", "fine_same", "coarse_future"}:
         raise ValueError("Probe supports fine_future, fine_same or coarse_future configurations.")
@@ -190,9 +196,9 @@ def run_cross_resolution_probe(
     parent_config = load_config(continuation["parent_config"])
     student = build_model(parent_config["model"], len(bundle.classes)).to(device)
     load_model_state(continuation["parent_checkpoint"], student, device)
-    teacher_config = load_config(continuation["teacher_config"])
+    teacher_config = load_config(predictive["teacher_config"])
     teacher = build_model(teacher_config["model"], len(bundle.classes)).to(device)
-    load_model_state(continuation["teacher_checkpoint"], teacher, device)
+    load_model_state(predictive["teacher_checkpoint"], teacher, device)
     student.eval().requires_grad_(False)
     teacher.eval().requires_grad_(False)
     fit_dataset, holdout_dataset = _diagnostic_split(
@@ -279,11 +285,11 @@ def run_cross_resolution_probe(
         },
         "representation": copy.deepcopy(config["representation"]),
         "student_config": str(Path(continuation["parent_config"]).resolve()),
-        "teacher_config": str(Path(continuation["teacher_config"]).resolve()),
+        "teacher_config": str(Path(predictive["teacher_config"]).resolve()),
         "student_checkpoint": str(Path(continuation["parent_checkpoint"]).resolve()),
         "student_checkpoint_sha256": sha256_file(continuation["parent_checkpoint"]),
-        "teacher_checkpoint": str(Path(continuation["teacher_checkpoint"]).resolve()),
-        "teacher_checkpoint_sha256": sha256_file(continuation["teacher_checkpoint"]),
+        "teacher_checkpoint": str(Path(predictive["teacher_checkpoint"]).resolve()),
+        "teacher_checkpoint_sha256": sha256_file(predictive["teacher_checkpoint"]),
         "official_test_used": False,
         "interpretation_limit": (
             "The persistence baseline sees the teacher target at the current step and is a "
@@ -296,6 +302,17 @@ def run_cross_resolution_probe(
     return report
 
 
+PREFLIGHT_SCRATCH_WARMUP_STEPS = 2
+_NEW_MODULE_FAMILIES = (
+    "predictive_head",
+    "content_router",
+    "predictor_logits",
+    "predictor_spatial",
+    "predictor_projections",
+    "surprise_router",
+)
+
+
 def _load_continuation_model(
     config: dict[str, Any], num_classes: int, device: torch.device
 ) -> tuple[MiniQKFormer, dict[str, Any]]:
@@ -305,68 +322,48 @@ def _load_continuation_model(
         map_location=device,
         weights_only=False,
     )
-    incompatible = model.load_state_dict(checkpoint["model"], strict=False)
-    allowed = (
-        "predictive_head.",
-        ".content_router.",
-        ".predictor_logits",
-        ".predictor_spatial.",
-        ".predictor_projections.",
-        ".surprise_router",
-    )
-    invalid = [key for key in incompatible.missing_keys if not any(item in key for item in allowed)]
-    if invalid or incompatible.unexpected_keys:
-        raise ValueError(
-            f"Continuation topology mismatch: missing={invalid}, "
-            f"unexpected={incompatible.unexpected_keys}"
-        )
+    load_backbone_state(model, checkpoint["model"])
     return model, checkpoint
 
 
-def run_predictive_preflight(
-    config: dict[str, Any], output_path: str | Path
-) -> dict[str, Any]:
-    """Check parent equivalence, causal prefixes and gradients on one validation batch."""
+def _build_scratch_model(
+    config: dict[str, Any], num_classes: int, device: torch.device
+) -> tuple[MiniQKFormer, bool]:
+    """Build a from-scratch branch as the runner does and verify its backbone initialization."""
 
-    continuation = config.get("continuation")
-    if not isinstance(continuation, dict):
-        raise ValueError("Predictive preflight requires a continuation configuration.")
-    seed_everything(int(config["experiment"]["seed"]), True)
-    no_aug = copy.deepcopy(config)
-    no_aug["augmentation"] = {"horizontal_flip_probability": 0.0}
-    bundle = build_dataset_bundle(no_aug)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    candidate, parent_checkpoint = _load_continuation_model(config, len(bundle.classes), device)
-    parent_config = load_config(continuation["parent_config"])
-    parent = build_model(parent_config["model"], len(bundle.classes)).to(device)
-    load_model_state(continuation["parent_checkpoint"], parent, device)
+    base = build_model(base_model_config(config["model"]), num_classes)
+    model = build_model(config["model"], num_classes)
+    load_backbone_state(model, base.state_dict())
+    state = model.state_dict()
+    matches = all(torch.equal(state[name], value) for name, value in base.state_dict().items())
+    return model.to(device), matches
 
-    teacher = None
-    if str(continuation["objective"].get("mode", "none")) != "none":
-        teacher_config = load_config(continuation["teacher_config"])
-        teacher = build_model(teacher_config["model"], len(bundle.classes)).to(device)
-        load_model_state(continuation["teacher_checkpoint"], teacher, device)
-        teacher.eval().requires_grad_(False)
-    objective = PredictiveTrainingObjective(
-        continuation["objective"],
-        teacher,
-        {**continuation, "representation": config["representation"]},
+
+def _gradient_family_norms(model: torch.nn.Module) -> tuple[dict[str, float | None], dict[str, float], bool]:
+    gradient_norms = {
+        name: (float(parameter.grad.norm().item()) if parameter.grad is not None else None)
+        for name, parameter in model.named_parameters()
+        if any(token in name for token in _NEW_MODULE_FAMILIES)
+    }
+    finite = all(
+        parameter.grad is not None and bool(torch.isfinite(parameter.grad).all().item())
+        for name, parameter in model.named_parameters()
+        if any(token in name for token in _NEW_MODULE_FAMILIES)
     )
-    loader = build_loader(bundle.train, no_aug["dataset"], shuffle=False)
-    frames, targets, _indices = next(iter(loader))
-    frames = move_encoded_input(frames, device)
-    targets = targets.to(device)
+    family_norms: dict[str, float] = {}
+    for token in _NEW_MODULE_FAMILIES:
+        if not any(token in name for name, _parameter in model.named_parameters()):
+            continue
+        squared = sum(
+            float(parameter.grad.double().square().sum().item())
+            for name, parameter in model.named_parameters()
+            if token in name and parameter.grad is not None
+        )
+        family_norms[token] = squared**0.5
+    return gradient_norms, family_norms, finite
 
-    parent.eval()
-    candidate.eval()
-    with torch.no_grad():
-        parent_logits = parent(frames)
-        candidate_logits = candidate(frames)
-    initial_difference = float((candidate_logits - parent_logits).abs().max().item())
 
-    candidate.train()
-    freeze_batchnorm_running_statistics(candidate)
-    cutoff = max(1, candidate.extract_stage1(frames).shape[0] // 2)
+def _perturb_future(frames, cutoff: int):
     if isinstance(frames, dict):
         altered = {name: value.clone() for name, value in frames.items()}
         coarse_steps = altered["coarse"].shape[1]
@@ -375,128 +372,224 @@ def run_predictive_preflight(
         altered["fine"][:, cutoff * ratio :] = torch.randn_like(
             altered["fine"][:, cutoff * ratio :]
         )
-    else:
-        altered = frames.clone()
-        altered[:, cutoff:] = torch.randn_like(altered[:, cutoff:])
-    with torch.no_grad():
-        prefix = candidate.extract_stage1(frames)[:cutoff]
-        altered_prefix = candidate.extract_stage1(altered)[:cutoff]
-        encoded = candidate.encode_from_stage1(candidate.extract_stage1(frames))[:cutoff]
-        altered_encoded = candidate.encode_from_stage1(
-            candidate.extract_stage1(altered)
-        )[:cutoff]
-    stage1_causal_difference = float((prefix - altered_prefix).abs().max().item())
-    encoded_causal_difference = float((encoded - altered_encoded).abs().max().item())
+        return altered
+    altered = frames.clone()
+    altered[:, cutoff:] = torch.randn_like(altered[:, cutoff:])
+    return altered
 
-    candidate.zero_grad(set_to_none=True)
-    result = objective(
+
+def _prefix_differences(model, frames, altered, cutoff: int) -> tuple[float, float]:
+    with torch.no_grad():
+        stage1 = model.extract_stage1(frames)
+        altered_stage1 = model.extract_stage1(altered)
+        encoded = model.encode_from_stage1(stage1)[:cutoff]
+        altered_encoded = model.encode_from_stage1(altered_stage1)[:cutoff]
+    return (
+        float((stage1[:cutoff] - altered_stage1[:cutoff]).abs().max().item()),
+        float((encoded - altered_encoded).abs().max().item()),
+    )
+
+
+def run_predictive_preflight(
+    config: dict[str, Any], output_path: str | Path
+) -> dict[str, Any]:
+    """Check initialization, causality and gradient authority on a class-stratified train batch.
+
+    Continuations must reproduce their parent exactly. From-scratch branches must start from the
+    C0-topology initialization at the same seed; because TCAP matrices start at zero, routers
+    receive gradient only after the matrices move, so new-module gradients are checked after a
+    short warm-up on a copy of the model. Auxiliary authority is measured after the same
+    calibration the training run applies, and must reach the objective's declared minimum.
+    """
+
+    predictive = config.get("predictive")
+    if not isinstance(predictive, dict):
+        raise ValueError("Predictive preflight requires a predictive section.")
+    continuation = config.get("continuation")
+    regime = "continuation" if continuation is not None else "from_scratch"
+    seed_everything(int(config["experiment"]["seed"]), True)
+    no_aug = copy.deepcopy(config)
+    no_aug["augmentation"] = {"horizontal_flip_probability": 0.0}
+    bundle = build_dataset_bundle(no_aug)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    num_classes = len(bundle.classes)
+    parent = None
+    parent_checkpoint = None
+    backbone_matches = None
+    if continuation is not None:
+        candidate, parent_checkpoint = _load_continuation_model(config, num_classes, device)
+        parent_config = load_config(continuation["parent_config"])
+        parent = build_model(parent_config["model"], num_classes).to(device)
+        load_model_state(continuation["parent_checkpoint"], parent, device)
+    else:
+        candidate, backbone_matches = _build_scratch_model(config, num_classes, device)
+
+    objective_config = predictive["objective"]
+    teacher = None
+    if str(objective_config.get("mode", "none")) != "none":
+        teacher_config = load_config(predictive["teacher_config"])
+        teacher = build_model(teacher_config["model"], num_classes).to(device)
+        load_model_state(predictive["teacher_checkpoint"], teacher, device)
+        teacher.eval().requires_grad_(False)
+    objective = PredictiveTrainingObjective(
+        objective_config,
+        teacher,
+        {**predictive, **(continuation or {}), "representation": config["representation"]},
+    )
+    frames, targets = diagnostic_batch(bundle.train, no_aug["dataset"], device)
+    freeze = continuation is not None
+    criterion = make_criterion(config["training"])
+
+    initial_difference = None
+    if parent is not None:
+        parent.eval()
+        candidate.eval()
+        with torch.no_grad():
+            initial_difference = float((candidate(frames) - parent(frames)).abs().max().item())
+    initialization_passed = (
+        initial_difference is not None and initial_difference <= 1e-6
+        if continuation is not None
+        else bool(backbone_matches)
+    )
+
+    # Architectural causality is checked with BatchNorm on fixed running statistics: that is the
+    # deployed computation, and the only one in which a prefix can be independent of its future.
+    candidate.train()
+    freeze_batchnorm_running_statistics(candidate)
+    cutoff = max(1, candidate.extract_stage1(frames).shape[0] // 2)
+    altered = _perturb_future(frames, cutoff)
+    stage1_causal_difference, encoded_causal_difference = _prefix_differences(
+        candidate, frames, altered, cutoff
+    )
+    # From scratch, training-mode BatchNorm pools statistics over time and batch, so a prefix
+    # depends on future steps through per-channel batch moments. Frozen C0 was trained the same
+    # way; the dependence is measured and declared, not gated.
+    training_batchnorm_difference = None
+    if not freeze:
+        candidate.train()
+        training_batchnorm_difference = max(
+            _prefix_differences(candidate, frames, altered, cutoff)
+        )
+
+    calibration = objective.calibrate(
         candidate,
         frames,
         targets,
-        torch.nn.CrossEntropyLoss(label_smoothing=0.1),
-        epoch=max(1, int(continuation["objective"].get("ramp_epochs", 0))),
+        criterion,
+        epoch=0,
+        freeze_batchnorm_statistics=freeze,
     )
-    objective_declared = (
-        objective.mode != "none"
-        or bool(config["model"].get("temporal_channel_mixer_predictive_auxiliary", False))
-        or objective.weight > 0.0
-    )
+    full_weight_epoch = max(1, objective.ramp_epochs)
+    candidate.zero_grad(set_to_none=True)
+    candidate.train()
+    if freeze:
+        freeze_batchnorm_running_statistics(candidate)
+    result = objective(candidate, frames, targets, criterion, epoch=full_weight_epoch)
     gradient_authority: dict[str, dict[str, float]] = {}
     for region, component in result.auxiliary_components.items():
         if component.requires_grad:
             gradient_authority[region] = objective_gradient_diagnostics(
-                candidate,
-                result.classification_loss,
-                component,
-                objective.weight,
+                candidate, result.classification_loss, component, objective.weight
             )
-    shared_blocks = (
-        "stage1_shared",
-        "tcap1_weights",
-        "stage2_shared",
-        "tcap2_weights",
-        "head",
-    )
-    measured_regions = {
-        region: any(
-            values.get(f"gradient_{block}_weighted_auxiliary_norm", 0.0) > 1e-12
-            for block in shared_blocks
+    total_authority = (
+        objective_gradient_diagnostics(
+            candidate, result.classification_loss, result.auxiliary_loss, objective.weight
         )
-        for region, values in gradient_authority.items()
-    }
-    shared_gradient_authority_passed = (
-        not objective_declared
-        or (bool(measured_regions) and all(measured_regions.values()))
+        if objective.auxiliary_declared and result.auxiliary_loss.requires_grad
+        else None
+    )
+    shared_ratio = total_authority["gradient_shared_ratio"] if total_authority else None
+    shared_gradient_authority_passed = not objective.auxiliary_declared or (
+        shared_ratio is not None
+        and math.isfinite(shared_ratio)
+        and shared_ratio >= objective.minimum_shared_gradient_ratio
     )
 
     result.total_loss.backward()
-    diagnostic_tokens = (
-        "predictive_head",
-        "content_router",
-        "predictor_logits",
-        "predictor_spatial",
-        "predictor_projections",
-        "surprise_router",
-    )
-    gradient_norms = {
-        name: (float(parameter.grad.norm().item()) if parameter.grad is not None else None)
-        for name, parameter in candidate.named_parameters()
-        if any(token in name for token in diagnostic_tokens)
-    }
-    finite_gradients = all(
-        value is not None and torch.isfinite(parameter.grad).all().item()
-        for name, parameter in candidate.named_parameters()
-        if any(token in name for token in diagnostic_tokens)
-        for value in [gradient_norms[name]]
-    )
-    gradient_family_norms = {}
-    for token in diagnostic_tokens:
-        squared_norm = sum(
-            float(parameter.grad.double().square().sum().item())
-            for name, parameter in candidate.named_parameters()
-            if token in name and parameter.grad is not None
+    _norms_init, families_at_initialization, _finite_init = _gradient_family_norms(candidate)
+    gradient_model: torch.nn.Module = candidate
+    if continuation is None:
+        # Mixers cache the last forward's graph-attached tensors; they are not deep-copyable.
+        for module in candidate.modules():
+            if isinstance(module, CausalTemporalChannelMixer):
+                module._clear_prediction_diagnostics()
+                module.last_routing_statistics = None
+                module.last_temporal_variation = None
+        gradient_model = copy.deepcopy(candidate)
+        gradient_model.train()
+        warmup_optimizer = torch.optim.AdamW(
+            [parameter for parameter in gradient_model.parameters() if parameter.requires_grad],
+            lr=1e-3,
         )
-        if any(token in name for name, _parameter in candidate.named_parameters()):
-            gradient_family_norms[token] = squared_norm**0.5
-    new_parameter_families_expected = bool(gradient_family_norms)
-    nonzero_gradients = (
-        all(value > 1e-12 for value in gradient_family_norms.values())
-        if new_parameter_families_expected
-        else True
-    )
+        for _step in range(PREFLIGHT_SCRATCH_WARMUP_STEPS):
+            warmup_optimizer.zero_grad(set_to_none=True)
+            objective(gradient_model, frames, targets, criterion, epoch=full_weight_epoch).total_loss.backward()
+            warmup_optimizer.step()
+        warmup_optimizer.zero_grad(set_to_none=True)
+        objective(gradient_model, frames, targets, criterion, epoch=full_weight_epoch).total_loss.backward()
+    gradient_norms, gradient_family_norms, finite_gradients = _gradient_family_norms(gradient_model)
+    nonzero_gradients = all(value > 1e-12 for value in gradient_family_norms.values())
     teacher_gradients_absent = teacher is None or all(
         parameter.grad is None for parameter in teacher.parameters()
     )
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "experiment": config["experiment"]["name"],
-        "parent_checkpoint": str(Path(continuation["parent_checkpoint"]).resolve()),
-        "parent_checkpoint_sha256": sha256_file(continuation["parent_checkpoint"]),
-        "parent_epoch": int(parent_checkpoint["epoch"]),
+        "regime": regime,
+        "parent_checkpoint": (
+            str(Path(continuation["parent_checkpoint"]).resolve()) if continuation else None
+        ),
+        "parent_checkpoint_sha256": (
+            sha256_file(continuation["parent_checkpoint"]) if continuation else None
+        ),
+        "parent_epoch": int(parent_checkpoint["epoch"]) if parent_checkpoint else None,
         "initial_logits_max_abs_difference": initial_difference,
-        "initial_function_preserved": initial_difference <= 1e-6,
+        "backbone_matches_c0_topology_initialization": backbone_matches,
+        "initialization_passed": initialization_passed,
+        "diagnostic_batch_samples": int(targets.numel()),
+        "diagnostic_batch_classes": len(set(targets.tolist())),
         "stage1_causal_prefix_max_abs_difference": stage1_causal_difference,
         "encoded_causal_prefix_max_abs_difference": encoded_causal_difference,
         "causal_prefix_passed": max(
             stage1_causal_difference, encoded_causal_difference
         ) <= 1e-6,
+        "causal_prefix_batchnorm": "fixed_running_statistics",
+        "training_batchnorm_prefix_max_abs_difference": training_batchnorm_difference,
+        "training_batchnorm_note": (
+            None
+            if freeze
+            else "Training-mode BatchNorm pools per-channel moments over time and batch; the "
+            "deployed model uses running statistics and is causal. Shared with frozen C0."
+        ),
         "total_loss_finite": bool(torch.isfinite(result.total_loss).item()),
         "objective_metrics": result.metrics,
-        "objective_declared": objective_declared,
+        "objective_declared": objective.auxiliary_declared,
+        "auxiliary_nominal_weight": objective.weight,
+        "authority_calibration": calibration,
+        "minimum_shared_gradient_ratio": objective.minimum_shared_gradient_ratio,
+        "shared_gradient_ratio": shared_ratio,
+        "shared_gradient_cosine": (
+            total_authority["gradient_shared_cosine"] if total_authority else None
+        ),
+        "shared_gradient_authority_total": total_authority,
         "shared_gradient_authority_by_region": gradient_authority,
-        "shared_gradient_regions_measured": measured_regions,
         "shared_gradient_authority_passed": shared_gradient_authority_passed,
+        "new_parameter_gradient_measurement": (
+            "at_parent" if continuation is not None
+            else f"after_{PREFLIGHT_SCRATCH_WARMUP_STEPS}_warmup_steps"
+        ),
+        "new_parameter_gradient_family_norms_at_initialization": families_at_initialization,
         "new_parameter_gradient_norms": gradient_norms,
         "new_parameter_gradient_family_norms": gradient_family_norms,
         "new_parameter_gradients_finite": finite_gradients,
         "new_parameter_gradient_families_nonzero": nonzero_gradients,
         "teacher_gradients_absent": teacher_gradients_absent,
-        "batchnorm_running_statistics": "fixed",
+        "batchnorm_running_statistics": "fixed" if freeze else "training",
         "official_test_used": False,
     }
     report["passed"] = all(
         (
-            report["initial_function_preserved"],
+            report["initialization_passed"],
             report["causal_prefix_passed"],
             report["total_loss_finite"],
             report["new_parameter_gradients_finite"],

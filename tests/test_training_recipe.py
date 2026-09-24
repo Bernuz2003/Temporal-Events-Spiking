@@ -4,6 +4,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 from etsr.cli import build_parser
+from etsr.config import load_config
 from etsr.data.common import DatasetBundle, balanced_overfit_bundle
 from etsr.runner import _checkpoint_evaluation_contract, _readout_metadata
 from etsr.training.checkpointing import load_training_state, save_training_state
@@ -14,6 +15,8 @@ from etsr.training.engine import (
     make_scheduler,
     train_one_epoch,
 )
+from etsr.training.gates import overfit_gate
+from etsr.training.gradient_diagnostics import objective_gradient_diagnostics
 
 
 class _DisabledScaler:
@@ -504,3 +507,85 @@ def test_last_checkpoint_restores_complete_epoch_boundary_state(tmp_path):
     assert torch.equal(torch.rand(()), expected_random_value)
     for name, value in model.state_dict().items():
         assert torch.equal(value, original[name])
+
+
+def test_scheduler_reproduces_the_legacy_schedule_of_frozen_c0():
+    """Frozen C0 was trained with LinearLR followed by CosineAnnealingLR. For one parameter group
+    the per-group LambdaLR must give the same rate at every epoch, so the archived C0 seeds stay
+    valid controls for branches trained from scratch with the current code."""
+
+    recipe = load_config("configs/dvslip_f_tcap_stage1_dwc3_d8.yaml")["training"]
+
+    def legacy(optimizer):
+        warmup = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=recipe["warmup_start_factor"],
+            end_factor=1.0,
+            total_iters=recipe["warmup_epochs"],
+        )
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=recipe["epochs"] - recipe["warmup_epochs"],
+            eta_min=recipe["min_learning_rate"],
+        )
+        return torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[warmup, cosine], milestones=[recipe["warmup_epochs"]]
+        )
+
+    rates = {}
+    for label in ("legacy", "current"):
+        parameter = nn.Parameter(torch.ones(()))
+        optimizer = torch.optim.AdamW([parameter], lr=recipe["learning_rate"])
+        scheduler = legacy(optimizer) if label == "legacy" else make_scheduler(optimizer, recipe)
+        series = []
+        for _epoch in range(recipe["epochs"]):
+            series.append(optimizer.param_groups[0]["lr"])
+            optimizer.step()
+            scheduler.step()
+        rates[label] = series
+    assert len(rates["current"]) == 128
+    assert rates["current"] == pytest.approx(rates["legacy"], rel=1e-9, abs=1e-15)
+
+
+def test_overfit_gate_requires_the_passing_window_at_full_auxiliary_weight():
+    row = {
+        "train_loss": 1.0,
+        "validation_loss": 1.0,
+        "validation_accuracy": 1.0,
+        "gradient_norm_mean": 1.0,
+        "gradient_nonfinite_fraction": 0.0,
+        "amp_overflow_fraction": 0.0,
+    }
+    # Epochs 1-3 are still inside the auxiliary ramp; the last five of seven include epoch 3.
+    rows = [dict(row, selection_eligible=epoch >= 4) for epoch in range(1, 8)]
+    assert not overfit_gate(rows)["passed"]
+    rows.append(dict(row, selection_eligible=True))
+    assert overfit_gate(rows)["passed"]
+    # Rows read back from history.csv carry the flag as text.
+    assert overfit_gate([dict(item, selection_eligible=str(item["selection_eligible"])) for item in rows])["passed"]
+    rows[-1]["selection_eligible"] = "False"
+    assert not overfit_gate(rows)["passed"]
+
+
+def test_shared_gradient_authority_pools_backbone_blocks_and_excludes_the_head():
+    model = nn.Module()
+    model.patch_embed1 = nn.Linear(2, 2, bias=False)
+    model.head = nn.Linear(2, 1, bias=False)
+    inputs = torch.tensor([[1.0, 2.0], [2.0, -1.0]])
+    hidden = model.patch_embed1(inputs)
+    classification = model.head(hidden).square().mean()
+    auxiliary = (hidden - 1.0).square().mean()
+
+    metrics = objective_gradient_diagnostics(model, classification, auxiliary, 0.5)
+
+    assert metrics["gradient_head_weighted_auxiliary_norm"] == 0.0
+    assert metrics["gradient_shared_classification_norm"] == pytest.approx(
+        metrics["gradient_stage1_shared_classification_norm"]
+    )
+    assert metrics["gradient_shared_unit_ratio"] == pytest.approx(
+        metrics["gradient_shared_auxiliary_norm"] / metrics["gradient_shared_classification_norm"]
+    )
+    assert metrics["gradient_shared_ratio"] == pytest.approx(
+        0.5 * metrics["gradient_shared_unit_ratio"]
+    )
+    assert -1.0 <= metrics["gradient_shared_cosine"] <= 1.0

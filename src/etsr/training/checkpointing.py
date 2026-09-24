@@ -86,6 +86,7 @@ def save_training_state(
     run_id: str,
     artifact_dir: Path,
     peak_cuda_memory_bytes: int,
+    objective_state: dict[str, Any] | None = None,
 ) -> None:
     """Atomically save the epoch-boundary state needed to resume the same run."""
 
@@ -112,6 +113,7 @@ def save_training_state(
             "run_id": run_id,
             "artifact_dir": str(artifact_dir.resolve()),
             "peak_cuda_memory_bytes": peak_cuda_memory_bytes,
+            "objective_state": objective_state,
         },
         path,
     )

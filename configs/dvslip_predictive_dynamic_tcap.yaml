@@ -1,11 +1,21 @@
-extends: dvslip_predictive_continuation_base.yaml
+extends: dvslip_f_tcap_stage1_dwc3_d8.yaml
 
 experiment:
   name: dvslip_predictive_dynamic_tcap
 
+# D, trained from scratch with the frozen C0 recipe: content-dependent routing only in stage2
+# (stage1 is almost single-delay), with memory amplitude separated from delay allocation.
+# Frozen C0 is the retrained fixed-TCAP ablation of this branch.
 model:
   temporal_channel_mixer_dynamic_routing: true
   temporal_channel_mixer_router_pooling: local
   temporal_channel_mixer_router_hidden_divisor: 2
   temporal_channel_mixer_routing_stages: [2]
   temporal_channel_mixer_routing_parameterization: amplitude_allocation
+
+predictive:
+  phase1_audit_report: artifacts/predictive_phase1_audit/phase1_audit.json
+  objective:
+    mode: none
+    weight: 0.0
+    ramp_epochs: 0

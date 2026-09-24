@@ -21,9 +21,11 @@ from etsr.models.mini_qkformer import MiniQKFormer
 from etsr.models.temporal import CausalTemporalChannelMixer
 from etsr.reproducibility import git_commit, git_is_dirty, seed_everything
 from etsr.training.checkpointing import load_model_state
-from etsr.training.engine import make_criterion, objective_gradient_diagnostics
+from etsr.training.engine import make_criterion
+from etsr.training.gradient_diagnostics import objective_gradient_diagnostics
 from etsr.training.predictive import (
     PredictiveTrainingObjective,
+    class_stratified_indices,
     freeze_batchnorm_running_statistics,
     last_occupied_steps,
 )
@@ -199,55 +201,84 @@ def _shared_feature_rows(
     return {stage: torch.cat(values) for stage, values in rows.items()}
 
 
+A1_DIAGNOSTIC_BATCHES = 4
+
+
 def _gradient_authority(
     config: dict[str, Any],
     model: MiniQKFormer,
     bundle,
     device: torch.device,
 ) -> dict[str, Any]:
+    """Post-mortem of the archived S0 objective on class-stratified batches.
+
+    DVS-Lip samples are sorted by class: an unshuffled first batch contains a single word, and
+    the CE gradient on it describes that word only. A1 therefore averages several disjoint
+    batches that together span ``batches x batch_size`` distinct classes.
+    """
+
     continuation = config.get("continuation")
-    if not isinstance(continuation, dict):
-        raise ValueError("A1 requires the archived S0 continuation configuration.")
-    objective_config = copy.deepcopy(continuation["objective"])
+    predictive = config.get("predictive")
+    source = predictive if isinstance(predictive, dict) else continuation
+    if not isinstance(source, dict) or "objective" not in source:
+        raise ValueError("A1 requires the S0 objective configuration.")
+    objective_config = copy.deepcopy(source["objective"])
     # Reconstruct the archived S0 objective exactly: active/tail and both stages had equal weight.
     objective_config["temporal_region_weights"] = {"active": 1.0, "tail": 1.0}
     objective_config["temporal_stage_weights"] = {"stage1": 1.0, "stage2": 1.0}
+    objective_config.pop("authority", None)
     objective = PredictiveTrainingObjective(
         objective_config,
         None,
-        {**continuation, "representation": config["representation"]},
+        {**source, **(continuation or {}), "representation": config["representation"]},
     )
-    loader = build_loader(DatasetSubset(bundle.train, list(range(min(64, len(bundle.train))))), config["dataset"], shuffle=False)
-    frames, targets, _indices = next(iter(loader))
-    frames = move_encoded_input(frames, device)
-    targets = targets.to(device)
-    model.train()
-    freeze_batchnorm_running_statistics(model)
-    result = objective(
-        model,
-        frames,
-        targets,
-        make_criterion(config["training"]),
-        max(1, objective.ramp_epochs),
-    )
-    regions = {
-        region: objective_gradient_diagnostics(
-            model,
-            result.classification_loss,
-            component,
-            objective.weight,
+    batch_size = int(config["dataset"].get("batch_size", 16))
+    indices = class_stratified_indices(bundle.train, batch_size * A1_DIAGNOSTIC_BATCHES)
+    criterion = make_criterion(config["training"])
+    per_batch: list[dict[str, Any]] = []
+    classes: set[int] = set()
+    for offset in range(0, len(indices), batch_size):
+        chunk = indices[offset : offset + batch_size]
+        loader = build_loader(
+            DatasetSubset(bundle.train, chunk),
+            {**config["dataset"], "batch_size": len(chunk), "num_workers": 0},
+            shuffle=False,
         )
-        for region, component in result.auxiliary_components.items()
-        if component.requires_grad
-    }
+        frames, targets, _indices = next(iter(loader))
+        frames = move_encoded_input(frames, device)
+        targets = targets.to(device)
+        classes.update(int(value) for value in targets.tolist())
+        model.train()
+        freeze_batchnorm_running_statistics(model)
+        result = objective(model, frames, targets, criterion, max(1, objective.ramp_epochs))
+        regions = {
+            region: objective_gradient_diagnostics(
+                model, result.classification_loss, component, objective.weight
+            )
+            for region, component in result.auxiliary_components.items()
+            if component.requires_grad
+        }
+        model.zero_grad(set_to_none=True)
+        per_batch.append({"samples": int(targets.numel()), "regions": regions})
     model.eval()
+    region_names = sorted({region for batch in per_batch for region in batch["regions"]})
+    mean_regions: dict[str, dict[str, float]] = {}
+    for region in region_names:
+        rows = [batch["regions"][region] for batch in per_batch if region in batch["regions"]]
+        mean_regions[region] = {
+            key: float(np.nanmean([row[key] for row in rows])) for key in rows[0]
+        }
     return {
-        "batch_samples": int(targets.numel()),
+        "batch_selection": "class_stratified_disjoint_batches",
+        "batches": len(per_batch),
+        "batch_samples": batch_size,
+        "distinct_classes": len(classes),
         "nominal_auxiliary_weight": objective.weight,
         "reconstructed_archived_region_weights": objective.temporal_region_weights,
         "reconstructed_archived_stage_weights": objective.temporal_stage_weights,
-        "regions": regions,
-        "measured": bool(regions),
+        "regions": mean_regions,
+        "per_batch": per_batch,
+        "measured": bool(mean_regions),
     }
 
 

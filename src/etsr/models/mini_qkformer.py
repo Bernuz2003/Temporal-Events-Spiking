@@ -55,6 +55,7 @@ class MiniQKFormer(nn.Module):
         temporal_channel_mixer_predictor_spatial_kernel_size: int = 1,
         temporal_channel_mixer_surprise_routing: bool = False,
         temporal_channel_mixer_routing_stages: tuple[int, ...] = (1, 2),
+        temporal_channel_mixer_predictive_stages: tuple[int, ...] = (1, 2),
         temporal_channel_mixer_routing_parameterization: str = "independent",
         learnable_lif_tau: bool = False,
         gated_initial_memory_steps: float | None = None,
@@ -125,6 +126,17 @@ class MiniQKFormer(nn.Module):
             != temporal_channel_mixer_routing_stages
         ):
             raise ValueError("temporal routing stages must be an ordered subset of (1, 2)")
+        if (
+            not temporal_channel_mixer_predictive_stages
+            or any(stage not in {1, 2} for stage in temporal_channel_mixer_predictive_stages)
+            or tuple(sorted(set(temporal_channel_mixer_predictive_stages)))
+            != temporal_channel_mixer_predictive_stages
+        ):
+            raise ValueError("temporal predictive stages must be an ordered subset of (1, 2)")
+        if temporal_channel_mixer_surprise_routing and not set(
+            temporal_channel_mixer_routing_stages
+        ) <= set(temporal_channel_mixer_predictive_stages):
+            raise ValueError("surprise routing needs a causal predictor in every routed stage")
         if temporal_channel_mixer_routing_parameterization not in {
             "independent",
             "amplitude_allocation",
@@ -217,6 +229,7 @@ class MiniQKFormer(nn.Module):
         )
         self.temporal_channel_mixer_surprise_routing = temporal_channel_mixer_surprise_routing
         self.temporal_channel_mixer_routing_stages = temporal_channel_mixer_routing_stages
+        self.temporal_channel_mixer_predictive_stages = temporal_channel_mixer_predictive_stages
         self.learnable_lif_tau_enabled = learnable_lif_tau
         self.multigranular_enabled = multigranular
         self.multigranular_fusion_name = multigranular_fusion
@@ -243,7 +256,10 @@ class MiniQKFormer(nn.Module):
             ),
             temporal_channel_mixer_router_pooling=temporal_channel_mixer_router_pooling,
             temporal_channel_mixer_router_hidden_divisor=temporal_channel_mixer_router_hidden_divisor,
-            temporal_channel_mixer_predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
+            temporal_channel_mixer_predictive_auxiliary=(
+                temporal_channel_mixer_predictive_auxiliary
+                and 1 in temporal_channel_mixer_predictive_stages
+            ),
             temporal_channel_mixer_predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
             temporal_channel_mixer_predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
             temporal_channel_mixer_surprise_routing=(
@@ -314,7 +330,10 @@ class MiniQKFormer(nn.Module):
             ),
             temporal_channel_mixer_router_pooling=temporal_channel_mixer_router_pooling,
             temporal_channel_mixer_router_hidden_divisor=temporal_channel_mixer_router_hidden_divisor,
-            temporal_channel_mixer_predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
+            temporal_channel_mixer_predictive_auxiliary=(
+                temporal_channel_mixer_predictive_auxiliary
+                and 2 in temporal_channel_mixer_predictive_stages
+            ),
             temporal_channel_mixer_predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
             temporal_channel_mixer_predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
             temporal_channel_mixer_surprise_routing=(
@@ -364,6 +383,9 @@ class MiniQKFormer(nn.Module):
         for module in self.modules():
             if isinstance(module, CausalTemporalChannelMixer):
                 module._initialize_conditional_modules()
+                # V_delta is a stop metric for every stage whenever a predictive objective exists,
+                # including stages that carry no predictor but receive its backpropagated gradient.
+                module.record_temporal_variation = temporal_channel_mixer_predictive_auxiliary
         if self.fine_temporal_branch is not None:
             self.fine_temporal_branch.initialize_temporal_reducer()
 

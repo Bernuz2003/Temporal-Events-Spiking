@@ -1,11 +1,12 @@
 # Stato corrente
 
-**Aggiornato:** 2026-09-23
+**Aggiornato:** 2026-09-24
 
-**Fase:** audit correttivo checkpoint-only della ricerca predittiva/condizionale. Sette
-continuazioni sono state eseguite, ma il loro disegno o la loro misura non consente di usarle come
-evidenza sulle ipotesi. Restano archiviate sotto `artifacts/superseded/` e sono documentate soltanto
-in [`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md).
+**Fase:** riesecuzione corretta della ricerca predittiva/condizionale. La prima esecuzione (sette
+continuazioni) non è evidenza sulle ipotesi; è archiviata sotto `artifacts/superseded/` e documentata
+soltanto in [`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). L'audit
+checkpoint-only A1–A4 e i probe di fattibilità R5 sono completi (sezione 12 dell'audit). Nessun
+nuovo training della fase è ancora stato lanciato.
 
 ## Riferimento empirico
 
@@ -34,13 +35,27 @@ PLIF resta inferiore a B sul punto finale (−0,47 pp F1), con +3,47 pp di F1-Pr
 non autorizza a reinserire PLIF o scegliere un cutoff di coda. Il [ledger](EXPERIMENT_LEDGER.md)
 conserva le diagnostiche e i profili storici.
 
+## Cosa ha stabilito l'audit
+
+- La prima S0 non ha mosso la rappresentazione (CKA 0,999 con R0): il suo gradiente ausiliario
+  valeva 4–9 × 10⁻⁵ di quello di classificazione.
+- L'informazione di classe accessibile linearmente sta nello stage2 (24% contro 5% nello stage1),
+  dove parte prevedibile e innovazione ne portano quasi la stessa quantità.
+- La coda dopo l'ultimo evento contiene settling discriminativo: +6,71 pp di accuracy fra 1,5 e 2 s,
+  +8,42 sulle parole confondibili, per soppressione dei competitori.
+- Il target fine non è predicibile dal contesto dello student a nessun orizzonte; il coarse sì.
+
 ## Prossimo passo
 
-Eseguire il comando unico `predictive-phase1-audit`, che produce A1 autorità dei gradienti, A2
-probe discriminativi di previsione/residuo, A3 movimento diretto della rappresentazione e A4
-decomposizione del margine nella coda. `predictive-continuation` resta bloccato finché
-`artifacts/predictive_phase1_audit/phase1_audit.json` non è completo e coerente con C0. P-F resta
-bloccato fino alla verifica R5 su orizzonti e target alternativi.
+Quattro bracci, ciascuno da solo sulla propria GPU, seed 42:
+**L15** in continuazione da C0 con il controllo **R0**; **D**, **S0** e **S1** da zero con la ricetta
+di C0, confrontati con i seed archiviati di C0 (S1 anche con S0). Prima di ogni lancio si legge il
+preflight (`predictive-check`), che misura inizializzazione, causalità e autorità dell'obiettivo
+ausiliario. I seed 43 e 44 seguono solo per i bracci con firma meccanicistica coerente. Comandi in
+[`OPERATIONS_SMILIES.md`](OPERATIONS_SMILIES.md).
+
+Consigliato prima dei lanci: rieseguire l'audit, perché la versione corretta di A1 usa batch
+stratificati per classe; la versione registrata misurava una sola parola (audit, sezione 12.1).
 
 Tutte le metriche citate sono development validation. L'implementazione non produce da sola nuova
 evidenza empirica; nessun accesso all'official test.

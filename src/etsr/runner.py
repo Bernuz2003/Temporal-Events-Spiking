@@ -27,9 +27,11 @@ from etsr.evaluation.metrics import (
 from etsr.models.factory import build_model
 from etsr.models.temporal import CausalTemporalChannelMixer
 from etsr.reproducibility import (
+    capture_random_state,
     collect_environment,
     git_commit,
     git_is_dirty,
+    restore_random_state,
     seed_everything,
 )
 from etsr.training.augmentation import build_batch_augmentation
@@ -51,6 +53,9 @@ from etsr.training.engine import (
 from etsr.training.gates import overfit_gate
 from etsr.training.predictive import (
     PredictiveTrainingObjective,
+    base_model_config,
+    diagnostic_batch,
+    load_backbone_state,
     validate_predictive_training_authorization,
 )
 from etsr.utils.io import append_csv, ensure_dir, sha256_file, write_csv, write_json
@@ -502,8 +507,13 @@ def train_experiment(
 ) -> dict[str, Any]:
     config = copy.deepcopy(config)
     continuation = config.get("continuation")
-    if continuation is not None:
-        validate_predictive_training_authorization(continuation)
+    predictive = config.get("predictive")
+    if continuation is not None and predictive is None:
+        raise ValueError(
+            "A continuation belongs to the predictive phase and requires a predictive section."
+        )
+    if predictive is not None:
+        validate_predictive_training_authorization(predictive, continuation)
     overfit = config["training"].get("overfit")
     if overfit is not None:
         config["training"]["amp"] = False
@@ -556,9 +566,28 @@ def train_experiment(
         )
 
     num_classes = len(bundle.classes)
-    model = build_model(config["model"], num_classes).to(device)
     parent_metadata = None
     new_parameter_names: set[str] = set()
+    scratch_random_state = None
+    backbone_initialization = None
+    if predictive is not None and continuation is None:
+        # From-scratch phase branch. Build the C0 topology first, exactly as its own run would at
+        # this seed, and copy that backbone into the full model. Snapshot the RNG right after the
+        # base build: restoring it before the DataLoaders gives the branch the same data order and
+        # augmentation stream as the C0 topology, whatever the new modules consumed.
+        base_model = build_model(base_model_config(config["model"]), num_classes)
+        scratch_random_state = capture_random_state()
+        model = build_model(config["model"], num_classes)
+        new_parameter_names = load_backbone_state(model, base_model.state_dict())
+        del base_model
+        model = model.to(device)
+        backbone_initialization = "c0_topology_same_seed"
+        logger.info(
+            "Initialized the shared backbone from the C0 topology; new tensors: %d",
+            len(new_parameter_names),
+        )
+    else:
+        model = build_model(config["model"], num_classes).to(device)
     if continuation is not None:
         parent_path = Path(continuation["parent_checkpoint"])
         if not parent_path.is_file():
@@ -566,52 +595,44 @@ def train_experiment(
         parent_metadata = torch.load(parent_path, map_location=device, weights_only=False)
         if int(parent_metadata.get("num_classes", -1)) != num_classes:
             raise ValueError("Continuation parent class count differs from the dataset.")
-        incompatible = model.load_state_dict(parent_metadata["model"], strict=False)
-        allowed_missing = (
-            "predictive_head.",
-            ".content_router.",
-            ".predictor_logits",
-            ".predictor_spatial.",
-            ".predictor_projections.",
-            ".surprise_router",
-        )
-        invalid_missing = [
-            key for key in incompatible.missing_keys if not any(token in key for token in allowed_missing)
-        ]
-        if invalid_missing or incompatible.unexpected_keys:
-            raise ValueError(
-                "Continuation parent is not topology-compatible: "
-                f"missing={invalid_missing}, unexpected={incompatible.unexpected_keys}"
-            )
-        model_parameter_names = dict(model.named_parameters())
-        new_parameter_names = {
-            name for name in incompatible.missing_keys if name in model_parameter_names
-        }
+        new_parameter_names = load_backbone_state(model, parent_metadata["model"])
+        backbone_initialization = "continuation_parent"
         logger.info("Initialized continuation from: %s", parent_path)
 
     teacher = None
-    objective_config = (continuation or {}).get("objective", {"mode": "none", "weight": 0.0})
+    objective_config = (predictive or {}).get("objective", {"mode": "none", "weight": 0.0})
     if str(objective_config.get("mode", "none")) != "none":
-        teacher_config = load_config(continuation["teacher_config"])
+        teacher_config = load_config(predictive["teacher_config"])
         teacher = build_model(teacher_config["model"], num_classes).to(device)
         teacher_checkpoint = load_model_state(
-            continuation["teacher_checkpoint"], teacher, device
+            predictive["teacher_checkpoint"], teacher, device
         )
         if int(teacher_checkpoint.get("num_classes", -1)) != num_classes:
             raise ValueError("Predictive teacher class count differs from the dataset.")
         teacher.requires_grad_(False)
         teacher.eval()
-        logger.info("Loaded frozen predictive teacher: %s", continuation["teacher_checkpoint"])
+        logger.info("Loaded frozen predictive teacher: %s", predictive["teacher_checkpoint"])
     predictive_objective = (
         PredictiveTrainingObjective(
             objective_config,
             teacher,
             {
-                **continuation,
+                **predictive,
+                **(continuation or {}),
                 "representation": config["representation"],
             },
         )
-        if continuation is not None
+        if predictive is not None
+        else None
+    )
+    freeze_batchnorm_statistics = bool(
+        (continuation or {}).get("freeze_batchnorm_statistics", False)
+    )
+    # A fixed class-stratified batch for per-epoch authority measurement. It is drawn before the
+    # RNG reset below, so it never shifts the training data stream.
+    calibration_batch = (
+        diagnostic_batch(bundle.train, config["dataset"], device)
+        if predictive_objective is not None and predictive_objective.auxiliary_declared
         else None
     )
     delay_modules = {
@@ -646,6 +667,8 @@ def train_experiment(
         # construction. Reset before DataLoader creation so every continuation sees the same
         # shuffle and augmentation streams as R0.
         seed_everything(seed, bool(config["experiment"].get("deterministic", True)))
+    elif scratch_random_state is not None and resume is None:
+        restore_random_state(scratch_random_state)
     train_loader = build_loader(bundle.train, config["dataset"], shuffle=True)
     validation_loader = build_loader(bundle.validation, config["dataset"], shuffle=False)
     new_parameter_learning_rate = (
@@ -710,6 +733,9 @@ def train_experiment(
     if continuation is not None:
         runtime["continuation_new_parameter_names"] = sorted(new_parameter_names)
         runtime["continuation_new_parameter_learning_rate"] = new_parameter_learning_rate
+    if predictive is not None:
+        runtime["predictive_backbone_initialization"] = backbone_initialization
+        runtime["predictive_new_parameter_names"] = sorted(new_parameter_names)
     runtime.update(getattr(bundle.train, "runtime_metadata", {}))
     if overfit is not None:
         runtime["overfit_train_indices"] = list(bundle.train.indices)
@@ -744,12 +770,31 @@ def train_experiment(
         best_score = float(checkpoint["best_score"])
         best_epoch = int(checkpoint["best_epoch"])
         start_epoch = int(checkpoint["epoch"]) + 1
+        if predictive_objective is not None:
+            objective_state = checkpoint.get("objective_state")
+            if objective_state is None:
+                raise ValueError("Resume checkpoint lacks the predictive objective state.")
+            predictive_objective.load_state_dict(objective_state)
         peak_cuda_memory_bytes = int(checkpoint["peak_cuda_memory_bytes"])
         resolved_config = checkpoint["config"]
         runtime = resolved_config["runtime"]
         environment_path = artifact_dir / "environment.json"
         logger.info("Resuming run %s from epoch %d", run_id, start_epoch)
 
+    if resume is None and calibration_batch is not None:
+        record = predictive_objective.calibrate(
+            model,
+            *calibration_batch,
+            criterion,
+            epoch=0,
+            freeze_batchnorm_statistics=freeze_batchnorm_statistics,
+        )
+        logger.info(
+            "Auxiliary authority before training | unit ratio %.3e | weight %.4g | shared ratio %.3e",
+            record["unit_ratio"],
+            record["weight"],
+            record["shared_ratio"],
+        )
     total_epochs = int(config["training"]["epochs"])
     delay_anneal_epochs = int(config["training"].get("delay_anneal_epochs", total_epochs))
     if delay_modules and not 1 <= delay_anneal_epochs <= total_epochs:
@@ -765,6 +810,18 @@ def train_experiment(
     for epoch in range(start_epoch, total_epochs + 1):
         for module in delay_modules.values():
             module.set_delay_progress(min(epoch, delay_anneal_epochs), delay_anneal_epochs)
+        authority_record = None
+        if calibration_batch is not None:
+            if epoch == 1 and predictive_objective.calibration_history:
+                authority_record = predictive_objective.calibration_history[-1]
+            else:
+                authority_record = predictive_objective.calibrate(
+                    model,
+                    *calibration_batch,
+                    criterion,
+                    epoch=epoch,
+                    freeze_batchnorm_statistics=freeze_batchnorm_statistics,
+                )
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
         learning_rate = optimizer.param_groups[0]["lr"]
@@ -785,7 +842,7 @@ def train_experiment(
             batch_augmentation,
             predictive_objective,
             epoch,
-            bool((continuation or {}).get("freeze_batchnorm_statistics", False)),
+            freeze_batchnorm_statistics,
         )
         routing_statistics: list[dict[str, Any]] = []
         temporal_prediction_statistics: list[dict[str, float]] | None = (
@@ -848,6 +905,15 @@ def train_experiment(
             )
         if delay_modules:
             row["delay_temperature"] = next(iter(delay_modules.values())).delay_temperature
+        if authority_record is not None:
+            row.update(
+                {
+                    "auxiliary_nominal_weight": predictive_objective.weight,
+                    "authority_unit_ratio": authority_record["unit_ratio"],
+                    "authority_shared_ratio": authority_record["shared_ratio"],
+                    "authority_shared_cosine": authority_record["shared_cosine"],
+                }
+            )
         selection_eligible = (
             predictive_objective is None
             or predictive_objective.selection_eligible(epoch)
@@ -898,6 +964,9 @@ def train_experiment(
             run_id=run_id,
             artifact_dir=artifact_dir,
             peak_cuda_memory_bytes=peak_cuda_memory_bytes,
+            objective_state=(
+                predictive_objective.state_dict() if predictive_objective is not None else None
+            ),
         )
         if overfit is not None:
             gate_rows.append(row)
@@ -911,9 +980,10 @@ def train_experiment(
         raise RuntimeError("No checkpoint was eligible for selection after auxiliary warm-up.")
     restore_best_model(checkpoint_path, model, device, logger)
     deployment_checkpoint_path = None
-    if continuation is not None:
+    if predictive is not None:
         deployment_config = copy.deepcopy(resolved_config)
         deployment_config.pop("continuation", None)
+        deployment_config.pop("predictive", None)
         deployment_config["model"].pop("predictive_head", None)
         deployment_config["model"].pop("predictive_head_spatial_kernel_size", None)
         deployment_config["model"].pop("predictive_head_hidden_channels", None)
@@ -929,8 +999,9 @@ def train_experiment(
             deployment_config["model"].pop(
                 "temporal_channel_mixer_predictor_spatial_kernel_size", None
             )
-        parent_config = load_config(continuation["parent_config"])
+            deployment_config["model"].pop("temporal_channel_mixer_predictive_stages", None)
         if objective_config.get("mode") in {"fine_future", "fine_same"}:
+            parent_config = load_config(continuation["parent_config"])
             deployment_config["representation"] = copy.deepcopy(parent_config["representation"])
         deployment_checkpoint_path = checkpoint_dir / "deployment.pt"
         save_config(deployment_config, artifact_dir / "deployment_config_resolved.yaml")
@@ -1023,22 +1094,22 @@ def train_experiment(
         summary["learned_delays"] = {
             name: module.learned_delay_summary() for name, module in delay_modules.items()
         }
-    if continuation is not None:
-        summary["continuation"] = {
-            "parent_checkpoint": str(Path(continuation["parent_checkpoint"]).resolve()),
-            "parent_checkpoint_sha256": sha256_file(continuation["parent_checkpoint"]),
-            "parent_epoch": int(parent_metadata["epoch"]),
+    if predictive is not None:
+        summary["predictive"] = {
+            "regime": "continuation" if continuation is not None else "from_scratch",
+            "backbone_initialization": backbone_initialization,
             "objective": objective_config,
-            "freeze_batchnorm_statistics": bool(
-                continuation.get("freeze_batchnorm_statistics", False)
-            ),
+            "final_nominal_weight": predictive_objective.weight,
+            "authority_calibration": predictive_objective.calibration_history,
+            "phase1_audit_report": str(Path(predictive["phase1_audit_report"]).resolve()),
+            "phase1_audit_report_sha256": sha256_file(predictive["phase1_audit_report"]),
             "teacher_checkpoint": (
-                str(Path(continuation["teacher_checkpoint"]).resolve())
+                str(Path(predictive["teacher_checkpoint"]).resolve())
                 if teacher is not None
                 else None
             ),
             "teacher_checkpoint_sha256": (
-                sha256_file(continuation["teacher_checkpoint"])
+                sha256_file(predictive["teacher_checkpoint"])
                 if teacher is not None
                 else None
             ),
@@ -1047,6 +1118,14 @@ def train_experiment(
                 if objective_config.get("normalization_report")
                 else None
             ),
+            "new_parameter_names": sorted(new_parameter_names),
+        }
+    if continuation is not None:
+        summary["continuation"] = {
+            "parent_checkpoint": str(Path(continuation["parent_checkpoint"]).resolve()),
+            "parent_checkpoint_sha256": sha256_file(continuation["parent_checkpoint"]),
+            "parent_epoch": int(parent_metadata["epoch"]),
+            "freeze_batchnorm_statistics": freeze_batchnorm_statistics,
             "initial_validation": initial_validation,
             "new_parameter_names": sorted(new_parameter_names),
             "new_parameter_learning_rate": new_parameter_learning_rate,

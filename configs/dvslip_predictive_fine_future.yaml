@@ -14,10 +14,11 @@ model:
   predictive_head_spatial_kernel_size: 3
   predictive_head_hidden_channels: 128
 
-continuation:
+predictive:
   blocked_reason: >-
-    R5 requires a new target-feasibility comparison across alternative horizons and coarse
-    future targets before this branch can be trained.
+    Closed by the phase-1 audit (R5): the MG fine target is not predictable from the deployable
+    student context at any horizon (affine R2 0.096 at h=1, 0.070 at h=2, 0.054 at h=4;
+    nRMSE >= 0.935). The configuration is kept as the record of the tested design.
   teacher_config: configs/dvslip_f_multigranular_temporal_capacity.yaml
   teacher_checkpoint: checkpoints/dvslip_f_multigranular_temporal_capacity__20260912_135802_779469__seed42/best.pt
   objective:

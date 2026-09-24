@@ -1,6 +1,7 @@
 # Audit della prima esecuzione di Predictive-Temporal-Coding
 
-**Data:** 2026-09-23. **Stato:** contratto attivo, vincolante per la riesecuzione della fase.
+**Data:** 2026-09-23. **Aggiornato:** 2026-09-24 con l'esito dell'audit (sezione 12).
+**Stato:** contratto attivo, vincolante per la riesecuzione della fase.
 
 Questo documento registra che cosa, nella prima esecuzione della fase predittiva, è stato
 implementato male, misurato male o formulato male. Non ridefinisce le ipotesi scientifiche: quelle
@@ -332,10 +333,14 @@ Ma il substrato subisce contemporaneamente un reheating patologico del learning 
 checkpoint selezionato ha peso ausiliario nullo. **P-F-v1 non è un test dell'ipotesi.** Non è
 neppure una prova che l'ipotesi sia falsa.
 
-### P3 — Il budget è esaurito
+### P3 — Il budget era esaurito
 
 Circa 47 GPU-ore spese contro 44,86 pianificate e 53,83 di tetto invalicabile, per zero risultati
-interpretabili. La riesecuzione non può ripetere sette continuazioni da 64 epoche.
+interpretabili.
+
+**Superato il 2026-09-24:** il tetto in GPU-ore è stato rimosso (`DECISIONS.md`). La disciplina non
+sta più nel costo ma nel disegno: ogni braccio risponde a una domanda, ha il proprio controllo, e
+un'affermazione di superiorità richiede più seed.
 
 ---
 
@@ -349,7 +354,7 @@ interpretabili. La riesecuzione non può ripetere sette continuazioni da 64 epoc
 | `PROJECT_STATUS.md` | dichiara che nessun training è stato lanciato; sette lo sono stati |
 | `EXPERIMENT_LEDGER.md` | non contiene alcuna voce della fase predittiva |
 
-Vanno riallineati contestualmente alla riesecuzione.
+Riallineati nel commit `ca8c0ea`; `TRAINING_RECIPE.md` è stato riallineato il 2026-09-24.
 
 ---
 
@@ -382,6 +387,19 @@ vanno dichiarate come tali: il braccio riesegue sotto lo stesso nome un'ipotesi 
 | R3 | Separare ampiezza e allocazione: `y_t = x_t + a_t Σ_d K π_{t,d} W_d x_{t-d}` con `a_t ≥ 0`, `π = softmax_d`, `K = |delays|`, inizializzati a `a=1` e `π` uniforme così che la funzione iniziale resti C0. | F3, F5 |
 | R4 | Il residuo che alimenta il router conserva la struttura spaziale, coerentemente con la scelta locale già adottata per D. | F4 |
 | R5 | P-F non viene rieseguito all'orizzonte `h=2` prima di una nuova verifica di fattibilità del target su orizzonti alternativi e sul futuro coarse. | F1, P2 |
+
+### 7.3 Revisioni dopo l'audit (2026-09-24)
+
+Motivate dagli esiti della sezione 12. Aggiornano R1 e risolvono R5.
+
+| ID | Revisione | Motivo |
+|---|---|---|
+| R1′ | Nell'obiettivo S la coda ha peso **0**, non 0,25. | A2: nella coda la predizione x̂ porta più informazione di classe del presente x (8,89% contro 6,64%), e la loss la trascina verso x |
+| R6 | Il predittore causale esiste **solo nello stage2** (`temporal_channel_mixer_predictive_stages: [2]`); `V_Δ` resta registrata anche nello stage1. | A2: informazione di classe 24% nello stage2 contro 5% nello stage1, dove il residuo (il movimento) è il portatore migliore |
+| R7 | Autorità esplicita: λ calibrato prima dell'epoca 1 perché il rapporto `‖λ∇L_aux‖/‖∇L_CE‖` sul backbone condiviso valga 0,25, e rimisurato ogni epoca su un batch fisso stratificato, con passo massimo ×2. Il preflight esige un rapporto minimo di 0,05 per ogni obiettivo ausiliario dichiarato. | A1, A3 |
+| R8 | D, S0 e S1 si addestrano **da zero** con la ricetta congelata di C0; i controlli sono i seed archiviati di C0. L15 resta una continuazione con controllo R0. | A3: il substrato di continuazione non si muove (CKA 0,999), e lavora a 1/30 del learning rate con cui la rappresentazione si è formata |
+| R9 | L15: distillazione del solo prefisso a 1,5 s, letto con denominatore fisso di 40 bin. | durate: 30,8% delle parole finite a 1 s, 99,4% a 1,5 s; A4: l'88% della variazione del logit vero fra 1,5 e 2 s è diluizione del readout |
+| R5 risolta | Famiglia di target fine **chiusa**; target coarse **sospeso** a h=2. | probe R5, sezione 12.5 |
 
 ---
 
@@ -505,8 +523,12 @@ prima esecuzione. I risultati della prima esecuzione non vengono citati come bas
 riferimento o come tendenza. Questo documento è il solo luogo in cui quelle cifre compaiono.
 
 **Ordine.** L'audit della sezione 8 precede qualunque training. La riesecuzione non riparte da sette
-continuazioni: riparte dal braccio che l'audit indica, con il controllo appaiato corrispondente, dato
-il budget residuo di §5 P3.
+continuazioni: segue il programma della sezione 12.7, deciso sull'esito dell'audit. Il vincolo di
+budget di §5 P3 è stato rimosso.
+
+**Regime.** Per R8 alcuni bracci non sono più continuazioni: D, S0 e S1 si addestrano da zero con la
+ricetta di C0. Conservano i nomi di esperimento originali; la regola di non confrontabilità con la
+prima esecuzione vale a maggior ragione.
 
 ---
 
@@ -539,3 +561,145 @@ raccontati diversamente:
   classificatore.
 
 Sono tre risultati diversi e nessuno dei tre è «l'idea non funziona».
+
+---
+
+## 12. Esito dell'audit (2026-09-24)
+
+Report: `artifacts/predictive_phase1_audit/phase1_audit.json`, commit `ca8c0ea`, worktree pulito,
+sha256 di C0 verificato, nessun accesso all'official test. A1, A3 e A4 coincidono fino all'ultima
+cifra fra due esecuzioni indipendenti. A2 è stato rieseguito con 8192 campioni di fit e 2048 di
+holdout: con 512/256 violava l'ordinamento `Acc([x̂, r]) ≥ Acc(x)` imposto dalla sua stessa classe
+di ipotesi, ed era quindi dominato dalla varianza.
+
+### 12.1 A1 — Autorità e direzione del gradiente ausiliario della S0 archiviata
+
+| blocco | ratio active | coseno active | ratio tail | coseno tail |
+|---|---:|---:|---:|---:|
+| stage1_shared | 7,49e-05 | +0,518 | 6,26e-05 | −0,324 |
+| tcap1_weights | 8,66e-05 | +0,223 | 6,77e-05 | −0,127 |
+| stage2_shared | 4,38e-05 | +0,142 | 2,65e-05 | −0,025 |
+| tcap2_weights, head | 0 | — | 0 | — |
+| globale condiviso | | +0,425 | | −0,263 |
+
+Il gradiente ausiliario valeva 4–9 × 10⁻⁵ di quello di classificazione sullo stesso supporto. Le
+matrici del mixer di stage2 e la testa non ricevono gradiente ausiliario per costruzione.
+
+**Difetto della misura, scoperto dopo.** DVS-Lip è ordinato per classe, e A1 — come ogni preflight
+della prima esecuzione — usava il primo batch non mescolato: **16 campioni della sola parola
+«accused»**. La magnitudine è confermata indipendentemente da A3. La struttura dei segni (attiva
+allineata, coda antagonista) resta invece **provvisoria** finché A1 non viene rieseguito con il
+codice corretto, che media quattro batch stratificati su 64 classi distinte. Le decisioni R1′ e R6
+non dipendono da quei segni: poggiano su A2, che usa una permutazione casuale su tutte le classi.
+
+### 12.2 A2 — Dove sta l'informazione discriminativa
+
+Accuracy di sonde lineari su holdout (100 classi, caso 1%, deviazione binomiale 0,5–1,0 pp):
+
+| stage | regione | x | x̂ | r | [x̂, r] |
+|---|---|---:|---:|---:|---:|
+| stage1 | attiva | 5,27 | 5,32 | **6,88** | 7,57 |
+| stage1 | coda | 1,76 | 2,20 | 2,00 | 2,69 |
+| stage2 | attiva | **24,22** | 23,54 | 22,41 | 25,00 |
+| stage2 | coda | 6,64 | **8,89** | 6,40 | 10,94 |
+
+- L'informazione di classe accessibile linearmente sta nello **stage2** (24% contro 5%).
+- Nello stage2 attivo x̂ e r portano quasi la stessa informazione, e separarli aggiunge 0,78 pp:
+  l'informazione esclusiva del residuo è piccola, quindi il rischio F7 è limitato lì.
+- Nello stage1 il residuo è il portatore migliore: con un predittore quasi mono-ritardo, r è la
+  derivata temporale, cioè il movimento. Una loss predittiva sullo stage1 agirebbe da penalità di
+  levigatezza proprio su quell'informazione.
+- Nella coda la predizione dal passato è più discriminativa del presente che decade.
+
+### 12.3 A3 — Movimento della rappresentazione
+
+CKA lineare fra S0 e R0: 0,999988 e 0,999956 nello stage1, 0,994914 e 0,994897 nello stage2.
+Spostamento relativo massimo dei parametri: 1,01%, sulle matrici del mixer di stage2. La prima
+esecuzione di S0 non ha modificato la rappresentazione; l'impronta dell'obiettivo è nel punto
+giusto ma dell'ordine dell'1%.
+
+### 12.4 A4 — La coda contiene settling discriminativo
+
+| C0, validation | 1,5 s | 2,0 s | Δ | Δ margine medio |
+|---|---:|---:|---:|---:|
+| accuracy | 48,81% | 55,53% | +6,71 pp | +0,311 (positivo nel 60%) |
+| Acc1, parole confondibili | 37,47% | 45,89% | **+8,42 pp** | **+0,478** |
+| Acc2, parole comuni | 60,15% | 65,15% | +5,01 pp | +0,145 |
+
+Il meccanismo è la **soppressione dei competitori**: il logit vero scende da 2,398 a 1,720 (×0,717),
+il miglior competitore da 2,516 a 1,526 (×0,606); il logit vero sale solo nel 26% dei campioni.
+Poiché `z₄₀ = 0,75·z₃₀ + 0,25·z_coda`, l'88% della variazione del logit vero è pura diluizione del
+readout: senza correzione un target KL a 2 s mescolerebbe settling e ricalibrazione di scala. R0 è
+indistinguibile da C0 su ogni statistica A4.
+
+### 12.5 Probe R5 — Fattibilità dei target
+
+| h | R² coarse | R² fine | coarse / fine |
+|---:|---:|---:|---:|
+| 1 | 0,323 | 0,096 | 3,35× |
+| 2 | 0,249 | 0,070 | 3,58× |
+| 4 | 0,182 | 0,054 | 3,36× |
+| 8 | 0,125 | — | — |
+
+- Il target fine non supera R² 0,10 a nessun orizzonte (nRMSE 0,935–0,956). **Chiuso.**
+- Il vantaggio del coarse è costante fra orizzonti: appartiene alla famiglia di target. A h=8 il
+  target coarse ha autocorrelazione 0,08, eppure la sonda — che contiene l'identità nella propria
+  classe di ipotesi, perché il teacher coarse è C0 — ne spiega il 12,5%: dinamica lineare, non
+  persistenza. **Sospeso** a h=2, per i motivi registrati nel suo `blocked_reason`.
+- Il coseno non è confrontabile fra target: sul coarse una costante ottiene già 0,75–0,78.
+
+### 12.6 Verdetti per proposta
+
+| Proposta | Verdetto | Motivo |
+|---|---|---|
+| L — supervisione tardiva | **da eseguire** come L15 | A4: settling ampio, concentrato su Acc1, meccanismo coerente con la KL |
+| S0 — predizione ausiliaria | **da eseguire** da zero con R1′, R6, R7 | A1–A3 spiegano il fallimento; rischio F7 limitato nello stage2 |
+| S1 — routing da sorpresa | **da eseguire** da zero, confrontato con S0 | il predittore si addestra anche senza autorità; il routing non era verificabile in continuazione |
+| D — TCAP dinamico | **da eseguire** da zero | come S1: in continuazione il router parte da un punto stazionario; C0 è la sua ablazione riaddestrata |
+| P-F, P-0 | **chiusi** | target non predicibile |
+| P-C | **sospeso** | fattibile; autorità e direzione mai misurate; agisce sullo stage1 |
+| configurazioni di fusione | **rimosse** | la sola fusione prevista è strutturata e condizionata a due componenti positivi |
+
+La chiusura di D e S1 proposta inizialmente era basata su evidenza di continuazione, che A3 ha
+mostrato non informativa per meccanismi di questo tipo: è stata ritirata.
+
+### 12.7 Programma di riesecuzione
+
+| Braccio | Regime | Controllo | Domanda |
+|---|---|---|---|
+| L15 | continuazione da C0 | R0 | il settling si può anticipare? |
+| D | da zero, ricetta C0 | C0 seed 42/43/44 | il contenuto decide utilmente quanta memoria e quale? |
+| S0 | da zero, ricetta C0 | C0 seed 42/43/44 | la predizione modella la rappresentazione se agisce mentre si forma? |
+| S1 | da zero, ricetta C0 | S0 e C0 | l'errore predittivo aggiunge valore al controllo della memoria? |
+
+Seed 42 per primo; 43 e 44 per ciò che mostra la firma meccanicistica attesa. Controlli di
+attribuzione solo se un braccio funziona: D con gate statici riaddestrato, per separare adattività
+e riscalamento; L con distillazione a finestra piena (`prefix_steps: [40]`, nessun codice
+aggiuntivo), per separare la supervisione del prefisso dalla distillazione generica. Dopo due
+componenti positivi, un'unica fusione strutturata: sorpresa → ampiezza, contenuto → allocazione.
+
+I bracci da zero partono dall'inizializzazione del backbone della topologia C0 allo stesso seed e dal
+suo stesso flusso di dati e augmentation; lo scheduler corrente riproduce esattamente quello con cui
+C0 è stato addestrato (test `test_scheduler_reproduces_the_legacy_schedule_of_frozen_c0`). S0 e S1
+condividono anche l'inizializzazione del predittore, quindi il loro confronto è appaiato fin
+dall'inizio.
+
+### 12.8 Primo preflight del codice corretto
+
+Eseguito in CPU sui dati locali, seed 42, batch diagnostico di 16 campioni da 16 classi:
+
+| | D | S0 | S1 |
+|---|---|---|---|
+| backbone = topologia C0 allo stesso seed | sì | sì | sì |
+| causalità architetturale (BN a statistiche fisse) | 0,0 | 0,0 | 0,0 |
+| rapporto unitario all'inizializzazione | — | 0,0647 | 0,0647 |
+| λ calibrato → rapporto condiviso | — | 3,86 → 0,250 | 3,86 → 0,250 |
+| gradiente del router: inizio → dopo 2 passi | 0 → 0,39 | — | 0 → 7,29 |
+
+Il preflight ha anche misurato una condizione che la prima esecuzione non poteva vedere perché
+congelava la BatchNorm: **in training la BN non è causale**. `_time_distributed` fonde tempo e batch,
+e le statistiche per canale includono i passi futuri; perturbare la seconda metà della sequenza
+sposta il prefisso fino a 4,0. Il modello deployato usa statistiche running ed è causale, e C0 è
+stato addestrato nello stesso modo: la condizione è comune a controllo e bracci. Il preflight la
+misura e la riporta, senza farne un gate.
+

@@ -308,11 +308,16 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError("model.multigranular must be boolean")
     is_multigranular = representation_name == "multigranular_count_frame"
     continuation = config.get("continuation")
-    objective_mode = (
-        str(continuation.get("objective", {}).get("mode", "none"))
+    predictive = config.get("predictive")
+    # First-execution resolved configs kept the objective inside continuation.
+    objective_source = (
+        predictive
+        if isinstance(predictive, dict)
+        else continuation
         if isinstance(continuation, dict)
-        else "none"
+        else {}
     )
+    objective_mode = str(objective_source.get("objective", {}).get("mode", "none"))
     training_only_fine_input = objective_mode in {"fine_future", "fine_same"}
     if is_multigranular != multigranular and not (
         is_multigranular and not multigranular and training_only_fine_input
@@ -391,6 +396,20 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         or sorted(set(routing_stages)) != routing_stages
     ):
         raise ConfigError("model.temporal_channel_mixer_routing_stages must be [1], [2] or [1, 2]")
+    predictive_stages = model.get("temporal_channel_mixer_predictive_stages", [1, 2])
+    if (
+        not isinstance(predictive_stages, list)
+        or not predictive_stages
+        or any(type(stage) is not int or stage not in {1, 2} for stage in predictive_stages)
+        or sorted(set(predictive_stages)) != predictive_stages
+    ):
+        raise ConfigError(
+            "model.temporal_channel_mixer_predictive_stages must be [1], [2] or [1, 2]"
+        )
+    if not predictive_auxiliary and predictive_stages != [1, 2]:
+        raise ConfigError("Predictive stages require the predictive auxiliary")
+    if surprise_routing and not set(routing_stages) <= set(predictive_stages):
+        raise ConfigError("Surprise routing needs a causal predictor in every routed stage")
     routing_parameterization = model.get(
         "temporal_channel_mixer_routing_parameterization", "independent"
     )
@@ -572,58 +591,135 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
     ):
         raise ConfigError("training.late_summary_window must be an integer within the run")
 
+    if predictive is not None:
+        _validate_predictive_section(config, objective_mode)
+    elif (
+        "runtime" not in config
+        and not _is_legacy_resolved_predictive(config)
+        and _declares_predictive_modules(model)
+    ):
+        raise ConfigError(
+            "Auxiliary predictors, predictive heads and surprise routing are trained only by a "
+            "predictive objective; declare a predictive section with a positive-weight objective"
+        )
     if continuation is not None:
-        _validate_predictive_continuation(config, objective_mode)
+        _validate_predictive_continuation(config)
 
 
-def _validate_predictive_continuation(config: dict[str, Any], objective_mode: str) -> None:
+_PREDICTIVE_OBJECTIVE_MODES = {"none", "fine_future", "fine_same", "coarse_future", "late_prefix"}
+_AUTHORITY_FIELDS = {"target_ratio", "max_step_factor", "min_weight", "max_weight"}
+
+
+def _is_number(value: Any) -> bool:
+    return type(value) in (int, float) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _is_legacy_resolved_predictive(config: dict[str, Any]) -> bool:
+    """First-execution resolved configs kept objective and teacher inside continuation."""
+
+    continuation = config.get("continuation")
+    return (
+        "runtime" in config
+        and "predictive" not in config
+        and isinstance(continuation, dict)
+        and "objective" in continuation
+    )
+
+
+def _declares_predictive_modules(model: dict[str, Any]) -> bool:
+    return bool(
+        model.get("temporal_channel_mixer_predictive_auxiliary", False)
+        or model.get("predictive_head", False)
+        or model.get("temporal_channel_mixer_surprise_routing", False)
+    )
+
+
+def _validate_predictive_continuation(config: dict[str, Any]) -> None:
     continuation = config["continuation"]
     if not isinstance(continuation, dict):
         raise ConfigError("continuation must be a mapping")
+    if _is_legacy_resolved_predictive(config):
+        return
+    if not isinstance(config.get("predictive"), dict):
+        raise ConfigError("A continuation belongs to the predictive phase and requires a predictive section")
     for field in ("parent_config", "parent_checkpoint"):
         if not isinstance(continuation.get(field), str) or not continuation[field].strip():
             raise ConfigError(f"continuation.{field} must be a non-empty path")
-    audit_report = continuation.get("phase1_audit_report")
-    if audit_report is None and "runtime" not in config:
-        raise ConfigError(
-            "continuation.phase1_audit_report must name the completed A1-A4 report"
-        )
-    if audit_report is not None and (not isinstance(audit_report, str) or not audit_report.strip()):
-        raise ConfigError("continuation.phase1_audit_report must be a non-empty path")
-    blocked_reason = continuation.get("blocked_reason")
-    if blocked_reason is not None and (
-        not isinstance(blocked_reason, str) or not blocked_reason.strip()
+    for field in (
+        "objective",
+        "teacher_config",
+        "teacher_checkpoint",
+        "phase1_audit_report",
+        "blocked_reason",
     ):
-        raise ConfigError("continuation.blocked_reason must be a non-empty string")
+        if field in continuation:
+            raise ConfigError(f"continuation.{field} belongs to the predictive section")
     if continuation.get("freeze_batchnorm_statistics") is not True:
         raise ConfigError("Predictive continuation requires fixed BatchNorm running statistics")
     new_parameter_learning_rate = continuation.get("new_parameter_learning_rate")
     if new_parameter_learning_rate is not None and (
-        type(new_parameter_learning_rate) not in (int, float)
-        or isinstance(new_parameter_learning_rate, bool)
-        or new_parameter_learning_rate <= 0.0
+        not _is_number(new_parameter_learning_rate) or new_parameter_learning_rate <= 0.0
     ):
         raise ConfigError("continuation.new_parameter_learning_rate must be positive")
-    objective = continuation.get("objective")
+
+
+def _validate_predictive_section(config: dict[str, Any], objective_mode: str) -> None:
+    predictive = config["predictive"]
+    if not isinstance(predictive, dict):
+        raise ConfigError("predictive must be a mapping")
+    audit_report = predictive.get("phase1_audit_report")
+    if audit_report is None and "runtime" not in config:
+        raise ConfigError("predictive.phase1_audit_report must name the completed A1-A4 report")
+    if audit_report is not None and (not isinstance(audit_report, str) or not audit_report.strip()):
+        raise ConfigError("predictive.phase1_audit_report must be a non-empty path")
+    blocked_reason = predictive.get("blocked_reason")
+    if blocked_reason is not None and (
+        not isinstance(blocked_reason, str) or not blocked_reason.strip()
+    ):
+        raise ConfigError("predictive.blocked_reason must be a non-empty string")
+    objective = predictive.get("objective")
     if not isinstance(objective, dict):
-        raise ConfigError("continuation.objective must be a mapping")
-    allowed_modes = {"none", "fine_future", "fine_same", "coarse_future", "late_prefix"}
-    if objective_mode not in allowed_modes:
-        raise ConfigError(f"Unsupported continuation objective mode: {objective_mode}")
+        raise ConfigError("predictive.objective must be a mapping")
+    if objective_mode not in _PREDICTIVE_OBJECTIVE_MODES:
+        raise ConfigError(f"Unsupported predictive objective mode: {objective_mode}")
     weight = objective.get("weight", 0.0)
-    if type(weight) not in (int, float) or isinstance(weight, bool) or not 0.0 <= weight <= 1.0:
-        raise ConfigError("continuation.objective.weight must be in [0, 1]")
-    auxiliary_declared = (
-        objective_mode != "none"
-        or bool(config["model"].get("temporal_channel_mixer_predictive_auxiliary", False))
+    if not _is_number(weight) or weight < 0.0:
+        raise ConfigError("predictive.objective.weight must be finite and non-negative")
+    authority = objective.get("authority")
+    if authority is not None:
+        if (
+            not isinstance(authority, dict)
+            or not set(authority) <= _AUTHORITY_FIELDS
+            or "target_ratio" not in authority
+            or any(not _is_number(value) for value in authority.values())
+        ):
+            raise ConfigError(
+                "predictive.objective.authority needs numeric target_ratio and optional "
+                "max_step_factor, min_weight, max_weight"
+            )
+        low = authority.get("min_weight", 0.0)
+        high = authority.get("max_weight", 1.0e6)
+        if (
+            authority["target_ratio"] <= 0.0
+            or authority.get("max_step_factor", 2.0) < 1.0
+            or not 0.0 <= low < high
+        ):
+            raise ConfigError("predictive.objective.authority has invalid bounds")
+    minimum_ratio = objective.get("minimum_shared_gradient_ratio")
+    if minimum_ratio is not None and (not _is_number(minimum_ratio) or minimum_ratio < 0.0):
+        raise ConfigError("predictive.objective.minimum_shared_gradient_ratio must be non-negative")
+    auxiliary_declared = objective_mode != "none" or bool(
+        config["model"].get("temporal_channel_mixer_predictive_auxiliary", False)
     )
-    if auxiliary_declared and float(weight) <= 0.0:
-        raise ConfigError("A declared predictive auxiliary objective requires positive weight")
-    if not auxiliary_declared and float(weight) > 0.0:
-        raise ConfigError("Predictive objective weight is positive but no auxiliary is configured")
+    if auxiliary_declared and float(weight) <= 0.0 and authority is None:
+        raise ConfigError(
+            "A declared predictive auxiliary objective requires a positive weight or authority"
+        )
+    if not auxiliary_declared and (float(weight) > 0.0 or authority is not None):
+        raise ConfigError("Predictive objective strength is set but no auxiliary is configured")
     ramp = objective.get("ramp_epochs", 0)
     if type(ramp) is not int or ramp < 0 or ramp > int(config["training"]["epochs"]):
-        raise ConfigError("continuation.objective.ramp_epochs must fit the training horizon")
+        raise ConfigError("predictive.objective.ramp_epochs must fit the training horizon")
     for field, required in (
         ("temporal_region_weights", {"active", "tail"}),
         ("temporal_stage_weights", {"stage1", "stage2"}),
@@ -634,28 +730,61 @@ def _validate_predictive_continuation(config: dict[str, Any], objective_mode: st
         if (
             not isinstance(values, dict)
             or set(values) != required
-            or any(
-                type(value) not in (int, float)
-                or isinstance(value, bool)
-                or value < 0
-                for value in values.values()
-            )
+            or any(not _is_number(value) or value < 0 for value in values.values())
             or sum(values.values()) <= 0
         ):
-            raise ConfigError(f"continuation.objective.{field} has invalid weights")
+            raise ConfigError(f"predictive.objective.{field} has invalid weights")
+    stage_weights = objective.get("temporal_stage_weights")
+    if stage_weights is not None and config["model"].get(
+        "temporal_channel_mixer_predictive_auxiliary", False
+    ):
+        predictor_stages = set(config["model"].get("temporal_channel_mixer_predictive_stages", [1, 2]))
+        weighted = {int(stage.removeprefix("stage")) for stage, value in stage_weights.items() if value > 0}
+        if not weighted or not weighted <= predictor_stages:
+            raise ConfigError(
+                "predictive.objective.temporal_stage_weights must weight only stages with a predictor"
+            )
     if objective_mode != "none":
         for field in ("teacher_config", "teacher_checkpoint"):
-            if not isinstance(continuation.get(field), str) or not continuation[field].strip():
-                raise ConfigError(f"continuation.{field} is required by the objective")
+            if not isinstance(predictive.get(field), str) or not predictive[field].strip():
+                raise ConfigError(f"predictive.{field} is required by the objective")
     head_required = objective_mode in {"fine_future", "fine_same", "coarse_future"}
     if bool(config["model"].get("predictive_head", False)) != head_required:
         raise ConfigError("model.predictive_head must match the latent predictive objective")
-    if head_required and (
-        not isinstance(objective.get("normalization_report"), str)
-        or not objective["normalization_report"].strip()
+    if head_required:
+        if (
+            not isinstance(objective.get("normalization_report"), str)
+            or not objective["normalization_report"].strip()
+        ):
+            raise ConfigError("Latent predictive objectives require a normalization_report path")
+        if config.get("continuation") is None:
+            raise ConfigError(
+                "Latent predictive objectives are defined for continuations: their normalization "
+                "report is fitted on the continuation parent"
+            )
+    if (
+        objective_mode in {"fine_future", "fine_same"}
+        and config["representation"]["name"] != "multigranular_count_frame"
     ):
-        raise ConfigError("Latent predictive objectives require a normalization_report path")
-    if objective_mode in {"fine_future", "fine_same"} and config["representation"]["name"] != "multigranular_count_frame":
         raise ConfigError("Fine predictive objectives require multigranular_count_frame input")
+    if objective_mode == "late_prefix":
+        representation = config["representation"]
+        total_steps = int(representation["window_us"]) // int(representation["bin_width_us"])
+        steps = objective.get("prefix_steps", [20, 30])
+        if (
+            not isinstance(steps, list)
+            or not steps
+            or any(type(step) is not int or not 0 < step <= total_steps for step in steps)
+            or sorted(set(steps)) != steps
+        ):
+            raise ConfigError("predictive.objective.prefix_steps must be increasing steps in the window")
+        if objective.get("prefix_readout", "prefix_mean") not in {
+            "prefix_mean",
+            "fixed_window_denominator",
+        }:
+            raise ConfigError("predictive.objective.prefix_readout is unsupported")
+        temperature = objective.get("temperature", 2.0)
+        if not _is_number(temperature) or temperature <= 0.0:
+            raise ConfigError("predictive.objective.temperature must be positive")
     if float(config["augmentation"].get("event_mix_probability", 0.0)):
-        raise ConfigError("Predictive continuations do not support EventMix")
+        raise ConfigError("Predictive-phase training does not support EventMix")

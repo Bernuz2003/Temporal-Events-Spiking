@@ -409,6 +409,14 @@ risoluzione statistica descritti in
 autorizzato prima del pacchetto checkpoint-only A1–A4; la nuova esecuzione mantiene i nomi canonici
 senza suffissi di correzione.
 
+## Audit checkpoint-only della fase predittiva — 2026-09-24
+
+Nessun training. Report `artifacts/predictive_phase1_audit/phase1_audit.json` (A1–A4 su C0, R0-v2 e
+S0 archiviati, A2 con 8192/2048 campioni) e probe di fattibilità in `artifacts/predictive_diagnostics/`
+(target fine a h=1/2/4, coarse a h=1/2/4/8). Esito e verdetti:
+[`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md), sezione 12. A1 della
+versione registrata misurava una sola classe ed è provvisorio.
+
 ## Regola di aggiornamento
 
 Un full run entra nella tabella solo con `summary.json`, config risolta, ambiente, storia,

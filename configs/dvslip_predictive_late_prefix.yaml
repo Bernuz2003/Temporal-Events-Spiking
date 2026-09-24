@@ -3,13 +3,17 @@ extends: dvslip_predictive_continuation_base.yaml
 experiment:
   name: dvslip_predictive_late_prefix
 
-continuation:
+# L15: distill only the 1.5 s prefix, when 99.4% of validation utterances have ended, so the
+# target is internal settling rather than unobserved events. The prefix is read on the fixed
+# 40-bin denominator: the teacher then differs from the student prefix exactly by the tail
+# contribution, without the 30/40 readout dilution (audit A4).
+predictive:
   teacher_config: configs/dvslip_f_tcap_stage1_dwc3_d8.yaml
   teacher_checkpoint: checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt
   objective:
     mode: late_prefix
     weight: 0.1
     ramp_epochs: 4
-    horizon_steps: 2
-    prefix_steps: [20, 30]
+    prefix_steps: [30]
+    prefix_readout: fixed_window_denominator
     temperature: 2.0
