@@ -172,9 +172,9 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s1 
 ```
 
 **Stato al 2026-09-26.** L15 è completato. D va rieseguito con lo stesso comando: il primo run
-aveva l'ampiezza esponenziale difettosa. S0 ha fallito il gate soltanto sulla CE e parte senza
-workflow, per la decisione 12 di [`DECISIONS.md`](DECISIONS.md). Prima si archiviano il D difettoso
-e il gate S0 duplicato, interrotto all'epoca 60:
+aveva l'ampiezza esponenziale difettosa. S0 ha fallito il gate soltanto sulla CE, ma il full resta
+sospeso fino al controllo held-out della decisione 12. Prima si archiviano il D difettoso e il gate
+S0 duplicato, interrotto all'epoca 60:
 
 ```bash
 mkdir -p artifacts/superseded
@@ -184,7 +184,7 @@ mv artifacts/dvslip_predictive_dynamic_tcap_overfit__20260925_103713_162684__see
    artifacts/superseded/
 ```
 
-Poi S0 e il profiling del suo checkpoint deployabile, a run concluso:
+Solo dopo il GO del controllo held-out, S0 e il profiling del suo checkpoint deployabile sono:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0 -- train --config configs/dvslip_predictive_s0.yaml
@@ -214,7 +214,22 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-vdelta-c0 
 
 Ogni output contiene `predictive_checkpoint_audit.json` e `a4_per_sample.csv`. Il JSON riporta
 `temporal_variation_stage1_active` e `temporal_variation_stage2_active` sotto
-`A4_tail_margin.temporal_variation`.
+`A4_tail_margin.temporal_variation`. Se il checkpoint contiene il predittore S0, la sezione
+`A4_tail_margin.temporal_diagnostics` riporta anche loss e skill contro persistenza e media dei
+ritardi sull'intera development-validation.
+
+Prima di autorizzare il full S0, il controllo held-out del checkpoint del gate è:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-s0-heldout-audit -- \
+  predictive-checkpoint-audit \
+  --config artifacts/dvslip_predictive_s0_overfit__20260925_154302_017223__seed42/config_resolved.yaml \
+  --checkpoint checkpoints/dvslip_predictive_s0_overfit__20260925_154302_017223__seed42/best.pt \
+  --output artifacts/dvslip_predictive_s0_overfit__20260925_154302_017223__seed42/heldout_checkpoint_audit
+```
+
+Questo job non riaddestra il modello. Per S0 vanno interpretate le metriche predittive; accuracy e
+F1 del classificatore non sono un test utile, perché il checkpoint è stato addestrato su 64 sample.
 
 Ogni workflow esegue preflight, gate bounded (finestra finale a peso ausiliario pieno), run completo
 e profiling del checkpoint deployabile, e scrive `predictive_workflow.json`. Nella storia per epoca

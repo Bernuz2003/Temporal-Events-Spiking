@@ -325,7 +325,7 @@ def _tail_margin_audit(
     config: dict[str, Any],
     device: torch.device,
     output_rows: Path,
-    collect_temporal_variation: bool = False,
+    collect_temporal_diagnostics: bool = False,
 ) -> dict[str, Any]:
     loader = build_loader(bundle.validation, config["dataset"], shuffle=False)
     class_groups_path = config.get("evaluation", {}).get("class_groups_manifest")
@@ -333,17 +333,17 @@ def _tail_margin_audit(
     acc1 = set(class_groups.get("visually_confusable_words", ()))
     rows = []
     totals: dict[str, dict[str, float]] = {}
-    variation_sums: dict[str, float] = {}
-    variation_samples = 0
+    temporal_sums: dict[str, float] = {}
+    temporal_samples = 0
     for frames, targets, indices in loader:
         frames = move_encoded_input(frames, device)
         encoded = model._encode(frames)
-        if collect_temporal_variation:
+        if collect_temporal_diagnostics:
             batch_size = int(targets.numel())
-            variation = model._temporal_variation_metrics(last_occupied_steps(frames))
-            for name, value in variation.items():
-                variation_sums[name] = variation_sums.get(name, 0.0) + value * batch_size
-            variation_samples += batch_size
+            temporal = model.temporal_prediction_statistics(last_occupied_steps(frames))
+            for name, value in temporal.items():
+                temporal_sums[name] = temporal_sums.get(name, 0.0) + value * batch_size
+            temporal_samples += batch_size
         spatial = encoded.flatten(3).mean(3)
         if spatial.shape[0] < 40:
             raise ValueError("A4 requires the 40-step DVS-Lip representation.")
@@ -421,10 +421,16 @@ def _tail_margin_audit(
         "groups": summaries,
         "per_sample_csv": str(output_rows.resolve()),
     }
-    if collect_temporal_variation:
+    if collect_temporal_diagnostics:
+        temporal_diagnostics = {
+            name: value / max(1, temporal_samples)
+            for name, value in temporal_sums.items()
+        }
+        result["temporal_diagnostics"] = temporal_diagnostics
         result["temporal_variation"] = {
-            name: value / max(1, variation_samples)
-            for name, value in variation_sums.items()
+            name: value
+            for name, value in temporal_diagnostics.items()
+            if "temporal_variation" in name
         }
     return result
 
@@ -454,7 +460,7 @@ def run_predictive_checkpoint_audit(
             config,
             device,
             output / "a4_per_sample.csv",
-            collect_temporal_variation=True,
+            collect_temporal_diagnostics=True,
         )
     finally:
         for module, enabled in zip(mixers, previous_recording, strict=True):

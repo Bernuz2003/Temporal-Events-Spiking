@@ -43,14 +43,13 @@
     C0). `amplitude_allocation` usa ora univocamente ampiezza `2σ` e memoria totale in `(0, 2K)`;
     la legge esponenziale è stata rimossa. Il vecchio run di D va sotto `artifacts/superseded/`.
     Dettagli nella sezione 12.9 dell'audit.
-12. **Il full run di S0 parte nonostante il gate (2026-09-26).** Il gate fallisce soltanto sulla CE
-    in eval: 1,567 contro la soglia 1,5, con accuracy 96,9% e tutto finito. La soglia è tarata su
-    training con sola CE, e il predittore acquista un'abilità reale (26% sul riferimento causale
-    migliore). Il gate è deterministico, quindi S0 si lancia con `train` più `profile-checkpoint`;
-    i controlli di deriva, audit e preflight sono già verificati. Il precedente di F+TBR (punto 11
-    della discovery, full bloccato per la sola loss) non si applica. Lì l'obiettivo era solo CE, e
-    la loss alta misurava una proprietà della codifica. Qui una parte dell'autorità del gradiente
-    va per costruzione all'obiettivo ausiliario, che la soglia non considera.
+12. **S0 resta gate-negative in attesa del controllo held-out (2026-09-26).** Il gate fallisce
+    soltanto sulla CE in eval: 1,567 contro la soglia 1,5, con accuracy 96,9% e tutto finito. Il
+    predittore batte la persistenza del 26%, ma questa misura usa gli stessi 64 campioni del gate e
+    non dimostra generalizzazione. Prima di autorizzare eccezionalmente il full run si misura la
+    skill del checkpoint sull'intera development-validation, senza nuovo training. Il GO richiede
+    skill finita e positiva contro sia persistenza sia media dei ritardi; un margine almeno 0,10 su
+    entrambe costituisce evidenza chiara. Il gate non viene retroattivamente dichiarato superato.
 13. **S0 a 128 epoche.** Il confronto è appaiato con C0 e C0 a 128 epoche è ricotto e limitato
     dalla generalizzazione. Una durata maggiore si prova soltanto come coppia S0/C0, e solo se S0
     chiude con CE di training chiaramente sopra C0 e F1 ancora in salita.

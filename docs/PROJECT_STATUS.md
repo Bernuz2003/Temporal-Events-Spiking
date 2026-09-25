@@ -12,8 +12,9 @@ checkpoint-only A1–A4 e i probe di fattibilità R5 sono completi (sezione 12 d
 - **L15 completato.** A 1,5 s guadagna +3,53 pp di F1 su R0, senza costo significativo a 2 s.
 - **D da rieseguire.** Il run misurava un'ampiezza di routing illimitata; `amplitude_allocation` è
   ora bounded per definizione. Quel run non è evidenza sull'ipotesi.
-- **S0 in partenza.** Ha fallito il gate soltanto sulla soglia di CE; il full run è autorizzato
-  dalla decisione 12.
+- **S0 in verifica checkpoint-only.** Ha fallito il gate soltanto sulla soglia di CE, ma la skill
+  disponibile è misurata sui 64 campioni del gate. Il full resta sospeso fino alla misura held-out
+  definita dalla decisione 12.
 
 ## Riferimento empirico
 

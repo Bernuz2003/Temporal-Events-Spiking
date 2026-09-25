@@ -751,16 +751,16 @@ rimossa: era una parametrizzazione difettosa, non una variante da mantenere. S1 
 partito. Il run difettoso di D va in `artifacts/superseded/`, e D si riesegue con il proprio
 workflow, gate incluso.
 
-**S0: gate fallito solo sulla loss, full run autorizzato.** Il gate (64 campioni, fp32, 500 epoche)
+**S0: gate fallito solo sulla loss, full run ancora sospeso.** Il gate (64 campioni, fp32, 500 epoche)
 termina con accuracy 95,3% in training e 96,9% in eval, tutto finito, ma CE in eval 1,567 contro la
 soglia 1,5; C0 la supera all'epoca 310 (minimo 1,394). S0 raggiunge 0,95 di accuracy all'epoca 290
 contro 225. La soglia è stata tarata su training con sola CE. Con un termine ausiliario ad autorità
 0,25 sul backbone, una CE meno confidente è l'effetto atteso, non un difetto di cablaggio.
-Il gate è deterministico: rilanciato, fallirebbe allo stesso modo. Il full run parte quindi con
-`train` e il profiling con `profile-checkpoint` (comandi in
-[`OPERATIONS_SMILIES.md`](OPERATIONS_SMILIES.md)). I controlli che il workflow esegue prima del
-gate, cioè deriva da C0, report canonico dell'audit e autorizzazione, sono stati rieseguiti sulle
-configurazioni correnti, e il preflight è già superato.
+Il gate è deterministico: rilanciato, fallirebbe allo stesso modo. Non viene dichiarato superato.
+Prima dell'eventuale eccezione si valuta il checkpoint del gate sull'intera development-validation:
+la skill deve essere finita e positiva contro persistenza e media dei ritardi, con 0,10 su entrambe
+come soglia di evidenza chiara. Il controllo è checkpoint-only e non usa l'official test. Deriva da
+C0, report canonico dell'audit e preflight risultano già verificati.
 
 Cosa mostra il gate sul meccanismo:
 
@@ -796,10 +796,11 @@ Percorsi che il gate non ha esercitato, verificati prima del lancio:
 2. A 128 epoche C0 è ricotto: learning rate 1e-6, accuracy di training 88,8% → 89,1% nelle ultime
    16 epoche, F1 in plateau da circa l'epoca 96. Il limite è la generalizzazione (89% contro 55%),
    non l'ottimizzazione.
-3. Il rallentamento misurato dal gate riguarda la memorizzazione di 64 campioni, e il run stesso
-   dice se pesa. Il segnale è una `train_classification_loss` di S0 ancora chiaramente sopra quella
-   di C0 all'epoca 128, con l'F1 in salita nell'ultima finestra. In quel caso il seguito è una
-   coppia S0/C0 a durata maggiore, non S0 da solo.
+3. Le 500 epoche del gate corrispondono a circa 1.000 optimizer step (64 campioni, batch 16,
+   accumulo 2). Il full usa circa 372 step per epoca e circa 47.600 in 128 epoche: la lentezza in
+   numero di epoche sul subset non implica un orizzonte insufficiente sul dataset completo. Se S0
+   chiudesse comunque con loss di classificazione sopra C0 e F1 ancora in salita, il seguito sarebbe
+   una coppia S0/C0 a durata maggiore, non S0 da solo.
 
 Lettura del run S0:
 
