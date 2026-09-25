@@ -996,9 +996,10 @@ def run_dynamic_routing_diagnostic(
                 mean = mean.clamp(1e-5, 2 - 1e-5)
                 bias = torch.log(mean / (2 - mean))
             else:
-                amplitude = mean.mean().clamp_min(1e-5)
+                amplitude = mean.mean().clamp(1e-5, 2 - 1e-5)
                 allocation = (mean / mean.sum().clamp_min(1e-12)).clamp_min(1e-12)
-                bias = torch.cat((amplitude.log().reshape(1), allocation.log()))
+                amplitude_logit = torch.log(amplitude / (2 - amplitude))
+                bias = torch.cat((amplitude_logit.reshape(1), allocation.log()))
             final.bias.copy_(bias)
 
     loader = build_loader(bundle.validation, no_aug["dataset"], shuffle=False)

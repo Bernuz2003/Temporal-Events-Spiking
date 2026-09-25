@@ -228,6 +228,45 @@ def test_amplitude_allocation_router_starts_as_exact_fixed_tcap():
     )
 
 
+def _amplitude_allocation_mixer() -> CausalTemporalChannelMixer:
+    return CausalTemporalChannelMixer(
+        4,
+        (1, 2, 4, 8),
+        dynamic_routing=True,
+        router_pooling="local",
+        routing_parameterization="amplitude_allocation",
+    )
+
+
+def test_amplitude_allocation_gates_stay_bounded_for_extreme_router_outputs():
+    mixer = _amplitude_allocation_mixer()
+    with torch.no_grad():
+        mixer.weight.normal_()
+        mixer.content_router.weight.zero_()
+        mixer.content_router.bias.copy_(torch.tensor([50.0, 60.0, -60.0, -60.0, -60.0]))
+    mixer(torch.randn(10, 2, 4, 3, 3))
+    statistics = mixer.last_routing_statistics
+    # Amplitude saturates at 2 and all memory goes to one delay: the gate cannot exceed 2K.
+    assert float(statistics["amplitude_mean"]) == pytest.approx(2.0, abs=1e-6)
+    assert float(statistics["gate_mean_by_delay"].max()) <= 2.0 * 4 + 1e-5
+    assert float(statistics["gate_mean_by_delay"].sum()) == pytest.approx(8.0, abs=1e-4)
+
+
+def test_constant_gate_inversion_reproduces_amplitude_allocation_gates():
+    target = torch.tensor([1.5, 0.5, 2.0, 1.0])
+    amplitude = target.mean().clamp(1e-5, 2 - 1e-5)
+    allocation = (target / target.sum()).clamp_min(1e-12)
+    bias = torch.cat((torch.log(amplitude / (2 - amplitude)).reshape(1), allocation.log()))
+    mixer = _amplitude_allocation_mixer()
+    with torch.no_grad():
+        mixer.content_router.weight.zero_()
+        mixer.content_router.bias.copy_(bias)
+    mixer(torch.randn(6, 2, 4, 3, 3))
+    torch.testing.assert_close(
+        mixer.last_routing_statistics["gate_mean_by_delay"], target, rtol=1e-5, atol=1e-5
+    )
+
+
 def test_stage2_only_surprise_routing_keeps_stage1_fixed():
     model = MiniQKFormer(
         in_channels=2,

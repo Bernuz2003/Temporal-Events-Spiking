@@ -617,7 +617,10 @@ class CausalTemporalChannelMixer(nn.Module):
             allocation = gates / gates.sum(dim=2, keepdim=True).clamp_min(1e-12)
         else:
             amplitude_logit = gate_logits[:, :, 0]
-            amplitude = amplitude_logit.clamp(-8.0, 8.0).exp()
+            # The only supported amplitude-allocation law is bounded: sum_d g_d = a*K stays in
+            # (0, 2K). This removes the scale degeneracy between a and W_d while retaining exact
+            # unit routing at initialization (a=1 and a uniform allocation).
+            amplitude = 2.0 * torch.sigmoid(amplitude_logit)
             allocation = gate_logits[:, :, 1:].softmax(dim=2)
             gates = amplitude.unsqueeze(2) * len(self.delays) * allocation
         self.last_routing_statistics = None

@@ -171,6 +171,51 @@ Seconda ondata, soltanto dopo la lettura della firma meccanicistica di S0:
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s1 -- predictive-scratch --config configs/dvslip_predictive_s1.yaml
 ```
 
+**Stato al 2026-09-26.** L15 è completato. D va rieseguito con lo stesso comando: il primo run
+aveva l'ampiezza esponenziale difettosa. S0 ha fallito il gate soltanto sulla CE e parte senza
+workflow, per la decisione 12 di [`DECISIONS.md`](DECISIONS.md). Prima si archiviano il D difettoso
+e il gate S0 duplicato, interrotto all'epoca 60:
+
+```bash
+mkdir -p artifacts/superseded
+mv artifacts/dvslip_predictive_dynamic_tcap_overfit__20260925_103713_162684__seed42 \
+   artifacts/dvslip_predictive_dynamic_tcap__20260925_104725_998808__seed42 \
+   artifacts/dvslip_predictive_s0_overfit__20260925_200905_695697__seed42 \
+   artifacts/superseded/
+```
+
+Poi S0 e il profiling del suo checkpoint deployabile, a run concluso:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0 -- train --config configs/dvslip_predictive_s0.yaml
+# a run concluso, con <run-id> = dvslip_predictive_s0__<timestamp>__seed42
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0-profile -- profile-checkpoint --config artifacts/<run-id>/deployment_config_resolved.yaml --checkpoint checkpoints/<run-id>/deployment.pt --output artifacts/<run-id>/hardware_profile_v4.json --samples 64
+```
+
+Il primo controllo si fa dopo l'epoca 1: con il ramp a peso zero deve coincidere con C0. I valori di
+riferimento sono nella sezione 12.9 dell'audit.
+
+Le due diagnostiche checkpoint-only rimaste aperte usano lo stesso comando. Il primo job produce
+A4 per L15; il secondo fornisce il riferimento `V_Δ` di C0 (e anche il suo A4 nello stesso formato):
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-a4-l15 -- \
+  predictive-checkpoint-audit \
+  --config artifacts/dvslip_predictive_late_prefix__20260924_153414_101029__seed42/deployment_config_resolved.yaml \
+  --checkpoint checkpoints/dvslip_predictive_late_prefix__20260924_153414_101029__seed42/deployment.pt \
+  --output artifacts/dvslip_predictive_late_prefix__20260924_153414_101029__seed42/checkpoint_audit
+
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-vdelta-c0 -- \
+  predictive-checkpoint-audit \
+  --config artifacts/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/config_resolved.yaml \
+  --checkpoint checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt \
+  --output artifacts/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/checkpoint_audit
+```
+
+Ogni output contiene `predictive_checkpoint_audit.json` e `a4_per_sample.csv`. Il JSON riporta
+`temporal_variation_stage1_active` e `temporal_variation_stage2_active` sotto
+`A4_tail_margin.temporal_variation`.
+
 Ogni workflow esegue preflight, gate bounded (finestra finale a peso ausiliario pieno), run completo
 e profiling del checkpoint deployabile, e scrive `predictive_workflow.json`. Nella storia per epoca
 di S0 e S1 vanno letti `auxiliary_nominal_weight`, `authority_nominal_shared_ratio`,

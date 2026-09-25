@@ -1,6 +1,6 @@
 # Decisioni attive
 
-**Aggiornate:** 2026-09-24
+**Aggiornate:** 2026-09-26
 
 ## Decisioni correnti della fase predittiva
 
@@ -38,6 +38,22 @@
 10. Official test escluso. Profiling dal checkpoint deployabile del proprio best; nessun risparmio
     attribuito automaticamente a gate soft. La disponibilità del teacher limita cosa può essere
     trasferito fra dataset.
+11. **D si riesegue (2026-09-26).** Il primo run misurava un difetto: l'ampiezza esponenziale di
+    `amplitude_allocation` è esplosa addestrando da zero (finestra tardiva 48,87 contro 54,36 di
+    C0). `amplitude_allocation` usa ora univocamente ampiezza `2σ` e memoria totale in `(0, 2K)`;
+    la legge esponenziale è stata rimossa. Il vecchio run di D va sotto `artifacts/superseded/`.
+    Dettagli nella sezione 12.9 dell'audit.
+12. **Il full run di S0 parte nonostante il gate (2026-09-26).** Il gate fallisce soltanto sulla CE
+    in eval: 1,567 contro la soglia 1,5, con accuracy 96,9% e tutto finito. La soglia è tarata su
+    training con sola CE, e il predittore acquista un'abilità reale (26% sul riferimento causale
+    migliore). Il gate è deterministico, quindi S0 si lancia con `train` più `profile-checkpoint`;
+    i controlli di deriva, audit e preflight sono già verificati. Il precedente di F+TBR (punto 11
+    della discovery, full bloccato per la sola loss) non si applica. Lì l'obiettivo era solo CE, e
+    la loss alta misurava una proprietà della codifica. Qui una parte dell'autorità del gradiente
+    va per costruzione all'obiettivo ausiliario, che la soglia non considera.
+13. **S0 a 128 epoche.** Il confronto è appaiato con C0 e C0 a 128 epoche è ricotto e limitato
+    dalla generalizzazione. Una durata maggiore si prova soltanto come coppia S0/C0, e solo se S0
+    chiude con CE di training chiaramente sopra C0 e F1 ancora in salita.
 
 ## Decisioni della discovery al 13 settembre — contesto storico
 

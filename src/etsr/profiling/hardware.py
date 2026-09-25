@@ -244,7 +244,7 @@ class _HardwareProfiler:
                 if module.routing_parameterization == "independent":
                     self.totals["sigmoid"] += routed_observations * len(module.delays)
                 else:
-                    self.totals["exponential"] += routed_observations
+                    self.totals["sigmoid"] += routed_observations
                     self.totals["softmax"] += routed_observations * len(module.delays)
             if module.predictive_auxiliary:
                 predictor_multiplies = (

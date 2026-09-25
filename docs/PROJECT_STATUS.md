@@ -1,12 +1,19 @@
 # Stato corrente
 
-**Aggiornato:** 2026-09-24
+**Aggiornato:** 2026-09-26
 
 **Fase:** riesecuzione corretta della ricerca predittiva/condizionale. La prima esecuzione (sette
 continuazioni) non è evidenza sulle ipotesi; è archiviata sotto `artifacts/superseded/` e documentata
 soltanto in [`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). L'audit
-checkpoint-only A1–A4 e i probe di fattibilità R5 sono completi (sezione 12 dell'audit). Nessun
-nuovo training della fase è ancora stato lanciato.
+checkpoint-only A1–A4 e i probe di fattibilità R5 sono completi (sezione 12 dell'audit).
+
+**Prima ondata corretta, seed 42** (sezione 12.9 dell'audit):
+
+- **L15 completato.** A 1,5 s guadagna +3,53 pp di F1 su R0, senza costo significativo a 2 s.
+- **D da rieseguire.** Il run misurava un'ampiezza di routing illimitata; `amplitude_allocation` è
+  ora bounded per definizione. Quel run non è evidenza sull'ipotesi.
+- **S0 in partenza.** Ha fallito il gate soltanto sulla soglia di CE; il full run è autorizzato
+  dalla decisione 12.
 
 ## Riferimento empirico
 
@@ -47,15 +54,13 @@ conserva le diagnostiche e i profili storici.
 
 ## Prossimo passo
 
-Prima si rigenera obbligatoriamente l'audit nello schema 2: A1 stratificato su 64 classi e A2 a
-8192/2048 campioni. Il report schema 1 presente viene rifiutato dagli ingressi di training.
+1. Lanciare S0 (`train`, poi `profile-checkpoint`).
+2. Rieseguire D con il proprio workflow, gate incluso.
+3. Leggere l'epoca 1 di S0, che deve coincidere con C0, e poi la sua firma meccanicistica.
+4. S1 parte solo se S0 mostra una skill predittiva di validation. L'«eval» del gate non basta: è
+   fatto sugli stessi 64 campioni di training.
 
-Seguono quattro bracci scientifici, ma cinque job includendo il controllo R0, seed 42: **L15** in
-continuazione da C0 con **R0**; **D**, **S0** e **S1** da zero con la ricetta di C0. Sulle quattro
-macchine la prima ondata è R0/L15/D/S0; S1 parte sulla prima macchina libera e viene confrontato
-anche con S0, ma solo se S0 apprende davvero una skill predittiva di validation. Prima di ogni lancio
-si legge il preflight (`predictive-check`). I seed 43 e 44 seguono solo per i bracci con firma
-meccanicistica coerente. Comandi in
+I seed 43 e 44 seguono solo per i bracci con firma meccanicistica coerente. Comandi in
 [`OPERATIONS_SMILIES.md`](OPERATIONS_SMILIES.md).
 
 Tutte le metriche citate sono development validation. L'implementazione non produce da sola nuova

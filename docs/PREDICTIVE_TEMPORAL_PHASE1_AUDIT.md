@@ -395,7 +395,7 @@ Motivate dagli esiti della sezione 12. Aggiornano R1 e risolvono R5.
 
 | ID | Revisione | Motivo |
 |---|---|---|
-| R1′ | Nell'obiettivo S la coda ha peso **0**, non 0,25. | A2: nella coda la predizione x̂ porta più informazione di classe del presente x (8,89% contro 6,64%), e la loss la trascina verso x |
+| R1′ | Nell'obiettivo S la coda ha peso **0**, non 0,25. | F2: la coda è la parte banale da predire (nMSE 0,10 nello stage1); A2: nella coda x̂ porta più informazione di classe di x (8,89% contro 6,64%). A1 stratificato non la sostiene: nello stage2 la coda è neutra (+0,02) |
 | R6 | Il predittore causale esiste **solo nello stage2** (`temporal_channel_mixer_predictive_stages: [2]`); `V_Δ` resta registrata anche nello stage1. | A2: informazione di classe 24% nello stage2 contro 5% nello stage1, dove il residuo (il movimento) è il portatore migliore |
 | R7 | Autorità esplicita: λ calibrato prima dell'epoca 1 perché il rapporto `‖λ∇L_aux‖/‖∇L_CE‖` sul backbone condiviso valga 0,25, e rimisurato ogni epoca su un batch fisso stratificato, con passo massimo ×2. Il preflight esige un rapporto minimo di 0,05 per ogni obiettivo ausiliario dichiarato. | A1, A3 |
 | R8 | D, S0 e S1 si addestrano **da zero** con la ricetta congelata di C0; i controlli sono i seed archiviati di C0. L15 resta una continuazione con controllo R0. | A3: il substrato di continuazione non si muove (CKA 0,999), e lavora a 1/30 del learning rate con cui la rappresentazione si è formata |
@@ -575,23 +575,34 @@ di ipotesi, ed era quindi dominato dalla varianza.
 
 ### 12.1 A1 — Autorità e direzione del gradiente ausiliario della S0 archiviata
 
+Misurato su quattro batch disgiunti stratificati per classe, 64 parole distinte, commit `36525a8`:
+
 | blocco | ratio active | coseno active | ratio tail | coseno tail |
 |---|---:|---:|---:|---:|
-| stage1_shared | 7,49e-05 | +0,518 | 6,26e-05 | −0,324 |
-| tcap1_weights | 8,66e-05 | +0,223 | 6,77e-05 | −0,127 |
-| stage2_shared | 4,38e-05 | +0,142 | 2,65e-05 | −0,025 |
+| stage1_shared | 8,40e-05 | −0,532 | 8,44e-05 | +0,276 |
+| tcap1_weights | 9,55e-05 | −0,156 | 9,46e-05 | −0,003 |
+| stage2_shared | 4,73e-05 | −0,017 | 3,82e-05 | +0,020 |
 | tcap2_weights, head | 0 | — | 0 | — |
-| globale condiviso | | +0,425 | | −0,263 |
+| aggregato condiviso | 8,07e-05 | −0,410 | 8,01e-05 | +0,201 |
 
-Il gradiente ausiliario valeva 4–9 × 10⁻⁵ di quello di classificazione sullo stesso supporto. Le
-matrici del mixer di stage2 e la testa non ricevono gradiente ausiliario per costruzione.
+Il segno è lo stesso in tutti e quattro i batch: nella regione attiva da −0,23 a −0,51, nella coda
+da +0,09 a +0,33.
 
-**Difetto della misura, scoperto dopo.** DVS-Lip è ordinato per classe, e A1 — come ogni preflight
-della prima esecuzione — usava il primo batch non mescolato: **16 campioni della sola parola
-«accused»**. La magnitudine è confermata indipendentemente da A3. La struttura dei segni (attiva
-allineata, coda antagonista) resta invece **provvisoria** finché A1 non viene rieseguito con il
-codice corretto, che media quattro batch stratificati su 64 classi distinte. Le decisioni R1′ e R6
-non dipendono da quei segni: poggiano su A2, che usa una permutazione casuale su tutte le classi.
+- **Magnitudine confermata**: 4–10 × 10⁻⁵, anche indipendentemente da A3.
+- **La prima versione di A1 aveva il segno opposto** (attiva +0,425, coda −0,263) perché misurava
+  16 campioni della sola parola «accused»: DVS-Lip è ordinato per classe e il batch diagnostico era
+  il primo non mescolato. Quella struttura era un artefatto ed è ritirata, insieme a ogni
+  conclusione che ne derivava.
+- La componente attiva dell'obiettivo archiviato si oppone al gradiente di classificazione quasi
+  solo attraverso lo stage1 (−0,53); sullo stage2 è neutra (−0,02). È coerente con A2, per cui nello
+  stage1 l'informazione di classe sta nel residuo, e rafforza R6, che rimuove il predittore di
+  stage1.
+- **Limite dell'interpretazione.** Il riferimento è il gradiente CE di *training* su un checkpoint
+  al 92–93% di accuracy di training e 55% di validation. Opporsi a quella direzione può voler dire
+  danneggiare la classificazione oppure contrastare la memorizzazione: il coseno non distingue i due
+  casi. La quantità che li distingue è l'allineamento con il gradiente della loss su campioni non
+  usati per il training, che è anche la derivata al primo ordine della loss di validation rispetto
+  al peso ausiliario.
 
 ### 12.2 A2 — Dove sta l'informazione discriminativa
 
@@ -688,21 +699,115 @@ C0 è stato addestrato (test `test_scheduler_reproduces_the_legacy_schedule_of_f
 condividono anche l'inizializzazione del predittore, quindi il loro confronto è appaiato fin
 dall'inizio.
 
-### 12.8 Primo preflight del codice corretto
+### 12.8 Preflight del codice corretto
 
-Eseguito in CPU sui dati locali, seed 42, batch diagnostico di 16 campioni da 16 classi:
+Eseguiti sul server il 2026-09-24 per i cinque bracci del seed 42, tutti superati; batch diagnostico
+di 16 campioni da 16 classi.
 
-| | D | S0 | S1 |
-|---|---|---|---|
-| backbone = topologia C0 allo stesso seed | sì | sì | sì |
-| causalità architetturale (BN a statistiche fisse) | 0,0 | 0,0 | 0,0 |
-| rapporto unitario all'inizializzazione | — | 0,0647 | 0,0647 |
-| λ calibrato → rapporto condiviso | — | 3,86 → 0,250 | 3,86 → 0,250 |
-| gradiente del router: inizio → dopo 2 passi | 0 → 0,39 | — | 0 → 7,29 |
+| | R0 | L15 | D | S0 | S1 |
+|---|---|---|---|---|---|
+| inizializzazione | logit = C0 (0,0) | logit = C0 (0,0) | backbone C0 | backbone C0 | backbone C0 |
+| causalità architetturale | sì | sì | sì | sì | sì |
+| rapporto unitario | — | 1,484 | — | 0,0616 | 0,0616 |
+| peso → rapporto condiviso | — | 0,1 fisso → **0,148** | — | 4,06 calibrato → 0,250 | 4,06 → 0,250 |
+| coseno condiviso con CE di training | — | **−0,641** | — | −0,037 (inizializzazione casuale) | −0,037 |
+| gradiente dei router: inizio → dopo 2 passi | — | — | 0 → 0,42 | — | 0 → 0,55 |
 
-Il preflight ha anche misurato una condizione che la prima esecuzione non poteva vedere perché
-congelava la BatchNorm: **in training la BN non è causale**. `_time_distributed` fonde tempo e batch,
-e le statistiche per canale includono i passi futuri; perturbare la seconda metà della sequenza
-sposta il prefisso fino a 4,0. Il modello deployato usa statistiche running ed è causale, e C0 è
-stato addestrato nello stesso modo: la condizione è comune a controllo e bracci. Il preflight la
-misura e la riporta, senza farne un gate.
+- **L15 ha autorità reale senza calibrazione**: allo stesso peso 0,1 e sullo stesso C0, la KL sul
+  prefisso ha un rapporto circa 1.800 volte quello della S0 archiviata (0,148 contro 8,1e-05).
+- Il suo gradiente si oppone al CE di training (−0,64, −0,74 sullo stage1). Vale lo stesso limite
+  di A1: in regime di memorizzazione è compatibile sia con un danno sia con la regolarizzazione
+  tipica della distillazione a temperatura 2. Lo discriminano il run stesso (CE di training e F1
+  tardiva contro R0, A4 sul checkpoint) e l'allineamento con il gradiente su dati non visti.
+- S0 e S1 hanno calibrazione e inizializzazione identiche: il loro confronto è appaiato.
+
+Il preflight misura anche una condizione che la prima esecuzione non poteva vedere perché congelava
+la BatchNorm: **in training la BN non è causale**. `_time_distributed` fonde tempo e batch, e le
+statistiche per canale includono i passi futuri; perturbare la seconda metà della sequenza sposta il
+prefisso fino a 4,0. Il modello deployato usa statistiche running ed è causale, e C0 è stato
+addestrato nello stesso modo: la condizione è comune a controllo e bracci, ed è registrata senza
+farne un gate.
+
+### 12.9 Prima ondata corretta, seed 42 (2026-09-25/26)
+
+**L15 completato.** Letto contro R0-v2 archiviato, con cui è appaiato esattamente all'epoca 1: a
+1,5 s F1 51,03 contro 47,50 (+3,53); il gap di settling fra 1,5 e 2 s scende da 7,80 a 4,95 pp;
+a 2 s la finestra tardiva vale +0,16 pp (McNemar p = 0,35); Acc1 +1,40, Acc2 −0,13. È la firma
+attesa (settling anticipato senza costo sul punto finale). Restano da leggere l'R0 di quest'ondata e
+A4 sul checkpoint.
+
+**D non è evidenza sull'ipotesi: misura un difetto di parametrizzazione.** Con `amplitude_allocation`
+l'ampiezza era `a = exp(clamp(ℓ, −8, 8))`, fino a circa 3.000. Addestrando da zero, l'ampiezza e le
+matrici `W_d` sono intercambiabili in scala, e `W_d` parte da zero: nulla trattiene l'ampiezza.
+Già nel gate all'epoca 100 l'ampiezza valeva in media 17 (SD 59), ma il gate misura solo la
+capacità di adattarsi e lo ha superato. Nel run completo i contributi dei tap valgono 40–150 contro
+0,4–1,1 di C0. Esito: best 49,72 (epoca 114), finestra tardiva 48,87 ± 0,50 contro 54,36 ± 0,49 di
+C0, accuracy di training 64,1% contro 89,1%.
+
+Correzione: `amplitude_allocation` è ora definita univocamente con `a = 2σ(ℓ) ∈ (0, 2)`.
+La memoria totale `Σ_d g_d = aK` resta in `(0, 2K)` come con i gate indipendenti, e
+all'inizializzazione `a = 1` riproduce esattamente TCAP fisso. La precedente legge esponenziale è
+rimossa: era una parametrizzazione difettosa, non una variante da mantenere. S1 non era ancora
+partito. Il run difettoso di D va in `artifacts/superseded/`, e D si riesegue con il proprio
+workflow, gate incluso.
+
+**S0: gate fallito solo sulla loss, full run autorizzato.** Il gate (64 campioni, fp32, 500 epoche)
+termina con accuracy 95,3% in training e 96,9% in eval, tutto finito, ma CE in eval 1,567 contro la
+soglia 1,5; C0 la supera all'epoca 310 (minimo 1,394). S0 raggiunge 0,95 di accuracy all'epoca 290
+contro 225. La soglia è stata tarata su training con sola CE. Con un termine ausiliario ad autorità
+0,25 sul backbone, una CE meno confidente è l'effetto atteso, non un difetto di cablaggio.
+Il gate è deterministico: rilanciato, fallirebbe allo stesso modo. Il full run parte quindi con
+`train` e il profiling con `profile-checkpoint` (comandi in
+[`OPERATIONS_SMILIES.md`](OPERATIONS_SMILIES.md)). I controlli che il workflow esegue prima del
+gate, cioè deriva da C0, report canonico dell'audit e autorizzazione, sono stati rieseguiti sulle
+configurazioni correnti, e il preflight è già superato.
+
+Cosa mostra il gate sul meccanismo:
+
+- Il predittore acquista un'abilità vera, non una scorciatoia. A inizializzazione coincide con la
+  media dei ritardi (skill 0). Alla fine batte del 26% il riferimento causale migliore, la
+  persistenza, che nel frattempo è migliorata perché le feature si sono fatte più lisce (`V_Δ`
+  stage2 da 1,50 a 0,44).
+- La varianza del target di stage2 passa da 1,67 a 1,30: nessun collasso di scala.
+- λ sale da 3,0 a circa 73 (massimo 105) perché il rapporto unitario scende da 0,082 a 0,0034;
+  l'autorità effettiva resta 0,25.
+- La norma del gradiente globale è simile a quella del gate di C0: il predittore non domina il
+  clipping.
+
+Percorsi che il gate non ha esercitato, verificati prima del lancio:
+
+- **AMP.** Il gate girava in fp32, il full run gira in AMP come C0. Sotto autocast la smooth-L1 del
+  predittore e la CE sono calcolate in fp32, e la calibrazione disabilita esplicitamente l'autocast.
+  Gli overflow fp16 del backward sono gestiti dal GradScaler come per C0 e registrati in
+  `amp_overflow_fraction`. Le colonne `train_gradient_*` del batch 0 sono misurate senza scaling in
+  fp16, quindi sono approssimate; λ dipende solo dalla calibrazione in fp32.
+- **Memoria.** Il picco del gate in fp32 è 12,08 GB (C0: 6,54) su una A4000 da 16,7 GB, e include
+  il grafo della calibrazione trattenuto dalla cache del mixer. In AMP il training scende sotto
+  quel valore.
+- **Valutazione finale.** Curve dei prefissi, prefissi per campione e statistiche predittive sono
+  state provate in CPU su un modello con predittore. L'export deployabile è stato esercitato dal
+  gate e dal test d'integrazione. La valutazione completa è quella già percorsa da C0, L15 e D.
+
+**128 epoche.** Sono la scelta corretta, per tre ragioni:
+
+1. Il confronto è appaiato con C0: stessa inizializzazione, stesso flusso di dati, stesso schedule
+   coseno. Allungare solo S0 confonderebbe durata e meccanismo, e un confronto a durata diversa
+   richiederebbe un nuovo controllo C0 alla stessa durata.
+2. A 128 epoche C0 è ricotto: learning rate 1e-6, accuracy di training 88,8% → 89,1% nelle ultime
+   16 epoche, F1 in plateau da circa l'epoca 96. Il limite è la generalizzazione (89% contro 55%),
+   non l'ottimizzazione.
+3. Il rallentamento misurato dal gate riguarda la memorizzazione di 64 campioni, e il run stesso
+   dice se pesa. Il segnale è una `train_classification_loss` di S0 ancora chiaramente sopra quella
+   di C0 all'epoca 128, con l'F1 in salita nell'ultima finestra. In quel caso il seguito è una
+   coppia S0/C0 a durata maggiore, non S0 da solo.
+
+Lettura del run S0:
+
+- **Epoca 1.** Il ramp ha peso effettivo 0, quindi l'epoca è attesa identica a C0: train loss
+  4,6636, accuracy 0,0108, val loss 4,6544, norma del gradiente 1,4102. Una differenza indica che
+  l'appaiamento si è rotto.
+- **Dall'epoca 2.** Confrontare `train_classification_loss` (non `train_loss`, che include λ·aux) e
+  F1 con C0: epoca 16 3,514 / 14,40, epoca 32 2,387 / 39,89, epoca 64 1,672 / 47,41, epoca 96
+  1,398 / 53,83, epoca 128 1,342 / 54,47.
+- **Firma meccanicistica.** Skill di validation rispetto al riferimento causale migliore, varianza
+  del target (collasso), `V_Δ`, λ e autorità effettiva, `amp_overflow_fraction`.

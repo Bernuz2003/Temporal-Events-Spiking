@@ -62,6 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
     phase1_audit.add_argument("--fit-samples", type=int, default=8192)
     phase1_audit.add_argument("--holdout-samples", type=int, default=2048)
     phase1_audit.add_argument("--feature-samples", type=int, default=256)
+    checkpoint_audit = subparsers.add_parser(
+        "predictive-checkpoint-audit",
+        help="Measure A4 tail margins and temporal variation on one frozen checkpoint",
+    )
+    checkpoint_audit.add_argument("--config", required=True)
+    checkpoint_audit.add_argument("--checkpoint", required=True)
+    checkpoint_audit.add_argument("--output", required=True)
     tcap_predictive_probe = subparsers.add_parser(
         "tcap-predictive-probe",
         help="Fit and evaluate the checkpoint-only causal TCAP history predictor",
@@ -319,6 +326,23 @@ def main() -> None:
             {
                 "output": str((Path(args.output) / "phase1_audit.json").resolve()),
                 "complete": report["complete"],
+                "official_test_used": report["official_test_used"],
+            }
+        )
+    elif args.command == "predictive-checkpoint-audit":
+        from etsr.evaluation.predictive_phase1_audit import run_predictive_checkpoint_audit
+
+        report = run_predictive_checkpoint_audit(
+            config_path=args.config,
+            checkpoint_path=args.checkpoint,
+            output_dir=args.output,
+        )
+        print(
+            {
+                "output": str(
+                    (Path(args.output) / "predictive_checkpoint_audit.json").resolve()
+                ),
+                "checkpoint": report["checkpoint"],
                 "official_test_used": report["official_test_used"],
             }
         )
