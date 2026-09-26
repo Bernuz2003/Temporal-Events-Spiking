@@ -46,6 +46,7 @@ PREDICTIVE_MODEL_FIELDS = frozenset(
         "temporal_channel_mixer_predictive_auxiliary",
         "temporal_channel_mixer_predictor_channel_groups",
         "temporal_channel_mixer_predictor_spatial_kernel_size",
+        "temporal_channel_mixer_predictor_detach_history",
         "temporal_channel_mixer_surprise_routing",
         "temporal_channel_mixer_routing_stages",
         "temporal_channel_mixer_routing_parameterization",

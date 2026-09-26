@@ -42,6 +42,7 @@ def test_predictive_configs_follow_the_audited_regimes():
     dynamic = load_config("configs/dvslip_predictive_dynamic_tcap.yaml")
     s0 = load_config("configs/dvslip_predictive_s0.yaml")
     s1 = load_config("configs/dvslip_predictive_s1.yaml")
+    s1_decoupled = load_config("configs/dvslip_predictive_s1_decoupled.yaml")
 
     # Continuations from frozen C0: R0 and L15, plus the recorded P designs.
     for continuation in (r0, late_prefix, future, same, coarse):
@@ -62,7 +63,7 @@ def test_predictive_configs_follow_the_audited_regimes():
     assert future["model"]["predictive_head_hidden_channels"] == 128
 
     # From-scratch branches: frozen C0 recipe and topology plus registered phase fields only.
-    for scratch in (dynamic, s0, s1):
+    for scratch in (dynamic, s0, s1, s1_decoupled):
         assert "continuation" not in scratch
         for section in ("dataset", "representation", "augmentation", "training", "evaluation"):
             assert scratch[section] == c0[section]
@@ -80,6 +81,12 @@ def test_predictive_configs_follow_the_audited_regimes():
     assert s1["model"]["temporal_channel_mixer_router_pooling"] == "local"
     assert s1["model"]["temporal_channel_mixer_routing_stages"] == [2]
     assert not s1["model"].get("temporal_channel_mixer_dynamic_routing", False)
+    assert s1_decoupled["model"]["temporal_channel_mixer_predictor_detach_history"]
+    decoupled_objective = s1_decoupled["predictive"]["objective"]
+    assert decoupled_objective["weight"] == 1.0
+    assert decoupled_objective["ramp_epochs"] == 0
+    assert decoupled_objective["authority"] is None
+    assert decoupled_objective["minimum_shared_gradient_ratio"] == 0.0
 
     r0["predictive"].pop("phase1_audit_report")
     with pytest.raises(ConfigError, match="must name the completed A1-A4 report"):
@@ -100,6 +107,18 @@ def test_predictive_modules_cannot_train_without_an_objective():
     r0["continuation"]["objective"] = {"mode": "none", "weight": 0.0}
     with pytest.raises(ConfigError, match="belongs to the predictive section"):
         validate_config(r0)
+
+
+def test_decoupled_predictor_rejects_shared_gradient_authority():
+    config = load_config("configs/dvslip_predictive_s1_decoupled.yaml")
+    config["predictive"]["objective"]["authority"] = {"target_ratio": 0.25}
+    with pytest.raises(ConfigError, match="cannot use shared-gradient authority"):
+        validate_config(config)
+
+    config = load_config("configs/dvslip_predictive_s1_decoupled.yaml")
+    config["predictive"]["objective"].pop("minimum_shared_gradient_ratio")
+    with pytest.raises(ConfigError, match="requires minimum_shared_gradient_ratio=0.0"):
+        validate_config(config)
 
 
 def test_predictive_selection_excludes_the_complete_auxiliary_ramp():
@@ -445,6 +464,84 @@ def test_spatial_mimo_predictor_is_causal_and_all_new_families_receive_gradients
         assert all(torch.isfinite(gradient).all() for gradient in gradients)
 
 
+def test_decoupled_predictor_observes_history_without_shaping_it():
+    torch.manual_seed(18)
+    attached = CausalTemporalChannelMixer(
+        4,
+        (1, 2),
+        predictive_auxiliary=True,
+        predictor_channel_groups=1,
+        predictor_spatial_kernel_size=3,
+    )
+    detached = CausalTemporalChannelMixer(
+        4,
+        (1, 2),
+        predictive_auxiliary=True,
+        predictor_channel_groups=1,
+        predictor_spatial_kernel_size=3,
+        predictor_detach_history=True,
+    )
+    detached.load_state_dict(attached.state_dict())
+    attached_sequence = torch.randn(6, 2, 4, 3, 3, requires_grad=True)
+    detached_sequence = attached_sequence.detach().clone().requires_grad_(True)
+
+    torch.testing.assert_close(attached(attached_sequence), detached(detached_sequence))
+    attached_loss = attached.auxiliary_loss()
+    detached_loss = detached.auxiliary_loss()
+    assert attached_loss is not None and detached_loss is not None
+    torch.testing.assert_close(attached_loss, detached_loss)
+
+    attached_loss.backward()
+    detached_loss.backward()
+    assert attached_sequence.grad is not None
+    assert float(attached_sequence.grad.abs().sum()) > 0.0
+    assert detached_sequence.grad is None
+    predictor_gradients = [
+        parameter.grad
+        for name, parameter in detached.named_parameters()
+        if "predictor_" in name
+    ]
+    assert predictor_gradients and all(gradient is not None for gradient in predictor_gradients)
+    assert sum(float(gradient.abs().sum()) for gradient in predictor_gradients) > 0.0
+
+
+def test_decoupled_surprise_routes_ce_without_training_the_predictor_from_ce():
+    torch.manual_seed(19)
+    mixer = CausalTemporalChannelMixer(
+        4,
+        (1, 2),
+        predictive_auxiliary=True,
+        predictor_channel_groups=1,
+        predictor_spatial_kernel_size=3,
+        predictor_detach_history=True,
+        surprise_routing=True,
+    )
+    with torch.no_grad():
+        mixer.weight.normal_(std=0.1)
+    sequence = torch.randn(6, 2, 4, 3, 3, requires_grad=True)
+    classification_proxy = mixer(sequence).square().mean()
+    predictor_parameters = [
+        parameter
+        for name, parameter in mixer.named_parameters()
+        if "predictor_" in name
+    ]
+    predictor_gradients = torch.autograd.grad(
+        classification_proxy,
+        predictor_parameters,
+        retain_graph=True,
+        allow_unused=True,
+    )
+    assert all(gradient is None for gradient in predictor_gradients)
+    assert mixer.surprise_router is not None
+    router_gradients = torch.autograd.grad(
+        classification_proxy,
+        tuple(mixer.surprise_router.parameters()),
+        allow_unused=True,
+    )
+    assert all(gradient is not None for gradient in router_gradients)
+    assert sum(float(gradient.abs().sum()) for gradient in router_gradients) > 0.0
+
+
 def test_surprise_tcap_eval_computes_routing_without_auxiliary_loss():
     mixer = CausalTemporalChannelMixer(
         4,
@@ -717,6 +814,34 @@ def test_cuda_amp_cross_resolution_objective_at_dvslip_shape():
     assert all(gradient is not None for gradient in predictor_gradients)
     assert all(torch.isfinite(gradient).all() for gradient in predictor_gradients)
     assert sum(float(gradient.abs().sum()) for gradient in predictor_gradients) > 0.0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires SMILIES CUDA runtime")
+def test_cuda_amp_decoupled_surprise_objective_at_dvslip_shape():
+    config = load_config("configs/dvslip_predictive_s1_decoupled.yaml")
+    model = build_model(config["model"], 100).cuda().train()
+    frames = torch.rand(1, 40, 2, 128, 128, device="cuda")
+    targets = torch.tensor([3], device="cuda")
+    objective = PredictiveTrainingObjective(config["predictive"]["objective"])
+    with torch.autocast("cuda", dtype=torch.float16):
+        result = objective(
+            model,
+            frames,
+            targets,
+            torch.nn.CrossEntropyLoss(),
+            epoch=1,
+        )
+    result.total_loss.backward()
+
+    assert torch.isfinite(result.total_loss)
+    for family in ("predictor_spatial", "predictor_projections", "surprise_router"):
+        gradients = [
+            parameter.grad
+            for name, parameter in model.named_parameters()
+            if family in name
+        ]
+        assert gradients and all(gradient is not None for gradient in gradients)
+        assert all(torch.isfinite(gradient).all() for gradient in gradients)
 
 
 def _tiny_stage2_predictive_model(*, surprise: bool = False) -> MiniQKFormer:

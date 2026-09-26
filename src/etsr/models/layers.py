@@ -44,6 +44,7 @@ class ConvBNLIF2d(nn.Module):
         temporal_channel_mixer_predictive_auxiliary: bool = False,
         temporal_channel_mixer_predictor_channel_groups: int | None = None,
         temporal_channel_mixer_predictor_spatial_kernel_size: int = 1,
+        temporal_channel_mixer_predictor_detach_history: bool = False,
         temporal_channel_mixer_surprise_routing: bool = False,
         temporal_channel_mixer_routing_parameterization: str = "independent",
         learnable_tau: bool = False,
@@ -78,6 +79,7 @@ class ConvBNLIF2d(nn.Module):
                 predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
                 predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
                 predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
+                predictor_detach_history=temporal_channel_mixer_predictor_detach_history,
                 surprise_routing=temporal_channel_mixer_surprise_routing,
                 routing_parameterization=temporal_channel_mixer_routing_parameterization,
             )
@@ -117,6 +119,7 @@ class ConvBNMaxPoolLIF2d(nn.Module):
         temporal_channel_mixer_predictive_auxiliary: bool = False,
         temporal_channel_mixer_predictor_channel_groups: int | None = None,
         temporal_channel_mixer_predictor_spatial_kernel_size: int = 1,
+        temporal_channel_mixer_predictor_detach_history: bool = False,
         temporal_channel_mixer_surprise_routing: bool = False,
         temporal_channel_mixer_routing_parameterization: str = "independent",
         learnable_tau: bool = False,
@@ -147,6 +150,7 @@ class ConvBNMaxPoolLIF2d(nn.Module):
                 predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
                 predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
                 predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
+                predictor_detach_history=temporal_channel_mixer_predictor_detach_history,
                 surprise_routing=temporal_channel_mixer_surprise_routing,
                 routing_parameterization=temporal_channel_mixer_routing_parameterization,
             )
@@ -187,6 +191,7 @@ class InitialPatchEmbedding(nn.Module):
         temporal_channel_mixer_predictive_auxiliary: bool = False,
         temporal_channel_mixer_predictor_channel_groups: int | None = None,
         temporal_channel_mixer_predictor_spatial_kernel_size: int = 1,
+        temporal_channel_mixer_predictor_detach_history: bool = False,
         temporal_channel_mixer_surprise_routing: bool = False,
         temporal_channel_mixer_routing_parameterization: str = "independent",
         learnable_tau: bool = False,
@@ -242,6 +247,7 @@ class InitialPatchEmbedding(nn.Module):
             temporal_channel_mixer_predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
             temporal_channel_mixer_predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
             temporal_channel_mixer_predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
+            temporal_channel_mixer_predictor_detach_history=temporal_channel_mixer_predictor_detach_history,
             temporal_channel_mixer_surprise_routing=temporal_channel_mixer_surprise_routing,
             temporal_channel_mixer_routing_parameterization=(
                 temporal_channel_mixer_routing_parameterization
@@ -281,6 +287,7 @@ class PyramidalPatchEmbedding(nn.Module):
         temporal_channel_mixer_predictive_auxiliary: bool = False,
         temporal_channel_mixer_predictor_channel_groups: int | None = None,
         temporal_channel_mixer_predictor_spatial_kernel_size: int = 1,
+        temporal_channel_mixer_predictor_detach_history: bool = False,
         temporal_channel_mixer_surprise_routing: bool = False,
         temporal_channel_mixer_routing_parameterization: str = "independent",
         learnable_tau: bool = False,
@@ -322,6 +329,7 @@ class PyramidalPatchEmbedding(nn.Module):
             temporal_channel_mixer_predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
             temporal_channel_mixer_predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
             temporal_channel_mixer_predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
+            temporal_channel_mixer_predictor_detach_history=temporal_channel_mixer_predictor_detach_history,
             temporal_channel_mixer_surprise_routing=temporal_channel_mixer_surprise_routing,
             temporal_channel_mixer_routing_parameterization=(
                 temporal_channel_mixer_routing_parameterization
@@ -471,6 +479,7 @@ class PatchEmbeddingStage(nn.Module):
         temporal_channel_mixer_predictive_auxiliary: bool = False,
         temporal_channel_mixer_predictor_channel_groups: int | None = None,
         temporal_channel_mixer_predictor_spatial_kernel_size: int = 1,
+        temporal_channel_mixer_predictor_detach_history: bool = False,
         temporal_channel_mixer_surprise_routing: bool = False,
         temporal_channel_mixer_routing_parameterization: str = "independent",
         learnable_tau: bool = False,
@@ -504,6 +513,7 @@ class PatchEmbeddingStage(nn.Module):
             temporal_channel_mixer_predictive_auxiliary=temporal_channel_mixer_predictive_auxiliary,
             temporal_channel_mixer_predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
             temporal_channel_mixer_predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
+            temporal_channel_mixer_predictor_detach_history=temporal_channel_mixer_predictor_detach_history,
             temporal_channel_mixer_surprise_routing=temporal_channel_mixer_surprise_routing,
             temporal_channel_mixer_routing_parameterization=(
                 temporal_channel_mixer_routing_parameterization

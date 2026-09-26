@@ -56,11 +56,12 @@ conserva le diagnostiche e i profili storici.
 
 ## Prossimo passo
 
-1. Eseguire su D la diagnostica checkpoint-only dynamic-vs-train-mean-constant.
-2. Eseguire S1 seed 42 nella configurazione appaiata già congelata, senza aggiungervi D.
-3. Se la diagnostica conferma D, replicarlo ai seed 43 e 44.
-4. Profilare il checkpoint deployabile di S0 per completare il confronto di attività; il predictor
-   è già escluso dal deployment e non aggiunge parametri di inferenza.
+Il prossimo braccio della famiglia S è **S1-Decoupled**. Conserva predictor e surprise router di
+S1, ma stacca la storia osservata dal predictor: la loss predittiva allena soltanto il predictor,
+mentre CE allena backbone, TCAP e router. Il peso ausiliario è fisso a 1, senza ramp né controllo
+di autorità condivisa. Il preflight blocca il run se uno dei tre percorsi di gradiente non rispetta
+questo contratto. S1 originale resta invariata come controllo accoppiato; il predictive subspace
+resta rinviato alle diagnostiche sullo smoothing.
 
 I seed 43 e 44 seguono solo per i bracci con firma meccanicistica coerente. Comandi in
 [`OPERATIONS_SMILIES.md`](OPERATIONS_SMILIES.md).

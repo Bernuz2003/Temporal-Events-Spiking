@@ -632,7 +632,11 @@ def train_experiment(
     # RNG reset below, so it never shifts the training data stream.
     calibration_batch = (
         diagnostic_batch(bundle.train, config["dataset"], device)
-        if predictive_objective is not None and predictive_objective.auxiliary_declared
+        if predictive_objective is not None
+        and predictive_objective.auxiliary_declared
+        and not config["model"].get(
+            "temporal_channel_mixer_predictor_detach_history", False
+        )
         else None
     )
     delay_modules = {
@@ -1002,6 +1006,9 @@ def train_experiment(
             )
             deployment_config["model"].pop(
                 "temporal_channel_mixer_predictor_spatial_kernel_size", None
+            )
+            deployment_config["model"].pop(
+                "temporal_channel_mixer_predictor_detach_history", None
             )
             deployment_config["model"].pop("temporal_channel_mixer_predictive_stages", None)
         if objective_config.get("mode") in {"fine_future", "fine_same"}:

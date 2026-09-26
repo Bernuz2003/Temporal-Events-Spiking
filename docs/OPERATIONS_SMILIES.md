@@ -171,6 +171,12 @@ Seconda ondata, soltanto dopo la lettura della firma meccanicistica di S0:
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s1 -- predictive-scratch --config configs/dvslip_predictive_s1.yaml
 ```
 
+Controllo disaccoppiato della stessa famiglia S:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s1-decoupled -- predictive-scratch --config configs/dvslip_predictive_s1_decoupled.yaml
+```
+
 **Stato al 2026-09-26.** L15 è completato e D bounded è stato rilanciato. S0 ha fallito il gate
 soltanto sulla CE, ma il controllo sui 2.995 campioni held-out ha superato il criterio predefinito:
 skill 0,4055 contro la media dei ritardi e 0,2428 contro la persistenza. Il full S0 seed 42 è quindi

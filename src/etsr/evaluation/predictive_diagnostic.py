@@ -363,6 +363,33 @@ def _gradient_family_norms(model: torch.nn.Module) -> tuple[dict[str, float | No
     return gradient_norms, family_norms, finite
 
 
+def _selected_gradient_norm(
+    loss: torch.Tensor,
+    model: torch.nn.Module,
+    tokens: tuple[str, ...],
+) -> float:
+    """Return the gradient norm for parameters whose names contain one selected token."""
+
+    parameters = [
+        parameter
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad and any(token in name for token in tokens)
+    ]
+    if not parameters:
+        return 0.0
+    gradients = torch.autograd.grad(
+        loss,
+        parameters,
+        retain_graph=True,
+        allow_unused=True,
+    )
+    squared = loss.new_zeros((), dtype=torch.float64)
+    for gradient in gradients:
+        if gradient is not None:
+            squared += gradient.detach().double().square().sum()
+    return float(squared.sqrt().cpu())
+
+
 def _perturb_future(frames, cutoff: int):
     if isinstance(frames, dict):
         altered = {name: value.clone() for name, value in frames.items()}
@@ -471,13 +498,20 @@ def run_predictive_preflight(
             _prefix_differences(candidate, frames, altered, cutoff)
         )
 
-    calibration = objective.calibrate(
-        candidate,
-        frames,
-        targets,
-        criterion,
-        epoch=0,
-        freeze_batchnorm_statistics=freeze,
+    predictor_history_detached = bool(
+        config["model"].get("temporal_channel_mixer_predictor_detach_history", False)
+    )
+    calibration = (
+        None
+        if predictor_history_detached
+        else objective.calibrate(
+            candidate,
+            frames,
+            targets,
+            criterion,
+            epoch=0,
+            freeze_batchnorm_statistics=freeze,
+        )
     )
     full_weight_epoch = max(1, objective.ramp_epochs)
     candidate.zero_grad(set_to_none=True)
@@ -523,10 +557,59 @@ def run_predictive_preflight(
         )
         for _step in range(PREFLIGHT_SCRATCH_WARMUP_STEPS):
             warmup_optimizer.zero_grad(set_to_none=True)
-            objective(gradient_model, frames, targets, criterion, epoch=full_weight_epoch).total_loss.backward()
+            objective(
+                gradient_model,
+                frames,
+                targets,
+                criterion,
+                epoch=full_weight_epoch,
+            ).total_loss.backward()
             warmup_optimizer.step()
-        warmup_optimizer.zero_grad(set_to_none=True)
-        objective(gradient_model, frames, targets, criterion, epoch=full_weight_epoch).total_loss.backward()
+    gradient_model.zero_grad(set_to_none=True)
+    gradient_result = objective(
+        gradient_model, frames, targets, criterion, epoch=full_weight_epoch
+    )
+    decoupled_contract = None
+    if predictor_history_detached:
+        decoupled_authority = objective_gradient_diagnostics(
+            gradient_model,
+            gradient_result.classification_loss,
+            gradient_result.auxiliary_loss,
+            objective.weight,
+        )
+        predictor_tokens = ("predictor_logits", "predictor_spatial", "predictor_projections")
+        shared_auxiliary_norm = decoupled_authority["gradient_shared_auxiliary_norm"]
+        predictor_auxiliary_norm = _selected_gradient_norm(
+            gradient_result.auxiliary_loss, gradient_model, predictor_tokens
+        )
+        predictor_classification_norm = _selected_gradient_norm(
+            gradient_result.classification_loss, gradient_model, predictor_tokens
+        )
+        router_classification_norm = _selected_gradient_norm(
+            gradient_result.classification_loss, gradient_model, ("surprise_router",)
+        )
+        shared_classification_norm = decoupled_authority[
+            "gradient_shared_classification_norm"
+        ]
+        decoupled_contract = {
+            "shared_auxiliary_gradient_norm": shared_auxiliary_norm,
+            "shared_classification_gradient_norm": shared_classification_norm,
+            "predictor_auxiliary_gradient_norm": predictor_auxiliary_norm,
+            "predictor_auxiliary_to_shared_classification_ratio": (
+                objective.weight * predictor_auxiliary_norm / shared_classification_norm
+                if shared_classification_norm > 0.0
+                else float("nan")
+            ),
+            "predictor_classification_gradient_norm": predictor_classification_norm,
+            "surprise_router_classification_gradient_norm": router_classification_norm,
+            "passed": (
+                shared_auxiliary_norm <= 1e-12
+                and predictor_auxiliary_norm > 1e-12
+                and predictor_classification_norm <= 1e-12
+                and router_classification_norm > 1e-12
+            ),
+        }
+    gradient_result.total_loss.backward()
     gradient_norms, gradient_family_norms, finite_gradients = _gradient_family_norms(gradient_model)
     nonzero_gradients = all(value > 1e-12 for value in gradient_family_norms.values())
     teacher_gradients_absent = teacher is None or all(
@@ -583,6 +666,7 @@ def run_predictive_preflight(
         "new_parameter_gradient_family_norms": gradient_family_norms,
         "new_parameter_gradients_finite": finite_gradients,
         "new_parameter_gradient_families_nonzero": nonzero_gradients,
+        "decoupled_predictor_gradient_contract": decoupled_contract,
         "teacher_gradients_absent": teacher_gradients_absent,
         "batchnorm_running_statistics": "fixed" if freeze else "training",
         "official_test_used": False,
@@ -595,6 +679,7 @@ def run_predictive_preflight(
             report["new_parameter_gradients_finite"],
             report["new_parameter_gradient_families_nonzero"],
             report["shared_gradient_authority_passed"],
+            decoupled_contract is None or decoupled_contract["passed"],
             report["teacher_gradients_absent"],
         )
     )

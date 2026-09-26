@@ -434,7 +434,16 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError(
             "model.temporal_channel_mixer_predictor_spatial_kernel_size must be a positive odd integer"
         )
-    if not predictive_auxiliary and (predictor_groups is not None or predictor_kernel != 1):
+    predictor_detach_history = model.get(
+        "temporal_channel_mixer_predictor_detach_history", False
+    )
+    if type(predictor_detach_history) is not bool:
+        raise ConfigError(
+            "model.temporal_channel_mixer_predictor_detach_history must be boolean"
+        )
+    if not predictive_auxiliary and (
+        predictor_groups is not None or predictor_kernel != 1 or predictor_detach_history
+    ):
         raise ConfigError("Temporal predictor geometry requires predictive auxiliary training")
     predictive_head_kernel = model.get("predictive_head_spatial_kernel_size", 1)
     if (
@@ -708,6 +717,15 @@ def _validate_predictive_section(config: dict[str, Any], objective_mode: str) ->
     minimum_ratio = objective.get("minimum_shared_gradient_ratio")
     if minimum_ratio is not None and (not _is_number(minimum_ratio) or minimum_ratio < 0.0):
         raise ConfigError("predictive.objective.minimum_shared_gradient_ratio must be non-negative")
+    predictor_history_detached = config["model"].get(
+        "temporal_channel_mixer_predictor_detach_history", False
+    )
+    if predictor_history_detached and authority is not None:
+        raise ConfigError("A detached temporal predictor cannot use shared-gradient authority")
+    if predictor_history_detached and minimum_ratio != 0.0:
+        raise ConfigError(
+            "A detached temporal predictor requires minimum_shared_gradient_ratio=0.0"
+        )
     auxiliary_declared = objective_mode != "none" or bool(
         config["model"].get("temporal_channel_mixer_predictive_auxiliary", False)
     )

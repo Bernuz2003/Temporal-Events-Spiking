@@ -284,6 +284,23 @@ migliorano entrambi allo stesso modo, il beneficio appartiene alla supervisione 
 Se S0 è migliore, si conserva eventualmente quella ricetta; si chiude la proposta di surprise routing.
 Non si dichiara riduzione dei MAC grazie a gate soft che non saltano materialmente operazioni.
 
+### S1-Decoupled: controllo causale del modellamento del backbone
+
+S1-Decoupled conserva topologia, predittore e router di S1, ma applica stop-gradient anche alla
+storia causale usata dal predictor. Il target era già staccato. La loss predittiva diventa quindi
+un addestramento del solo predictor-osservatore; la CE continua a usare il residuo staccato per
+allenare il surprise router, senza addestrare il predictor. Si usa peso fisso 1, nessun ramp e
+nessun controllore di autorità, perché il gradiente ausiliario condiviso deve essere esattamente
+zero. Questo confronto separa il valore del residuo per il routing dall'effetto di rendere lo
+stage2 più predicibile. Il preflight richiede: gradiente auxiliary nullo sul backbone e non nullo
+sul predictor, gradiente CE nullo sul predictor e non nullo sul router dopo il warm-up causale.
+Come S1, il braccio porta predictor e surprise router anche in inferenza: 571.817 parametri totali,
+70.789 in più di C0. Il confronto conserva intenzionalmente questo costo; un predictor depthwise
+più leggero è una successiva domanda di compressione, ammessa soltanto se il residuo porta valore.
+
+Il predictive subspace non viene combinato con questo braccio: resta una domanda successiva,
+subordinata alla misura dello smoothing e con un solo collo di bottiglia preregistrato.
+
 ## 8. Come sfruttiamo PLIF, senza riaprire il neuron model
 
 La diagnostica B/PLIF ha mostrato **+3,47 pp di F1-PrefixAUC** e circa **+10 pp F1 fra L+100 e

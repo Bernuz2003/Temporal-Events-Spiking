@@ -1,0 +1,17 @@
+extends: dvslip_predictive_s1.yaml
+
+experiment:
+  name: dvslip_predictive_s1_decoupled
+
+# The causal predictor observes detached stage2 histories. Its Smooth-L1 objective trains only
+# the predictor; CE trains the backbone, TCAP and surprise router. This isolates the value of
+# prediction error as a memory-control signal from S0's representation-shaping pressure.
+model:
+  temporal_channel_mixer_predictor_detach_history: true
+
+predictive:
+  objective:
+    weight: 1.0
+    ramp_epochs: 0
+    authority: null
+    minimum_shared_gradient_ratio: 0.0

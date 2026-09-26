@@ -115,6 +115,7 @@ class CausalTemporalChannelMixer(nn.Module):
         predictive_auxiliary: bool = False,
         predictor_channel_groups: int | None = None,
         predictor_spatial_kernel_size: int = 1,
+        predictor_detach_history: bool = False,
         surprise_routing: bool = False,
         routing_parameterization: str = "independent",
     ) -> None:
@@ -130,12 +131,15 @@ class CausalTemporalChannelMixer(nn.Module):
         for name, enabled in (
             ("dynamic_routing", dynamic_routing),
             ("predictive_auxiliary", predictive_auxiliary),
+            ("predictor_detach_history", predictor_detach_history),
             ("surprise_routing", surprise_routing),
         ):
             if type(enabled) is not bool:
                 raise ValueError(f"{name} must be boolean")
         if surprise_routing and not predictive_auxiliary:
             raise ValueError("surprise routing requires the predictive auxiliary")
+        if predictor_detach_history and not predictive_auxiliary:
+            raise ValueError("detaching predictor history requires the predictive auxiliary")
         if learnable_delays and (dynamic_routing or predictive_auxiliary):
             raise ValueError("conditional routing is defined only for fixed TCAP delays")
         if router_pooling not in {"global", "local"}:
@@ -162,6 +166,7 @@ class CausalTemporalChannelMixer(nn.Module):
         self.record_temporal_variation = predictive_auxiliary
         self.predictor_channel_groups = predictor_channel_groups
         self.predictor_spatial_kernel_size = predictor_spatial_kernel_size
+        self.predictor_detach_history = predictor_detach_history
         self.surprise_routing = surprise_routing
         self.routing_parameterization = routing_parameterization
         self.weight = nn.Parameter(torch.zeros(len(delays), channels, channels))
@@ -674,6 +679,11 @@ class CausalTemporalChannelMixer(nn.Module):
         self.last_temporal_variation = numerator / denominator
 
     def _causal_prediction(self, sequence: torch.Tensor, history: torch.Tensor) -> torch.Tensor:
+        # In observer mode the predictor follows the representation learned by the classifier,
+        # but its loss cannot make the causal history easier to predict. The target is already
+        # detached in ``_record_prediction_diagnostics``.
+        if self.predictor_detach_history:
+            history = history.detach()
         prediction = torch.zeros_like(sequence)
         if self.predictor_logits is not None:
             coefficients = self.predictor_logits.softmax(dim=0).to(sequence.dtype)
