@@ -171,10 +171,10 @@ Seconda ondata, soltanto dopo la lettura della firma meccanicistica di S0:
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s1 -- predictive-scratch --config configs/dvslip_predictive_s1.yaml
 ```
 
-**Stato al 2026-09-26.** L15 è completato. D va rieseguito con lo stesso comando: il primo run
-aveva l'ampiezza esponenziale difettosa. S0 ha fallito il gate soltanto sulla CE, ma il full resta
-sospeso fino al controllo held-out della decisione 12. Prima si archiviano il D difettoso e il gate
-S0 duplicato, interrotto all'epoca 60:
+**Stato al 2026-09-26.** L15 è completato e D bounded è stato rilanciato. S0 ha fallito il gate
+soltanto sulla CE, ma il controllo sui 2.995 campioni held-out ha superato il criterio predefinito:
+skill 0,4055 contro la media dei ritardi e 0,2428 contro la persistenza. Il full S0 seed 42 è quindi
+autorizzato direttamente da zero. I vecchi run difettosi restano sotto `artifacts/superseded/`.
 
 ```bash
 mkdir -p artifacts/superseded
@@ -184,7 +184,7 @@ mv artifacts/dvslip_predictive_dynamic_tcap_overfit__20260925_103713_162684__see
    artifacts/superseded/
 ```
 
-Solo dopo il GO del controllo held-out, S0 e il profiling del suo checkpoint deployabile sono:
+S0 e il profiling del suo checkpoint deployabile sono:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0 -- train --config configs/dvslip_predictive_s0.yaml

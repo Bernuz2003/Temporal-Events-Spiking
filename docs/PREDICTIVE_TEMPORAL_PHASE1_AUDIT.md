@@ -762,6 +762,17 @@ la skill deve essere finita e positiva contro persistenza e media dei ritardi, c
 come soglia di evidenza chiara. Il controllo è checkpoint-only e non usa l'official test. Deriva da
 C0, report canonico dell'audit e preflight risultano già verificati.
 
+**Esito held-out e decisione.** Il controllo sui **2.995 campioni** dell'intera
+development-validation supera ampiamente il criterio predefinito: loss attiva del predittore
+0,1674 contro 0,2818 della media dei ritardi e 0,2211 della persistenza, cioè skill rispettivamente
+**0,4055** e **0,2428**. Sul checkpoint migliore del gate le corrispondenti skill erano 0,4158 e
+0,2461: il calo held-out è soltanto 0,0103 e 0,0033, senza segnale di memorizzazione del subset.
+La varianza attiva del target resta 1,2909 e `V_delta` vale 0,3988 nello stage1 e 0,4331 nello
+stage2, quindi il vantaggio non deriva da collasso temporale. Anche la coda, esclusa dalla loss,
+mantiene skill positiva (0,3512 e 0,2142); è una verifica di generalizzazione, non una ragione per
+allargare ora l'obiettivo. Questo autorizza un singolo full S0 da zero a 128 epoche. Accuracy e F1
+del checkpoint non sono interpretabili, perché il classificatore del gate ha visto solo 64 sample.
+
 Cosa mostra il gate sul meccanismo:
 
 - Il predittore acquista un'abilità vera, non una scorciatoia. A inizializzazione coincide con la
@@ -812,3 +823,58 @@ Lettura del run S0:
   1,398 / 53,83, epoca 128 1,342 / 54,47.
 - **Firma meccanicistica.** Skill di validation rispetto al riferimento causale migliore, varianza
   del target (collasso), `V_Δ`, λ e autorità effettiva, `amp_overflow_fraction`.
+
+### 12.10 Esito della prima ondata corretta, seed 42
+
+Tutti i risultati seguenti usano la development-validation da 2.995 campioni; nessun accesso
+all'official test. D e S0 sono run scratch da 128 epoche confrontati con C0. L15 è una
+continuazione da 64 epoche confrontata con R0-v2 alla stessa ricetta discriminativa.
+
+| Braccio | Controllo | Macro-F1 | Delta F1 | Accuracy | F1 tardiva, media ± SD |
+|---|---|---:|---:|---:|---:|
+| C0 | — | 55,18 | — | 55,53 | 54,36 ± 0,49 |
+| D bounded | C0 | **58,31** | **+3,14 pp** | **58,53** | **57,41 ± 0,47** |
+| S0 | C0 | 55,97 | +0,79 pp | 56,53 | 55,10 ± 0,45 |
+| R0-v2 | — | 55,30 | — | 55,56 | 54,54 ± 0,39 |
+| L15 | R0-v2 | 55,98 | +0,69 pp | 56,19 | 54,71 ± 0,44 |
+
+Un bootstrap appaiato stratificato per classe (10.000 repliche, seed 20260926) dà per D–C0 un
+IC95% del delta F1 **[+1,30; +4,99] pp**. Per S0–C0 è [−1,13; +2,70] pp e per L15–R0-v2
+[−0,57; +1,96] pp. Sono intervalli esplorativi perché lo stesso validation seleziona il checkpoint,
+ma distinguono chiaramente D dagli altri due bracci. Il McNemar appaiato di D conta 449 correzioni
+contro 359 regressioni (`p=0,0017`); S0 conta 452 contro 422 (`p=0,327`) e L15 198 contro 179
+(`p=0,354`).
+
+**D bounded.** Il vantaggio non è un singolo checkpoint: la finestra 113–128 resta +3,05 pp F1
+su C0. A 1,0/1,5/2,0 s il delta F1 è rispettivamente +6,16/+5,93/+3,14 pp e la F1-PrefixAUC
+assoluta cresce di +3,89 pp. Il router passa da gate quasi unitari a un'allocazione media
+`[0,062; 0,303; 0,281; 0,355]` sui ritardi `[1,2,4,8]`, con ampiezza media 1,224 al best:
+riduce fortemente il tap 1 e privilegia 2 e 8. La variazione within-sample è molto maggiore di
+quella fra medie di sample, quindi il router reagisce localmente nel tempo/spazio; resta necessario
+il confronto checkpoint-only con i gate medi per attribuire causalmente il guadagno all'adattività.
+Il costo deployato è contenuto: 509.609 parametri (+1,71%), stato persistente invariato e proxy
+Horowitz activity-weighted +1,48% rispetto al checkpoint L15, che conserva la topologia C0 ed è
+profilato sugli stessi indici.
+
+**S0.** La previsione resta valida e non collassa: nell'ultima finestra la skill attiva media è
+0,281 contro persistenza e 0,189 contro la media dei ritardi, con varianza target 1,172. L'autorità
+effettiva è calibrata a 0,25 e il rapporto osservato sul batch di training è 0,279 in media. Il
+prezzo è però netto: accuracy di training finale 72,97% contro 89,10% di C0 e CE 1,772 contro
+1,342. S0 migliora le confusioni interne alle coppie visive (278 contro 310 errori di C0), ma non
+produce un vantaggio globale risolutivo. Inoltre perde 5,40 pp F1 a 1,5 s e 4,90 pp al vero endpoint
+medio (`relative_duration=1`), recuperando soltanto nella coda fino a 2 s: la predizione ha reso la
+rappresentazione più dipendente dal settling post-evento, non più precoce. Non si apre uno sweep
+dell'autorità dopo il risultato.
+
+**L15.** Il target specifico funziona nel punto mirato: a 1,5 s guadagna +3,54 pp F1 su R0-v2,
+mentre al punto finale il delta è +0,69 pp. La F1-PrefixAUC assoluta cresce però solo di +1,12 pp e
+quella relativa di +0,10 pp, sotto il criterio preregistrato. Anche la finestra tardiva finale
+guadagna appena +0,16 pp. L15 resta quindi evidenza che la distillazione può anticipare parte del
+settling senza costo di deployment, ma non viene replicato o fuso come candidato prestazionale.
+
+**Passaggio successivo.** S1 resta un unico test appaiato contro S0: usa la stessa auxiliary loss e
+aggiunge soltanto il routing da sorpresa. Benché una versione precedente della roadmap prevedesse
+di inserirvi D dopo uno screen positivo, farlo ora soltanto in S1 confonderebbe sorpresa e routing
+di contenuto; rieseguire anche S0+D sarebbe un'espansione non giustificata da S0, che non ha passato
+lo screen prestazionale. D procede invece alla diagnostica dynamic-vs-constant e poi, se confermato,
+ai seed 43/44. Una fusione strutturata viene considerata solo se S1 supera i propri criteri.

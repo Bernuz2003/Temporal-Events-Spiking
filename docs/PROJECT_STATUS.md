@@ -7,14 +7,15 @@ continuazioni) non è evidenza sulle ipotesi; è archiviata sotto `artifacts/sup
 soltanto in [`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). L'audit
 checkpoint-only A1–A4 e i probe di fattibilità R5 sono completi (sezione 12 dell'audit).
 
-**Prima ondata corretta, seed 42** (sezione 12.9 dell'audit):
+**Prima ondata corretta, seed 42 completata** (sezione 12.10 dell'audit):
 
-- **L15 completato.** A 1,5 s guadagna +3,53 pp di F1 su R0, senza costo significativo a 2 s.
-- **D da rieseguire.** Il run misurava un'ampiezza di routing illimitata; `amplitude_allocation` è
-  ora bounded per definizione. Quel run non è evidenza sull'ipotesi.
-- **S0 in verifica checkpoint-only.** Ha fallito il gate soltanto sulla soglia di CE, ma la skill
-  disponibile è misurata sui 64 campioni del gate. Il full resta sospeso fino alla misura held-out
-  definita dalla decisione 12.
+- **D bounded promosso:** 58,31% Macro-F1, +3,14 pp su C0; il vantaggio resta +3,05 pp nella
+  finestra tardiva e richiede ora la diagnostica dynamic-vs-constant prima dei seed 43/44.
+- **L15 chiuso come risultato di latenza:** +3,54 pp F1 al prefisso mirato di 1,5 s, ma soltanto
+  +0,69 pp al punto finale e +1,12 pp di F1-PrefixAUC assoluta rispetto a R0.
+- **S0 chiuso come standalone, conservato come controllo di S1:** il predittore mantiene skill
+  valida, ma il +0,79 pp F1 non è risolutivo e l'autorità 0,25 riduce l'accuracy di training finale
+  dal 89,10% di C0 al 72,97%.
 
 ## Riferimento empirico
 
@@ -55,11 +56,11 @@ conserva le diagnostiche e i profili storici.
 
 ## Prossimo passo
 
-1. Lanciare S0 (`train`, poi `profile-checkpoint`).
-2. Rieseguire D con il proprio workflow, gate incluso.
-3. Leggere l'epoca 1 di S0, che deve coincidere con C0, e poi la sua firma meccanicistica.
-4. S1 parte solo se S0 mostra una skill predittiva di validation. L'«eval» del gate non basta: è
-   fatto sugli stessi 64 campioni di training.
+1. Eseguire su D la diagnostica checkpoint-only dynamic-vs-train-mean-constant.
+2. Eseguire S1 seed 42 nella configurazione appaiata già congelata, senza aggiungervi D.
+3. Se la diagnostica conferma D, replicarlo ai seed 43 e 44.
+4. Profilare il checkpoint deployabile di S0 per completare il confronto di attività; il predictor
+   è già escluso dal deployment e non aggiunge parametri di inferenza.
 
 I seed 43 e 44 seguono solo per i bracci con firma meccanicistica coerente. Comandi in
 [`OPERATIONS_SMILIES.md`](OPERATIONS_SMILIES.md).

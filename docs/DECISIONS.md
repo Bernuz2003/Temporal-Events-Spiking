@@ -43,16 +43,27 @@
     C0). `amplitude_allocation` usa ora univocamente ampiezza `2σ` e memoria totale in `(0, 2K)`;
     la legge esponenziale è stata rimossa. Il vecchio run di D va sotto `artifacts/superseded/`.
     Dettagli nella sezione 12.9 dell'audit.
-12. **S0 resta gate-negative in attesa del controllo held-out (2026-09-26).** Il gate fallisce
+12. **S0 riceve il GO checkpoint-only, pur restando gate-negative (2026-09-26).** Il gate fallisce
     soltanto sulla CE in eval: 1,567 contro la soglia 1,5, con accuracy 96,9% e tutto finito. Il
-    predittore batte la persistenza del 26%, ma questa misura usa gli stessi 64 campioni del gate e
-    non dimostra generalizzazione. Prima di autorizzare eccezionalmente il full run si misura la
-    skill del checkpoint sull'intera development-validation, senza nuovo training. Il GO richiede
-    skill finita e positiva contro sia persistenza sia media dei ritardi; un margine almeno 0,10 su
-    entrambe costituisce evidenza chiara. Il gate non viene retroattivamente dichiarato superato.
+    checkpoint migliore è stato quindi misurato sui 2.995 campioni mai usati dal gate dell'intera
+    development-validation. La skill attiva è **0,4055 contro la media dei ritardi** e **0,2428
+    contro la persistenza**, entrambe ben oltre la soglia predefinita di 0,10; la varianza del target
+    resta 1,2909. Il predittore generalizza quindi fuori dal subset e autorizza un solo full run S0
+    da zero a 128 epoche. Il gate non viene retroattivamente dichiarato superato e accuracy/F1 del
+    suo classificatore non vengono interpretate, perché quel classificatore ha visto solo 64 sample.
 13. **S0 a 128 epoche.** Il confronto è appaiato con C0 e C0 a 128 epoche è ricotto e limitato
     dalla generalizzazione. Una durata maggiore si prova soltanto come coppia S0/C0, e solo se S0
     chiude con CE di training chiaramente sopra C0 e F1 ancora in salita.
+14. **Esito seed 42 della prima ondata corretta (2026-09-26).** D bounded è l'unico braccio che
+    supera materialmente il controllo: 58,31% F1 contro 55,18% di C0 (+3,14 pp), con IC bootstrap
+    appaiato stratificato [1,30; 4,99] pp e finestra tardiva +3,05 pp. Passa quindi alla diagnostica
+    dynamic-vs-constant e, se questa conferma l'utilità dell'adattività, ai seed 43/44. L15 migliora
+    il prefisso mirato a 1,5 s (+3,54 pp su R0) ma non passa il criterio su endpoint o PrefixAUC;
+    S0 conserva skill predittiva senza collasso, ma il suo +0,79 pp F1 ha IC [−1,13; 2,70] e la CE
+    di training mostra forte sottofitting. Nessuno dei due riceve tuning o fusione prestazionale.
+    S1 resta ammesso una sola volta nella configurazione appaiata già congelata, per stabilire se la
+    sorpresa trasformi la skill valida di S0 in routing utile; aggiungere ora D soltanto a S1
+    confonderebbe i due effetti.
 
 ## Decisioni della discovery al 13 settembre — contesto storico
 
