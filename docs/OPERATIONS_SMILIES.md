@@ -256,6 +256,40 @@ Le continuazioni non si replicano così: un seed diverso richiede il C0 dello st
 e come teacher, e il gate dell'audit confronta l'hash del parent con il C0 esaminato dall'audit
 (seed 42). Va deciso prima, se servirà.
 
+### Bottleneck predittivo e conferma del routing D
+
+Prima dei full, addestrare le sole teste del probe sulle feature congelate del best C0. Il report
+usa esclusivamente development-train e confronta skill causale, fit–holdout e rango 32/64/128;
+non seleziona automaticamente una configurazione. Dopo il commit e il check sul server:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-s1d-routing -- dynamic-routing-diagnostic --config artifacts/dvslip_predictive_s1_decoupled__20260926_153036_326403__seed42/config_resolved.yaml --checkpoint checkpoints/dvslip_predictive_s1_decoupled__20260926_153036_326403__seed42/best.pt --output artifacts/dvslip_predictive_s1_decoupled__20260926_153036_326403__seed42/dynamic_routing_diagnostic.json
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh bottleneck-feature-probe -- bottleneck-feature-probe --config artifacts/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/config_resolved.yaml --checkpoint checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt --output artifacts/predictive_bottleneck_probe.json --fit-samples 256 --holdout-samples 256 --steps 600
+```
+
+`k32` non lineare è il candidato principale se la sua skill holdout è convincente; sono già
+disponibili `k64` e le varianti lineari qualora il probe le favorisca. Ogni training usa il gate
+bounded, riparte da zero con ricetta C0 e profila il deployment. Su server distinti:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-d-43 -- predictive-scratch --config configs/dvslip_predictive_dynamic_tcap_seed43.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-d-44 -- predictive-scratch --config configs/dvslip_predictive_dynamic_tcap_seed44.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-d-static -- predictive-scratch --config configs/dvslip_predictive_dynamic_tcap_static_control.yaml
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-s0-bottleneck-k32 -- predictive-scratch --config configs/dvslip_predictive_s0_bottleneck_k32.yaml
+```
+
+Il quarto comando va lanciato **solo dopo la lettura del probe**. Se vince `k64`, usare
+`configs/dvslip_predictive_s0_bottleneck_k64.yaml`; se la testa lineare generalizza meglio,
+usare la corrispondente config `_linear.yaml`. Il preflight registra il rango del gradiente sulla
+storia. In `history.csv` leggere `validation_temporal_variation_stage2_{row,complement}_active`,
+`validation_temporal_feature_variance_stage2_{row,complement}_active`, rango effettivo di A,
+skill attiva, CE e prestazioni ai prefissi. Le epoche 4/8/16 sono punti di lettura, non stop
+automatici. Dopo l'analisi di questa ondata, la fusione con D usa la config
+`dvslip_predictive_dynamic_tcap_bottleneck_k32.yaml` o la corrispondente variante `k64`/`_linear`
+coerente col probe.
+Solo dopo un segnale positivo del bottleneck, il controllo `s0_bottleneck_k128` della stessa
+famiglia (anche `_linear`) separa l'effetto del rango da quello della nuova testa.
+
 ## Monitoraggio e ripresa
 
 ```bash

@@ -53,6 +53,8 @@ class MiniQKFormer(nn.Module):
         temporal_channel_mixer_predictive_auxiliary: bool = False,
         temporal_channel_mixer_predictor_channel_groups: int | None = None,
         temporal_channel_mixer_predictor_spatial_kernel_size: int = 1,
+        temporal_channel_mixer_predictor_rank: int | None = None,
+        temporal_channel_mixer_predictor_hidden_channels: int | None = None,
         temporal_channel_mixer_predictor_detach_history: bool = False,
         temporal_channel_mixer_surprise_routing: bool = False,
         temporal_channel_mixer_routing_stages: tuple[int, ...] = (1, 2),
@@ -111,8 +113,8 @@ class MiniQKFormer(nn.Module):
             and not temporal_channel_mixer_predictive_auxiliary
         ):
             raise ValueError("detaching predictor history requires the predictive auxiliary")
-        if temporal_channel_mixer_router_pooling not in {"global", "local"}:
-            raise ValueError("temporal mixer router pooling must be global or local")
+        if temporal_channel_mixer_router_pooling not in {"global", "local", "constant"}:
+            raise ValueError("temporal mixer router pooling must be global, local or constant")
         if (
             temporal_channel_mixer_router_hidden_divisor is not None
             and temporal_channel_mixer_router_hidden_divisor <= 0
@@ -159,6 +161,17 @@ class MiniQKFormer(nn.Module):
             or temporal_channel_mixer_predictor_spatial_kernel_size % 2 == 0
         ):
             raise ValueError("temporal predictor spatial kernel must be a positive odd integer")
+        if temporal_channel_mixer_predictor_rank is not None and (
+            not 0 < temporal_channel_mixer_predictor_rank <= embed_dim
+            or not temporal_channel_mixer_predictive_auxiliary
+            or temporal_channel_mixer_predictor_channel_groups is not None
+        ):
+            raise ValueError("temporal bottleneck rank requires auxiliary prediction and no groups")
+        if temporal_channel_mixer_predictor_hidden_channels is not None and (
+            temporal_channel_mixer_predictor_rank is None
+            or temporal_channel_mixer_predictor_hidden_channels <= 0
+        ):
+            raise ValueError("temporal bottleneck hidden width requires a positive rank")
         if not temporal_channel_mixer_predictive_auxiliary and (
             temporal_channel_mixer_predictor_channel_groups is not None
             or temporal_channel_mixer_predictor_spatial_kernel_size != 1
@@ -269,6 +282,16 @@ class MiniQKFormer(nn.Module):
             ),
             temporal_channel_mixer_predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
             temporal_channel_mixer_predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
+            temporal_channel_mixer_predictor_rank=(
+                temporal_channel_mixer_predictor_rank
+                if temporal_channel_mixer_predictive_auxiliary
+                and 1 in temporal_channel_mixer_predictive_stages else None
+            ),
+            temporal_channel_mixer_predictor_hidden_channels=(
+                temporal_channel_mixer_predictor_hidden_channels
+                if temporal_channel_mixer_predictive_auxiliary
+                and 1 in temporal_channel_mixer_predictive_stages else None
+            ),
             temporal_channel_mixer_predictor_detach_history=(
                 temporal_channel_mixer_predictor_detach_history
                 and 1 in temporal_channel_mixer_predictive_stages
@@ -347,6 +370,16 @@ class MiniQKFormer(nn.Module):
             ),
             temporal_channel_mixer_predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
             temporal_channel_mixer_predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
+            temporal_channel_mixer_predictor_rank=(
+                temporal_channel_mixer_predictor_rank
+                if temporal_channel_mixer_predictive_auxiliary
+                and 2 in temporal_channel_mixer_predictive_stages else None
+            ),
+            temporal_channel_mixer_predictor_hidden_channels=(
+                temporal_channel_mixer_predictor_hidden_channels
+                if temporal_channel_mixer_predictive_auxiliary
+                and 2 in temporal_channel_mixer_predictive_stages else None
+            ),
             temporal_channel_mixer_predictor_detach_history=(
                 temporal_channel_mixer_predictor_detach_history
                 and 2 in temporal_channel_mixer_predictive_stages
@@ -613,6 +646,30 @@ class MiniQKFormer(nn.Module):
                 metrics[f"temporal_variation_{stage}_active"] = float(
                     per_sample[present].mean().detach()
                 )
+            projected = module.last_projected_diagnostics
+            features = module.last_projected_features
+            if projected is None or features is None:
+                continue
+            for space, values in zip(("row", "complement"), features, strict=True):
+                per_step = projected[f"{space}_variation"]
+                per_sample = (per_step * mask).sum(0) / counts.clamp_min(1)
+                metrics[f"temporal_variation_{stage}_{space}_active"] = float(
+                    per_sample[present].mean()
+                )
+                active_variances = []
+                active_energies = []
+                for sample_index, steps in enumerate(valid_steps.tolist()):
+                    active = values[:max(1, steps), sample_index].float()
+                    active_variances.append(active.var(dim=0, unbiased=False).mean())
+                    active_energies.append(active.square().mean())
+                metrics[f"temporal_feature_variance_{stage}_{space}_active"] = float(
+                    torch.stack(active_variances).mean()
+                )
+                metrics[f"temporal_feature_energy_{stage}_{space}_active"] = float(
+                    torch.stack(active_energies).mean()
+                )
+            for key in ("effective_rank", "minimum_singular_value", "maximum_singular_value"):
+                metrics[f"predictor_projection_{stage}_{key}"] = float(projected[key])
         return metrics
 
     @staticmethod

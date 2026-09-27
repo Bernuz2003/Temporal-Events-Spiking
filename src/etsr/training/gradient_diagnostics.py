@@ -14,6 +14,7 @@ NON_BACKBONE_PARAMETER_TOKENS = (
     "predictor_logits",
     "predictor_spatial",
     "predictor_projections",
+    "predictor_bottleneck",
     "surprise_router",
 )
 SHARED_GRADIENT_BLOCKS = ("stage1_shared", "tcap1_weights", "stage2_shared", "tcap2_weights")

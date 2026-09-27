@@ -375,8 +375,8 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
     if learnable_delays and (dynamic_routing or predictive_auxiliary):
         raise ConfigError("Conditional routing is defined only for fixed TCAP delays")
     router_pooling = model.get("temporal_channel_mixer_router_pooling", "global")
-    if router_pooling not in {"global", "local"}:
-        raise ConfigError("model.temporal_channel_mixer_router_pooling must be global or local")
+    if router_pooling not in {"global", "local", "constant"}:
+        raise ConfigError("model.temporal_channel_mixer_router_pooling must be global, local or constant")
     router_hidden_divisor = model.get("temporal_channel_mixer_router_hidden_divisor")
     if router_hidden_divisor is not None and (
         type(router_hidden_divisor) is not int or router_hidden_divisor <= 0
@@ -433,6 +433,25 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
     if type(predictor_kernel) is not int or predictor_kernel <= 0 or predictor_kernel % 2 == 0:
         raise ConfigError(
             "model.temporal_channel_mixer_predictor_spatial_kernel_size must be a positive odd integer"
+        )
+    predictor_rank = model.get("temporal_channel_mixer_predictor_rank")
+    predictor_hidden = model.get("temporal_channel_mixer_predictor_hidden_channels")
+    if predictor_rank is not None and (
+        type(predictor_rank) is not int
+        or predictor_rank <= 0
+        or predictor_rank > (embed_dim // 2 if 1 in predictive_stages else embed_dim)
+        or not predictive_auxiliary
+        or predictor_groups is not None
+    ):
+        raise ConfigError(
+            "model.temporal_channel_mixer_predictor_rank requires an auxiliary, no channel "
+            "groups, and a rank within every predicted stage width"
+        )
+    if predictor_hidden is not None and (
+        type(predictor_hidden) is not int or predictor_hidden <= 0 or predictor_rank is None
+    ):
+        raise ConfigError(
+            "model.temporal_channel_mixer_predictor_hidden_channels requires a positive bottleneck rank"
         )
     predictor_detach_history = model.get(
         "temporal_channel_mixer_predictor_detach_history", False

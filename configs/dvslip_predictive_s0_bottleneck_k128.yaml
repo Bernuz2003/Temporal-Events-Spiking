@@ -1,0 +1,7 @@
+extends: dvslip_predictive_s0_bottleneck_k32.yaml
+
+experiment:
+  name: dvslip_predictive_s0_bottleneck_k128
+
+model:
+  temporal_channel_mixer_predictor_rank: 128

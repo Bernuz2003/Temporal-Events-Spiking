@@ -64,6 +64,19 @@
     S1 resta ammesso una sola volta nella configurazione appaiata già congelata, per stabilire se la
     sorpresa trasformi la skill valida di S0 in routing utile; aggiungere ora D soltanto a S1
     confonderebbe i due effetti.
+15. **Prossima verifica della famiglia S (2026-09-27).** Prima di scegliere il rango, un probe
+    addestra soltanto predittori su feature congelate dell'ingresso TCAP di stage2 del best C0;
+    fit e holdout sono utterance disgiunti del development-train, senza validation né official test.
+    Confronta S0 lineare, bottleneck lineare e bottleneck con elaborazione congiunta non lineare
+    dei quattro ritardi a rango 32/64/128. La skill contro persistenza e media dei ritardi, il
+    divario fit–holdout e la varianza del target guidano la scelta; il 90% della skill full-rank è
+    un indicatore di adeguatezza, non un gate automatico. Un solo C0+bottleneck selezionato conserva
+    esattamente controllore, ramp, stage e regione di S0; il predittore è di solo training. Leggere
+    per epoca V_delta, varianza ed energia nel sottospazio di A e nel complemento, oltre a CE e
+    prefissi. La diagnostica a gate costanti del checkpoint D non sostituisce il controllo statico
+    riaddestrato. D seed 43/44 e C0+bottleneck sono indipendenti; D+bottleneck segue la prima
+    lettura meccanicistica, senza esclusione automatica per un C0+bottleneck neutro. Se positivo,
+    il confronto con rango 128 della stessa geometria isola l'effetto del rango.
 
 ## Decisioni della discovery al 13 settembre — contesto storico
 

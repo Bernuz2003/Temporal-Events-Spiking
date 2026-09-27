@@ -50,6 +50,12 @@ def build_model(config: dict[str, Any], num_classes: int) -> nn.Module:
         temporal_channel_mixer_predictor_spatial_kernel_size=int(
             config.get("temporal_channel_mixer_predictor_spatial_kernel_size", 1)
         ),
+        temporal_channel_mixer_predictor_rank=config.get(
+            "temporal_channel_mixer_predictor_rank"
+        ),
+        temporal_channel_mixer_predictor_hidden_channels=config.get(
+            "temporal_channel_mixer_predictor_hidden_channels"
+        ),
         temporal_channel_mixer_predictor_detach_history=config.get(
             "temporal_channel_mixer_predictor_detach_history", False
         ),

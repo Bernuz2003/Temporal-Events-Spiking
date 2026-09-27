@@ -54,6 +54,7 @@ def save_deployment_checkpoint(
                     ".predictor_logits",
                     ".predictor_spatial.",
                     ".predictor_projections.",
+                    ".predictor_bottleneck.",
                 )
             )
         )

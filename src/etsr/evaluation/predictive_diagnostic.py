@@ -309,6 +309,7 @@ _NEW_MODULE_FAMILIES = (
     "predictor_logits",
     "predictor_spatial",
     "predictor_projections",
+    "predictor_bottleneck",
     "surprise_router",
 )
 
@@ -415,6 +416,41 @@ def _prefix_differences(model, frames, altered, cutoff: int) -> tuple[float, flo
         float((stage1[:cutoff] - altered_stage1[:cutoff]).abs().max().item()),
         float((encoded - altered_encoded).abs().max().item()),
     )
+
+
+def _bottleneck_gradient_contract(model: MiniQKFormer) -> dict[str, float | bool] | None:
+    """The direct predictor-history gradient must lie entirely in row(A)."""
+
+    mixers = [
+        module for module in model.modules()
+        if isinstance(module, CausalTemporalChannelMixer)
+        and module.predictor_bottleneck is not None
+    ]
+    if not mixers:
+        return None
+    errors = []
+    for mixer in mixers:
+        assert mixer.predictor_bottleneck is not None
+        history = torch.randn(
+            mixer.max_delay + 3, 1, mixer.channels, 2, 2,
+            device=mixer.weight.device, requires_grad=True,
+        )
+        target = torch.randn(3, 1, mixer.channels, 2, 2, device=mixer.weight.device)
+        prediction = mixer._causal_prediction(target, history)
+        gradient = torch.autograd.grad(
+            torch.nn.functional.smooth_l1_loss(prediction, target), history
+        )[0].float()
+        projection = mixer.predictor_bottleneck.projection.weight.flatten(1).float()
+        _u, _s, rows = torch.linalg.svd(projection, full_matrices=False)
+        row_component = torch.einsum(
+            "ck,tbkhw->tbchw", rows.T,
+            torch.einsum("kc,tbchw->tbkhw", rows, gradient),
+        )
+        errors.append(float(
+            (gradient - row_component).norm() / gradient.norm().clamp_min(1e-12)
+        ))
+    maximum = max(errors)
+    return {"relative_outside_row_gradient": maximum, "passed": maximum <= 1e-5}
 
 
 def run_predictive_preflight(
@@ -577,7 +613,10 @@ def run_predictive_preflight(
             gradient_result.auxiliary_loss,
             objective.weight,
         )
-        predictor_tokens = ("predictor_logits", "predictor_spatial", "predictor_projections")
+        predictor_tokens = (
+            "predictor_logits", "predictor_spatial", "predictor_projections",
+            "predictor_bottleneck",
+        )
         shared_auxiliary_norm = decoupled_authority["gradient_shared_auxiliary_norm"]
         predictor_auxiliary_norm = _selected_gradient_norm(
             gradient_result.auxiliary_loss, gradient_model, predictor_tokens
@@ -615,6 +654,7 @@ def run_predictive_preflight(
     teacher_gradients_absent = teacher is None or all(
         parameter.grad is None for parameter in teacher.parameters()
     )
+    bottleneck_gradient_contract = _bottleneck_gradient_contract(gradient_model)
     report = {
         "schema_version": 3,
         "experiment": config["experiment"]["name"],
@@ -667,6 +707,7 @@ def run_predictive_preflight(
         "new_parameter_gradients_finite": finite_gradients,
         "new_parameter_gradient_families_nonzero": nonzero_gradients,
         "decoupled_predictor_gradient_contract": decoupled_contract,
+        "bottleneck_gradient_contract": bottleneck_gradient_contract,
         "teacher_gradients_absent": teacher_gradients_absent,
         "batchnorm_running_statistics": "fixed" if freeze else "training",
         "official_test_used": False,
@@ -680,6 +721,7 @@ def run_predictive_preflight(
             report["new_parameter_gradient_families_nonzero"],
             report["shared_gradient_authority_passed"],
             decoupled_contract is None or decoupled_contract["passed"],
+            bottleneck_gradient_contract is None or bottleneck_gradient_contract["passed"],
             report["teacher_gradients_absent"],
         )
     )

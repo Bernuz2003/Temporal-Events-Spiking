@@ -1,0 +1,8 @@
+extends: dvslip_predictive_dynamic_tcap.yaml
+
+experiment:
+  name: dvslip_predictive_dynamic_tcap_static_control
+
+model:
+  temporal_channel_mixer_router_pooling: constant
+  temporal_channel_mixer_router_hidden_divisor: null

@@ -220,7 +220,7 @@ class _HardwareProfiler:
                     module.routing_parameterization == "amplitude_allocation"
                 )
                 router_macs = 0
-                if module.content_router is not None:
+                if module.content_router is not None and module.router_pooling != "constant":
                     router_macs = (
                         output.shape[0]
                         * output.shape[1]

@@ -46,6 +46,8 @@ PREDICTIVE_MODEL_FIELDS = frozenset(
         "temporal_channel_mixer_predictive_auxiliary",
         "temporal_channel_mixer_predictor_channel_groups",
         "temporal_channel_mixer_predictor_spatial_kernel_size",
+        "temporal_channel_mixer_predictor_rank",
+        "temporal_channel_mixer_predictor_hidden_channels",
         "temporal_channel_mixer_predictor_detach_history",
         "temporal_channel_mixer_surprise_routing",
         "temporal_channel_mixer_routing_stages",
@@ -60,6 +62,7 @@ NEW_MODULE_PARAMETER_TOKENS = (
     ".predictor_logits",
     ".predictor_spatial.",
     ".predictor_projections.",
+    ".predictor_bottleneck.",
     ".surprise_router",
 )
 PREDICTIVE_SCRATCH_REFERENCE_CONFIG = "configs/dvslip_f_tcap_stage1_dwc3_d8.yaml"

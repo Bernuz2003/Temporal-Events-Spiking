@@ -660,7 +660,10 @@ def train_experiment(
         and not (
             any(
                 token in name
-                for token in (".predictor_logits", ".predictor_spatial.", ".predictor_projections.")
+                for token in (
+                    ".predictor_logits", ".predictor_spatial.",
+                    ".predictor_projections.", ".predictor_bottleneck.",
+                )
             )
             and not config["model"].get("temporal_channel_mixer_surprise_routing", False)
         )
@@ -1006,6 +1009,10 @@ def train_experiment(
             )
             deployment_config["model"].pop(
                 "temporal_channel_mixer_predictor_spatial_kernel_size", None
+            )
+            deployment_config["model"].pop("temporal_channel_mixer_predictor_rank", None)
+            deployment_config["model"].pop(
+                "temporal_channel_mixer_predictor_hidden_channels", None
             )
             deployment_config["model"].pop(
                 "temporal_channel_mixer_predictor_detach_history", None

@@ -78,6 +78,16 @@ def build_parser() -> argparse.ArgumentParser:
     tcap_predictive_probe.add_argument("--output", required=True)
     tcap_predictive_probe.add_argument("--fit-samples", type=int, default=256)
     tcap_predictive_probe.add_argument("--holdout-samples", type=int, default=256)
+    bottleneck_probe = subparsers.add_parser(
+        "bottleneck-feature-probe",
+        help="Compare linear and nonlinear low-rank predictors on frozen C0 train features",
+    )
+    bottleneck_probe.add_argument("--config", required=True)
+    bottleneck_probe.add_argument("--checkpoint", required=True)
+    bottleneck_probe.add_argument("--output", required=True)
+    bottleneck_probe.add_argument("--fit-samples", type=int, default=256)
+    bottleneck_probe.add_argument("--holdout-samples", type=int, default=256)
+    bottleneck_probe.add_argument("--steps", type=int, default=600)
     dynamic_routing_diagnostic = subparsers.add_parser(
         "dynamic-routing-diagnostic",
         help="Compare learned dynamic TCAP gates with their train-set mean constants",
@@ -299,6 +309,15 @@ def main() -> None:
                 max_validation_samples=args.validation_samples,
             )
         )
+    elif args.command == "bottleneck-feature-probe":
+        from etsr.config import load_config
+        from etsr.evaluation.bottleneck_probe import run_bottleneck_feature_probe
+
+        print(run_bottleneck_feature_probe(
+            load_config(args.config), args.checkpoint, args.output,
+            fit_samples=args.fit_samples, holdout_samples=args.holdout_samples,
+            steps=args.steps,
+        ))
     elif args.command == "predictive-check":
         from etsr.config import load_config
         from etsr.evaluation.predictive_diagnostic import run_predictive_preflight
