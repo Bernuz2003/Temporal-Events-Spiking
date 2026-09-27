@@ -58,6 +58,28 @@ def test_bottleneck_predictor_is_causal_and_restricts_history_gradient(hidden):
     assert torch.isfinite(mixer.last_projected_diagnostics["row_variation"]).all()
 
 
+def test_bottleneck_gradient_contract_at_selected_rank():
+    mixer = CausalTemporalChannelMixer(
+        128,
+        (1, 2, 4, 8),
+        predictive_auxiliary=True,
+        predictor_spatial_kernel_size=3,
+        predictor_rank=64,
+        predictor_hidden_channels=256,
+    )
+
+    class Holder(torch.nn.Module):
+        def __init__(self, module):
+            super().__init__()
+            self.module = module
+
+    contract = _bottleneck_gradient_contract(Holder(mixer))
+    assert contract is not None
+    assert contract["arithmetic"] == "cpu_float64_reference"
+    assert contract["passed"]
+    assert contract["relative_outside_row_gradient"] < 1e-8
+
+
 def test_static_router_is_input_independent_but_trainable():
     mixer = CausalTemporalChannelMixer(
         8,

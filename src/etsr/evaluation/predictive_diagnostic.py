@@ -418,8 +418,13 @@ def _prefix_differences(model, frames, altered, cutoff: int) -> tuple[float, flo
     )
 
 
-def _bottleneck_gradient_contract(model: MiniQKFormer) -> dict[str, float | bool] | None:
-    """The direct predictor-history gradient must lie entirely in row(A)."""
+def _bottleneck_gradient_contract(model: MiniQKFormer) -> dict[str, float | bool | str] | None:
+    """Check the predictor-history gradient subspace in stable reference arithmetic.
+
+    CUDA convolutions can leave a ~1e-4 relative residual in this numerical rank test even
+    when every history path begins with the shared projection. The small predictor is copied
+    to CPU float64 for the contract; this does not alter the model used by training.
+    """
 
     mixers = [
         module for module in model.modules()
@@ -429,18 +434,32 @@ def _bottleneck_gradient_contract(model: MiniQKFormer) -> dict[str, float | bool
     if not mixers:
         return None
     errors = []
+    gradient_norms = []
     for mixer in mixers:
         assert mixer.predictor_bottleneck is not None
+        reference = CausalTemporalChannelMixer(
+            mixer.channels,
+            mixer.delays,
+            predictive_auxiliary=True,
+            predictor_spatial_kernel_size=mixer.predictor_spatial_kernel_size,
+            predictor_rank=mixer.predictor_rank,
+            predictor_hidden_channels=mixer.predictor_hidden_channels,
+        ).to(device="cpu", dtype=torch.float64)
+        assert reference.predictor_bottleneck is not None
+        reference.predictor_bottleneck.load_state_dict(
+            mixer.predictor_bottleneck.state_dict()
+        )
         history = torch.randn(
             mixer.max_delay + 3, 1, mixer.channels, 2, 2,
-            device=mixer.weight.device, requires_grad=True,
+            device="cpu", dtype=torch.float64, requires_grad=True,
         )
-        target = torch.randn(3, 1, mixer.channels, 2, 2, device=mixer.weight.device)
-        prediction = mixer._causal_prediction(target, history)
+        target = torch.randn(3, 1, mixer.channels, 2, 2, device="cpu", dtype=torch.float64)
+        prediction = reference._causal_prediction(target, history)
         gradient = torch.autograd.grad(
             torch.nn.functional.smooth_l1_loss(prediction, target), history
-        )[0].float()
-        projection = mixer.predictor_bottleneck.projection.weight.flatten(1).float()
+        )[0]
+        gradient_norms.append(float(gradient.norm()))
+        projection = reference.predictor_bottleneck.projection.weight.flatten(1)
         _u, _s, rows = torch.linalg.svd(projection, full_matrices=False)
         row_component = torch.einsum(
             "ck,tbkhw->tbchw", rows.T,
@@ -450,7 +469,12 @@ def _bottleneck_gradient_contract(model: MiniQKFormer) -> dict[str, float | bool
             (gradient - row_component).norm() / gradient.norm().clamp_min(1e-12)
         ))
     maximum = max(errors)
-    return {"relative_outside_row_gradient": maximum, "passed": maximum <= 1e-5}
+    return {
+        "arithmetic": "cpu_float64_reference",
+        "minimum_history_gradient_norm": min(gradient_norms),
+        "relative_outside_row_gradient": maximum,
+        "passed": maximum <= 1e-8 and min(gradient_norms) > 1e-12,
+    }
 
 
 def run_predictive_preflight(
