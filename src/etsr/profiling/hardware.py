@@ -219,7 +219,7 @@ class _HardwareProfiler:
                     router_weights = sum(
                         child.weight.numel()
                         for child in module.content_router.modules()
-                        if isinstance(child, (nn.Linear, nn.Conv2d))
+                        if isinstance(child, nn.Linear | nn.Conv2d)
                     )
                     router_macs = (
                         output.shape[0] * output.shape[1] * routed_positions
