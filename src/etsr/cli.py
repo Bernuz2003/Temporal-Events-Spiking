@@ -78,6 +78,21 @@ def build_parser() -> argparse.ArgumentParser:
     tcap_predictive_probe.add_argument("--output", required=True)
     tcap_predictive_probe.add_argument("--fit-samples", type=int, default=256)
     tcap_predictive_probe.add_argument("--holdout-samples", type=int, default=256)
+    innovation_fit = subparsers.add_parser(
+        "innovation-probe-fit",
+        help="Fit the preregistered five-seed frozen-D innovation probe without opening validation",
+    )
+    innovation_fit.add_argument("--config", required=True)
+    innovation_fit.add_argument("--checkpoint", required=True)
+    innovation_fit.add_argument("--output", required=True)
+    innovation_evaluate = subparsers.add_parser(
+        "innovation-probe-evaluate",
+        help="Evaluate one complete innovation-probe fit artifact on development validation",
+    )
+    innovation_evaluate.add_argument("--config", required=True)
+    innovation_evaluate.add_argument("--checkpoint", required=True)
+    innovation_evaluate.add_argument("--fit-dir", required=True)
+    innovation_evaluate.add_argument("--output", required=True)
     dynamic_routing_diagnostic = subparsers.add_parser(
         "dynamic-routing-diagnostic",
         help="Compare learned dynamic TCAP gates with their train-set mean constants",
@@ -359,6 +374,20 @@ def main() -> None:
                 holdout_samples=args.holdout_samples,
             )
         )
+    elif args.command == "innovation-probe-fit":
+        from etsr.config import load_config
+        from etsr.evaluation.innovation_probe import fit_innovation_probe
+
+        report = fit_innovation_probe(load_config(args.config), args.checkpoint, args.output)
+        print({"fit_artifact": report["fit_artifact"], "fit_report": str(Path(args.output) / "fit_report.json")})
+    elif args.command == "innovation-probe-evaluate":
+        from etsr.config import load_config
+        from etsr.evaluation.innovation_probe import evaluate_innovation_probe
+
+        report = evaluate_innovation_probe(
+            load_config(args.config), args.checkpoint, args.fit_dir, args.output
+        )
+        print({"evaluation": str(Path(args.output) / "evaluation.json"), "promotion_gate_passed": report["promotion_gate_passed"]})
     elif args.command == "dynamic-routing-diagnostic":
         from etsr.config import load_config
         from etsr.evaluation.predictive_diagnostic import run_dynamic_routing_diagnostic

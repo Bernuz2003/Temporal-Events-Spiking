@@ -28,7 +28,7 @@ la variante. Nessuno sweep di G e nessuna compressione prematura.
 
 ## Passo 2 — Nuovo screen predittivo
 
-Il disegno è ancora aperto. Prima di implementarlo si fissano esplicitamente il contesto
+Il disegno dello screen sul **futuro sensoriale** è ancora aperto. Prima di implementarlo si fissano esplicitamente il contesto
 osservabile, il target, i controlli causali e di capacità, il holdout utterance-disgiunto e la
 misura di informazione utile oltre alla sola qualità di ricostruzione. Lo screen precedente non
 fornisce un protocollo valido da riutilizzare. Nessun run completo di pretraining parte dalla
@@ -39,6 +39,10 @@ sua utilità supera i controlli rilevanti sullo stesso holdout. Il costo del pre
 vincolo di scoperta: misurarlo, poi comprimere soltanto un meccanismo valido. La BatchNorm che
 mescola tempo e batch può far trapelare il futuro in train; il test di causalità va superato sia
 in eval sia in train prima di un full.
+
+Un esperimento distinto, checkpoint-only, sull'**innovazione latente di D congelato** è fissato
+nel [protocollo dedicato](INNOVATION_PROBE_PROTOCOL.md). Un esito positivo autorizza un solo
+run end-to-end; non sostituisce lo screen sul futuro sensoriale.
 
 ## Passo 3 — Conferma, trasferimento, raffinamento
 
