@@ -1,21 +1,26 @@
 # Stato corrente
 
-**Aggiornato:** 2026-09-26
+**Aggiornato:** 2026-09-30
 
-**Fase:** riesecuzione corretta della ricerca predittiva/condizionale. La prima esecuzione (sette
-continuazioni) non è evidenza sulle ipotesi; è archiviata sotto `artifacts/superseded/` e documentata
-soltanto in [`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). L'audit
-checkpoint-only A1–A4 e i probe di fattibilità R5 sono completi (sezione 12 dell'audit).
+**Fase:** selezione finale della memoria condizionale e screen del pretraining predittivo. La prima
+esecuzione (sette continuazioni) non è evidenza sulle ipotesi; è archiviata sotto `artifacts/superseded/` e documentata
+in [`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). L'audit
+checkpoint-only A1–A4 è completo.
 
-**Prima ondata corretta, seed 42 completata** (sezione 12.10 dell'audit):
+**Prima ondata corretta, seed 42 completata:**
 
 - **D bounded promosso:** 58,31% Macro-F1, +3,14 pp su C0; il vantaggio resta +3,05 pp nella
-  finestra tardiva e richiede ora la diagnostica dynamic-vs-constant prima dei seed 43/44.
+  finestra tardiva. Il controllo D-static riaddestrato ottiene 55,45%; la diagnostica
+  dynamic-vs-constant del checkpoint è stata eseguita.
 - **L15 chiuso come risultato di latenza:** +3,54 pp F1 al prefisso mirato di 1,5 s, ma soltanto
   +0,69 pp al punto finale e +1,12 pp di F1-PrefixAUC assoluta rispetto a R0.
-- **S0 chiuso come standalone, conservato come controllo di S1:** il predittore mantiene skill
+- **S0 chiuso come standalone:** il predittore mantiene skill
   valida, ma il +0,79 pp F1 non è risolutivo e l'autorità 0,25 riduce l'accuracy di training finale
   dal 89,10% di C0 al 72,97%.
+
+Gli altri bracci S sono stati ritirati dal repository. S0 resta come controllo predittivo; la
+motivazione scientifica sintetica è in [`DECISIONS.md`](DECISIONS.md). Il precedente screen sul
+futuro grossolano è stato rimosso mentre viene definito un protocollo corretto.
 
 ## Riferimento empirico
 
@@ -52,19 +57,14 @@ conserva le diagnostiche e i profili storici.
   dove parte prevedibile e innovazione ne portano quasi la stessa quantità.
 - La coda dopo l'ultimo evento contiene settling discriminativo: +6,71 pp di accuracy fra 1,5 e 2 s,
   +8,42 sulle parole confondibili, per soppressione dei competitori.
-- Il target fine non è predicibile dal contesto dello student a nessun orizzonte; il coarse sì.
+- Il vecchio confronto fra target fine e grossolano non definisce da solo uno screen predittivo valido.
 
 ## Prossimo passo
 
-Il prossimo braccio della famiglia S è **S1-Decoupled**. Conserva predictor e surprise router di
-S1, ma stacca la storia osservata dal predictor: la loss predittiva allena soltanto il predictor,
-mentre CE allena backbone, TCAP e router. Il peso ausiliario è fisso a 1, senza ramp né controllo
-di autorità condivisa. Il preflight blocca il run se uno dei tre percorsi di gradiente non rispetta
-questo contratto. S1 originale resta invariata come controllo accoppiato; il predictive subspace
-resta rinviato alle diagnostiche sullo smoothing.
-
-I seed 43 e 44 seguono solo per i bracci con firma meccanicistica coerente. Comandi in
-[`OPERATIONS_SMILIES.md`](OPERATIONS_SMILIES.md).
+Il prossimo braccio strutturale è **Groupwise-D, G=4**, senza comprimere le matrici TCAP dense.
+In parallelo si formalizza un nuovo screen predittivo, ancora da fissare; un full di
+pretraining seguirà solo un segnale interpretabile rispetto a controlli preregistrati. Parametri, costo e attività vanno misurati, non usati ora per restringere artificialmente
+la capacità del meccanismo. I seed appaiati seguono la selezione del candidato.
 
 Tutte le metriche citate sono development validation. L'implementazione non produce da sola nuova
 evidenza empirica; nessun accesso all'official test.

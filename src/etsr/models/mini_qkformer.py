@@ -50,13 +50,10 @@ class MiniQKFormer(nn.Module):
         temporal_channel_mixer_dynamic_routing: bool = False,
         temporal_channel_mixer_router_pooling: str = "global",
         temporal_channel_mixer_router_hidden_divisor: int | None = None,
+        temporal_channel_mixer_router_groups: int = 1,
         temporal_channel_mixer_predictive_auxiliary: bool = False,
         temporal_channel_mixer_predictor_channel_groups: int | None = None,
         temporal_channel_mixer_predictor_spatial_kernel_size: int = 1,
-        temporal_channel_mixer_predictor_rank: int | None = None,
-        temporal_channel_mixer_predictor_hidden_channels: int | None = None,
-        temporal_channel_mixer_predictor_detach_history: bool = False,
-        temporal_channel_mixer_surprise_routing: bool = False,
         temporal_channel_mixer_routing_stages: tuple[int, ...] = (1, 2),
         temporal_channel_mixer_predictive_stages: tuple[int, ...] = (1, 2),
         temporal_channel_mixer_routing_parameterization: str = "independent",
@@ -100,19 +97,10 @@ class MiniQKFormer(nn.Module):
         for name, enabled in (
             ("temporal_channel_mixer_dynamic_routing", temporal_channel_mixer_dynamic_routing),
             ("temporal_channel_mixer_predictive_auxiliary", temporal_channel_mixer_predictive_auxiliary),
-            ("temporal_channel_mixer_predictor_detach_history", temporal_channel_mixer_predictor_detach_history),
-            ("temporal_channel_mixer_surprise_routing", temporal_channel_mixer_surprise_routing),
             ("predictive_head", predictive_head),
         ):
             if type(enabled) is not bool:
                 raise ValueError(f"{name} must be boolean")
-        if temporal_channel_mixer_surprise_routing and not temporal_channel_mixer_predictive_auxiliary:
-            raise ValueError("surprise routing requires the predictive auxiliary")
-        if (
-            temporal_channel_mixer_predictor_detach_history
-            and not temporal_channel_mixer_predictive_auxiliary
-        ):
-            raise ValueError("detaching predictor history requires the predictive auxiliary")
         if temporal_channel_mixer_router_pooling not in {"global", "local", "constant"}:
             raise ValueError("temporal mixer router pooling must be global, local or constant")
         if (
@@ -120,10 +108,7 @@ class MiniQKFormer(nn.Module):
             and temporal_channel_mixer_router_hidden_divisor <= 0
         ):
             raise ValueError("temporal mixer router hidden divisor must be positive or null")
-        if not (
-            temporal_channel_mixer_dynamic_routing
-            or temporal_channel_mixer_surprise_routing
-        ) and (
+        if not temporal_channel_mixer_dynamic_routing and (
             temporal_channel_mixer_router_pooling != "global"
             or temporal_channel_mixer_router_hidden_divisor is not None
         ):
@@ -142,15 +127,26 @@ class MiniQKFormer(nn.Module):
             != temporal_channel_mixer_predictive_stages
         ):
             raise ValueError("temporal predictive stages must be an ordered subset of (1, 2)")
-        if temporal_channel_mixer_surprise_routing and not set(
-            temporal_channel_mixer_routing_stages
-        ) <= set(temporal_channel_mixer_predictive_stages):
-            raise ValueError("surprise routing needs a causal predictor in every routed stage")
         if temporal_channel_mixer_routing_parameterization not in {
             "independent",
             "amplitude_allocation",
         }:
             raise ValueError("unsupported temporal routing parameterization")
+        if (
+            type(temporal_channel_mixer_router_groups) is not int
+            or temporal_channel_mixer_router_groups <= 0
+        ):
+            raise ValueError("temporal router groups must be a positive integer")
+        if temporal_channel_mixer_router_groups > 1:
+            if (
+                not temporal_channel_mixer_dynamic_routing
+                or temporal_channel_mixer_routing_parameterization != "amplitude_allocation"
+            ):
+                raise ValueError("groupwise routing requires dynamic amplitude-allocation routing")
+            for stage in temporal_channel_mixer_routing_stages:
+                width = embed_dim // 2 if stage == 1 else embed_dim
+                if width % temporal_channel_mixer_router_groups:
+                    raise ValueError("temporal router groups must divide every routed stage width")
         if (
             temporal_channel_mixer_predictor_channel_groups is not None
             and temporal_channel_mixer_predictor_channel_groups <= 0
@@ -161,17 +157,6 @@ class MiniQKFormer(nn.Module):
             or temporal_channel_mixer_predictor_spatial_kernel_size % 2 == 0
         ):
             raise ValueError("temporal predictor spatial kernel must be a positive odd integer")
-        if temporal_channel_mixer_predictor_rank is not None and (
-            not 0 < temporal_channel_mixer_predictor_rank <= embed_dim
-            or not temporal_channel_mixer_predictive_auxiliary
-            or temporal_channel_mixer_predictor_channel_groups is not None
-        ):
-            raise ValueError("temporal bottleneck rank requires auxiliary prediction and no groups")
-        if temporal_channel_mixer_predictor_hidden_channels is not None and (
-            temporal_channel_mixer_predictor_rank is None
-            or temporal_channel_mixer_predictor_hidden_channels <= 0
-        ):
-            raise ValueError("temporal bottleneck hidden width requires a positive rank")
         if not temporal_channel_mixer_predictive_auxiliary and (
             temporal_channel_mixer_predictor_channel_groups is not None
             or temporal_channel_mixer_predictor_spatial_kernel_size != 1
@@ -247,8 +232,8 @@ class MiniQKFormer(nn.Module):
         self.temporal_channel_mixer_predictive_auxiliary = (
             temporal_channel_mixer_predictive_auxiliary
         )
-        self.temporal_channel_mixer_surprise_routing = temporal_channel_mixer_surprise_routing
         self.temporal_channel_mixer_routing_stages = temporal_channel_mixer_routing_stages
+        self.temporal_channel_mixer_router_groups = temporal_channel_mixer_router_groups
         self.temporal_channel_mixer_predictive_stages = temporal_channel_mixer_predictive_stages
         self.learnable_lif_tau_enabled = learnable_lif_tau
         self.multigranular_enabled = multigranular
@@ -276,30 +261,16 @@ class MiniQKFormer(nn.Module):
             ),
             temporal_channel_mixer_router_pooling=temporal_channel_mixer_router_pooling,
             temporal_channel_mixer_router_hidden_divisor=temporal_channel_mixer_router_hidden_divisor,
+            temporal_channel_mixer_router_groups=(
+                temporal_channel_mixer_router_groups
+                if 1 in temporal_channel_mixer_routing_stages else 1
+            ),
             temporal_channel_mixer_predictive_auxiliary=(
                 temporal_channel_mixer_predictive_auxiliary
                 and 1 in temporal_channel_mixer_predictive_stages
             ),
             temporal_channel_mixer_predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
             temporal_channel_mixer_predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
-            temporal_channel_mixer_predictor_rank=(
-                temporal_channel_mixer_predictor_rank
-                if temporal_channel_mixer_predictive_auxiliary
-                and 1 in temporal_channel_mixer_predictive_stages else None
-            ),
-            temporal_channel_mixer_predictor_hidden_channels=(
-                temporal_channel_mixer_predictor_hidden_channels
-                if temporal_channel_mixer_predictive_auxiliary
-                and 1 in temporal_channel_mixer_predictive_stages else None
-            ),
-            temporal_channel_mixer_predictor_detach_history=(
-                temporal_channel_mixer_predictor_detach_history
-                and 1 in temporal_channel_mixer_predictive_stages
-            ),
-            temporal_channel_mixer_surprise_routing=(
-                temporal_channel_mixer_surprise_routing
-                and 1 in temporal_channel_mixer_routing_stages
-            ),
             temporal_channel_mixer_routing_parameterization=(
                 temporal_channel_mixer_routing_parameterization
             ),
@@ -364,30 +335,16 @@ class MiniQKFormer(nn.Module):
             ),
             temporal_channel_mixer_router_pooling=temporal_channel_mixer_router_pooling,
             temporal_channel_mixer_router_hidden_divisor=temporal_channel_mixer_router_hidden_divisor,
+            temporal_channel_mixer_router_groups=(
+                temporal_channel_mixer_router_groups
+                if 2 in temporal_channel_mixer_routing_stages else 1
+            ),
             temporal_channel_mixer_predictive_auxiliary=(
                 temporal_channel_mixer_predictive_auxiliary
                 and 2 in temporal_channel_mixer_predictive_stages
             ),
             temporal_channel_mixer_predictor_channel_groups=temporal_channel_mixer_predictor_channel_groups,
             temporal_channel_mixer_predictor_spatial_kernel_size=temporal_channel_mixer_predictor_spatial_kernel_size,
-            temporal_channel_mixer_predictor_rank=(
-                temporal_channel_mixer_predictor_rank
-                if temporal_channel_mixer_predictive_auxiliary
-                and 2 in temporal_channel_mixer_predictive_stages else None
-            ),
-            temporal_channel_mixer_predictor_hidden_channels=(
-                temporal_channel_mixer_predictor_hidden_channels
-                if temporal_channel_mixer_predictive_auxiliary
-                and 2 in temporal_channel_mixer_predictive_stages else None
-            ),
-            temporal_channel_mixer_predictor_detach_history=(
-                temporal_channel_mixer_predictor_detach_history
-                and 2 in temporal_channel_mixer_predictive_stages
-            ),
-            temporal_channel_mixer_surprise_routing=(
-                temporal_channel_mixer_surprise_routing
-                and 2 in temporal_channel_mixer_routing_stages
-            ),
             temporal_channel_mixer_routing_parameterization=(
                 temporal_channel_mixer_routing_parameterization
             ),
@@ -646,30 +603,6 @@ class MiniQKFormer(nn.Module):
                 metrics[f"temporal_variation_{stage}_active"] = float(
                     per_sample[present].mean().detach()
                 )
-            projected = module.last_projected_diagnostics
-            features = module.last_projected_features
-            if projected is None or features is None:
-                continue
-            for space, values in zip(("row", "complement"), features, strict=True):
-                per_step = projected[f"{space}_variation"]
-                per_sample = (per_step * mask).sum(0) / counts.clamp_min(1)
-                metrics[f"temporal_variation_{stage}_{space}_active"] = float(
-                    per_sample[present].mean()
-                )
-                active_variances = []
-                active_energies = []
-                for sample_index, steps in enumerate(valid_steps.tolist()):
-                    active = values[:max(1, steps), sample_index].float()
-                    active_variances.append(active.var(dim=0, unbiased=False).mean())
-                    active_energies.append(active.square().mean())
-                metrics[f"temporal_feature_variance_{stage}_{space}_active"] = float(
-                    torch.stack(active_variances).mean()
-                )
-                metrics[f"temporal_feature_energy_{stage}_{space}_active"] = float(
-                    torch.stack(active_energies).mean()
-                )
-            for key in ("effective_rank", "minimum_singular_value", "maximum_singular_value"):
-                metrics[f"predictor_projection_{stage}_{key}"] = float(projected[key])
         return metrics
 
     @staticmethod

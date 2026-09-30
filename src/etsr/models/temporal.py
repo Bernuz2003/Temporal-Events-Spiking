@@ -96,84 +96,6 @@ class CausalTemporalFIR(nn.Module):
         return self.forward_sequence(sequence)[0]
 
 
-class BottleneckHistoryPredictor(nn.Module):
-    """Training-only causal predictor with one shared, first-applied history projection.
-
-    Every path from a delayed feature to the prediction passes through ``projection``.
-    Consequently its direct auxiliary gradient on that feature lies in the row space of A.
-    The output still predicts the full channel target; no target channel is hidden.
-    """
-
-    def __init__(
-        self, channels: int, delays: tuple[int, ...], rank: int,
-        kernel_size: int, hidden_channels: int | None,
-    ) -> None:
-        super().__init__()
-        if not 0 < rank <= channels:
-            raise ValueError("predictor rank must be between one and the mixer width")
-        if hidden_channels is not None and hidden_channels <= 0:
-            raise ValueError("predictor hidden width must be positive")
-        self.channels = channels
-        self.delays = delays
-        self.rank = rank
-        self.projection = nn.Conv2d(channels, rank, 1, bias=False)
-        self.spatial = nn.ModuleList(
-            nn.Conv2d(rank, rank, kernel_size, padding=kernel_size // 2,
-                      groups=rank, bias=False)
-            for _ in delays
-        )
-        self.linear_heads = (
-            nn.ModuleList(nn.Conv2d(rank, channels, 1, bias=False) for _ in delays)
-            if hidden_channels is None else None
-        )
-        self.joint_head = (
-            nn.Sequential(
-                nn.Conv2d(len(delays) * rank, hidden_channels, 1, bias=False),
-                nn.GELU(),
-                nn.Conv2d(hidden_channels, channels, 1, bias=False),
-            )
-            if hidden_channels is not None else None
-        )
-        self.reset_parameters()
-
-    @torch.no_grad()
-    def reset_parameters(self) -> None:
-        nn.init.orthogonal_(self.projection.weight.flatten(1))
-        for spatial in self.spatial:
-            nn.init.zeros_(spatial.weight)
-            centre = spatial.kernel_size[0] // 2
-            spatial.weight[:, 0, centre, centre] = 1.0
-        if self.linear_heads is not None:
-            for head in self.linear_heads:
-                head.weight.copy_(self.projection.weight.transpose(0, 1) / len(self.delays))
-        if self.joint_head is not None:
-            nn.init.kaiming_normal_(self.joint_head[0].weight, nonlinearity="relu")
-            nn.init.zeros_(self.joint_head[-1].weight)
-
-    def forward(self, delayed: list[torch.Tensor]) -> torch.Tensor:
-        if len(delayed) != len(self.delays):
-            raise ValueError("The predictor needs one history tensor per delay")
-        time_steps, batch = delayed[0].shape[:2]
-        projected = []
-        for history, spatial in zip(delayed, self.spatial, strict=True):
-            if history.shape != delayed[0].shape:
-                raise ValueError("Delayed history shapes must match")
-            flattened = history.flatten(0, 1)
-            projected.append(spatial(self.projection(flattened)))
-        if self.linear_heads is not None:
-            prediction = sum(
-                head(value) for head, value in zip(self.linear_heads, projected, strict=True)
-            )
-        else:
-            assert self.joint_head is not None
-            # The residual starts as a projected delay mean, matching the benign S0 start.
-            mean_projected = torch.stack(projected).mean(0)
-            prediction = torch.nn.functional.conv_transpose2d(
-                mean_projected, self.projection.weight
-            ) + self.joint_head(torch.cat(projected, dim=1))
-        return prediction.reshape(time_steps, batch, *prediction.shape[1:])
-
-
 class CausalTemporalChannelMixer(nn.Module):
     """Causal multi-delay MIMO FIR acting independently at each spatial/token position.
 
@@ -190,13 +112,10 @@ class CausalTemporalChannelMixer(nn.Module):
         dynamic_routing: bool = False,
         router_pooling: str = "global",
         router_hidden_divisor: int | None = None,
+        router_groups: int = 1,
         predictive_auxiliary: bool = False,
         predictor_channel_groups: int | None = None,
         predictor_spatial_kernel_size: int = 1,
-        predictor_rank: int | None = None,
-        predictor_hidden_channels: int | None = None,
-        predictor_detach_history: bool = False,
-        surprise_routing: bool = False,
         routing_parameterization: str = "independent",
     ) -> None:
         super().__init__()
@@ -211,15 +130,9 @@ class CausalTemporalChannelMixer(nn.Module):
         for name, enabled in (
             ("dynamic_routing", dynamic_routing),
             ("predictive_auxiliary", predictive_auxiliary),
-            ("predictor_detach_history", predictor_detach_history),
-            ("surprise_routing", surprise_routing),
         ):
             if type(enabled) is not bool:
                 raise ValueError(f"{name} must be boolean")
-        if surprise_routing and not predictive_auxiliary:
-            raise ValueError("surprise routing requires the predictive auxiliary")
-        if predictor_detach_history and not predictive_auxiliary:
-            raise ValueError("detaching predictor history requires the predictive auxiliary")
         if learnable_delays and (dynamic_routing or predictive_auxiliary):
             raise ValueError("conditional routing is defined only for fixed TCAP delays")
         if router_pooling not in {"global", "local", "constant"}:
@@ -230,35 +143,32 @@ class CausalTemporalChannelMixer(nn.Module):
             )
         if router_hidden_divisor is not None and router_hidden_divisor <= 0:
             raise ValueError("router_hidden_divisor must be positive or null")
+        if type(router_groups) is not int or router_groups <= 0 or channels % router_groups:
+            raise ValueError("router_groups must be a positive divisor of channels")
+        if router_groups > 1 and (not dynamic_routing or routing_parameterization != "amplitude_allocation"):
+            raise ValueError("groupwise routing requires dynamic amplitude-allocation routing")
         if predictor_channel_groups is not None and (
             predictor_channel_groups <= 0 or channels % predictor_channel_groups
         ):
             raise ValueError("predictor_channel_groups must divide channels")
         if predictor_spatial_kernel_size <= 0 or predictor_spatial_kernel_size % 2 == 0:
             raise ValueError("predictor_spatial_kernel_size must be a positive odd integer")
-        if predictor_rank is not None and (not 0 < predictor_rank <= channels or not predictive_auxiliary):
-            raise ValueError("predictor rank requires an auxiliary and cannot exceed mixer width")
-        if predictor_rank is not None and predictor_channel_groups is not None:
-            raise ValueError("bottleneck rank and legacy channel groups are mutually exclusive")
-        if predictor_hidden_channels is not None and (predictor_rank is None or predictor_hidden_channels <= 0):
-            raise ValueError("predictor hidden width requires a positive bottleneck rank")
         self.channels = int(channels)
         self.delays = tuple(delays)
         self.learnable_delays = learnable_delays
         self.dynamic_routing = dynamic_routing
         self.router_pooling = router_pooling
         self.router_hidden_divisor = router_hidden_divisor
+        self.router_groups = router_groups
         self.predictive_auxiliary = predictive_auxiliary
         self.record_temporal_variation = predictive_auxiliary
         self.predictor_channel_groups = predictor_channel_groups
         self.predictor_spatial_kernel_size = predictor_spatial_kernel_size
-        self.predictor_rank = predictor_rank
-        self.predictor_hidden_channels = predictor_hidden_channels
-        self.predictor_detach_history = predictor_detach_history
-        self.surprise_routing = surprise_routing
         self.routing_parameterization = routing_parameterization
         self.weight = nn.Parameter(torch.zeros(len(delays), channels, channels))
-        router_outputs = len(delays) + int(routing_parameterization == "amplitude_allocation")
+        router_outputs = router_groups * (
+            len(delays) + int(routing_parameterization == "amplitude_allocation")
+        )
         router_hidden = (
             max(1, channels // router_hidden_divisor)
             if router_hidden_divisor is not None
@@ -285,16 +195,9 @@ class CausalTemporalChannelMixer(nn.Module):
         self.predictor_logits = None
         self.predictor_spatial = None
         self.predictor_projections = None
-        self.predictor_bottleneck = (
-            BottleneckHistoryPredictor(
-                channels, delays, predictor_rank, predictor_spatial_kernel_size,
-                predictor_hidden_channels,
-            )
-            if predictive_auxiliary and predictor_rank is not None else None
-        )
-        if self.predictor_bottleneck is None and predictive_auxiliary and predictor_channel_groups is None:
+        if predictive_auxiliary and predictor_channel_groups is None:
             self.predictor_logits = nn.Parameter(torch.zeros(len(delays), channels))
-        elif self.predictor_bottleneck is None and predictive_auxiliary:
+        elif predictive_auxiliary:
             padding = predictor_spatial_kernel_size // 2
             self.predictor_spatial = nn.ModuleList(
                 [
@@ -321,19 +224,11 @@ class CausalTemporalChannelMixer(nn.Module):
                     for _ in delays
                 ]
             )
-        if not surprise_routing:
-            self.surprise_router = None
-        elif router_pooling == "local":
-            self.surprise_router = nn.Conv2d(channels, router_outputs, 1, bias=True)
-        else:
-            self.surprise_router = nn.Linear(channels, router_outputs, bias=True)
         self.last_auxiliary_loss: torch.Tensor | None = None
         self.last_auxiliary_error: torch.Tensor | None = None
         self.last_prediction_diagnostics: dict[str, torch.Tensor] | None = None
         self.last_routing_statistics: dict[str, torch.Tensor | int] | None = None
         self.last_temporal_variation: torch.Tensor | None = None
-        self.last_projected_diagnostics: dict[str, torch.Tensor] | None = None
-        self.last_projected_features: tuple[torch.Tensor, torch.Tensor] | None = None
         self._initialize_conditional_modules()
         if learnable_delays:
             centers = torch.tensor(delays, dtype=torch.float32)[:, None].repeat(1, channels)
@@ -357,8 +252,6 @@ class CausalTemporalChannelMixer(nn.Module):
 
     @torch.no_grad()
     def _initialize_conditional_modules(self) -> None:
-        if self.predictor_bottleneck is not None:
-            self.predictor_bottleneck.reset_parameters()
         if self.content_router is not None:
             final = (
                 self.content_router[-1]
@@ -381,9 +274,6 @@ class CausalTemporalChannelMixer(nn.Module):
                 projection.weight[diagonal, diagonal.remainder(channels_per_group), 0, 0] = (
                     1.0 / len(self.delays)
                 )
-        if self.surprise_router is not None:
-            nn.init.zeros_(self.surprise_router.weight)
-            nn.init.zeros_(self.surprise_router.bias)
 
     @property
     def max_delay(self) -> int:
@@ -527,10 +417,12 @@ class CausalTemporalChannelMixer(nn.Module):
             for index, delay in enumerate(self.delays):
                 contribution = torch.einsum("oc,bc...->bo...", weights[index], state[-delay])
                 if gates is not None:
-                    contribution = contribution * self._gate_for_contribution(
+                    contribution = self._apply_gate_to_contribution(
                         gates, index, contribution.unsqueeze(0)
                     )[0]
-                    effective_contributions.append(contribution.detach().abs().mean())
+                    effective_contributions.append(
+                        self._contribution_magnitude_by_group(contribution.unsqueeze(0))
+                    )
                 output = output + contribution
             if effective_contributions and self.last_routing_statistics is not None:
                 self.last_routing_statistics["effective_contribution_mean_abs_by_delay"] = (
@@ -588,10 +480,10 @@ class CausalTemporalChannelMixer(nn.Module):
                 delayed = history[start : start + sequence.shape[0]]
                 contribution = torch.einsum("oc,tbc...->tbo...", weights[index], delayed)
                 if gates is not None:
-                    contribution = contribution * self._gate_for_contribution(
-                        gates, index, contribution
+                    contribution = self._apply_gate_to_contribution(gates, index, contribution)
+                    effective_contributions.append(
+                        self._contribution_magnitude_by_group(contribution)
                     )
-                    effective_contributions.append(contribution.detach().abs().mean())
                 output = output + contribution
             if effective_contributions and self.last_routing_statistics is not None:
                 self.last_routing_statistics["effective_contribution_mean_abs_by_delay"] = (
@@ -664,31 +556,15 @@ class CausalTemporalChannelMixer(nn.Module):
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         """Return unit-centred tap gates and the optional causal prediction.
 
-        The router uses only the current feature and/or a detached, normalized prediction error.
+        The router uses the current feature; prediction is used only by S0's auxiliary loss.
         A zero-initialized router therefore preserves the exact fixed-TCAP function.
         """
 
-        prediction = None
-        surprise = None
-        has_predictor = (
-            self.predictor_logits is not None
-            or self.predictor_projections is not None
-            or self.predictor_bottleneck is not None
+        prediction = (
+            self._causal_prediction(sequence, history)
+            if self.predictor_logits is not None or self.predictor_projections is not None
+            else None
         )
-        if has_predictor:
-            prediction = self._causal_prediction(sequence, history)
-            spatial_dims = tuple(range(3, sequence.ndim))
-            scale = (
-                sequence.detach().square().mean(dim=spatial_dims).sqrt().clamp_min(1e-4)
-                if spatial_dims
-                else sequence.detach().abs().clamp_min(1e-4)
-            )
-            error = (sequence.detach() - prediction.detach()).abs()
-            if spatial_dims and self.router_pooling == "global":
-                error = error.mean(dim=spatial_dims)
-            elif spatial_dims:
-                scale = scale.reshape(*scale.shape, *((1,) * len(spatial_dims)))
-            surprise = error / scale
 
         gate_logits = None
         if self.content_router is not None:
@@ -705,22 +581,6 @@ class CausalTemporalChannelMixer(nn.Module):
                 spatial_dims = tuple(range(3, sequence.ndim))
                 pooled = sequence.mean(dim=spatial_dims) if spatial_dims else sequence
                 gate_logits = self.content_router(pooled)
-        if self.surprise_router is not None:
-            assert surprise is not None
-            if self.router_pooling == "local":
-                if surprise.ndim != 5:
-                    raise ValueError("Local surprise routing requires [T, B, C, H, W].")
-                time_steps, batch = surprise.shape[:2]
-                local = self.surprise_router(surprise.to(sequence.dtype).flatten(0, 1))
-                surprise_logits = local.reshape(time_steps, batch, *local.shape[1:])
-            else:
-                surprise_logits = self.surprise_router(surprise.to(sequence.dtype))
-            if gate_logits is None:
-                gate_logits = surprise_logits
-            elif gate_logits.ndim == surprise_logits.ndim:
-                gate_logits = gate_logits + surprise_logits
-            else:
-                gate_logits = gate_logits + surprise_logits[..., None, None]
         if gate_logits is None:
             gates = None
             amplitude = None
@@ -729,7 +589,7 @@ class CausalTemporalChannelMixer(nn.Module):
             gates = 2.0 * torch.sigmoid(gate_logits)
             amplitude = gates.mean(dim=2)
             allocation = gates / gates.sum(dim=2, keepdim=True).clamp_min(1e-12)
-        else:
+        elif self.router_groups == 1:
             amplitude_logit = gate_logits[:, :, 0]
             # The only supported amplitude-allocation law is bounded: sum_d g_d = a*K stays in
             # (0, 2K). This removes the scale degeneracy between a and W_d while retaining exact
@@ -737,10 +597,22 @@ class CausalTemporalChannelMixer(nn.Module):
             amplitude = 2.0 * torch.sigmoid(amplitude_logit)
             allocation = gate_logits[:, :, 1:].softmax(dim=2)
             gates = amplitude.unsqueeze(2) * len(self.delays) * allocation
+        else:
+            # [T, B, group, amplitude+delays, ...] -> [T, B, delay, group, ...].
+            logits = gate_logits.reshape(
+                *gate_logits.shape[:2], self.router_groups, len(self.delays) + 1,
+                *gate_logits.shape[3:]
+            )
+            amplitude = 2.0 * torch.sigmoid(logits[:, :, :, 0])
+            allocation = logits[:, :, :, 1:].softmax(dim=3).movedim(3, 2)
+            gates = amplitude.unsqueeze(2) * len(self.delays) * allocation
         self.last_routing_statistics = None
         if gates is not None:
             observed = gates.detach().float()
-            within_sample_dims = (0, *range(3, gates.ndim))
+            within_sample_dims = (
+                (0, *range(4, gates.ndim)) if self.router_groups > 1
+                else (0, *range(3, gates.ndim))
+            )
             sample_means = observed.mean(dim=within_sample_dims)
             sample_second_moments = observed.square().mean(dim=within_sample_dims)
             sample_variances = (sample_second_moments - sample_means.square()).clamp_min(0)
@@ -754,32 +626,25 @@ class CausalTemporalChannelMixer(nn.Module):
                 ).clamp_min(0).sqrt(),
                 "gate_sample_mean_second_moment_by_delay": sample_means.square().mean(dim=0),
                 "gate_within_sample_variance_mean_by_delay": sample_variances.mean(dim=0),
-                "gate_observation_count": gates.numel() // gates.shape[2],
+                "gate_observation_count": gates.numel() // (len(self.delays) * self.router_groups),
                 "gate_sample_count": gates.shape[1],
-                "surprise_mean": (
-                    surprise.detach().mean() if surprise is not None else gates.new_tensor(float("nan"))
-                ),
-                "surprise_second_moment": (
-                    surprise.detach().square().mean()
-                    if surprise is not None
-                    else gates.new_tensor(float("nan"))
-                ),
-                "surprise_observation_count": surprise.numel() if surprise is not None else 0,
-                "amplitude_mean": amplitude.detach().float().mean(),
-                "amplitude_second_moment": amplitude.detach().float().square().mean(),
+                "amplitude_mean": amplitude.detach().float().mean(
+                    dim=(0, 1, *range(3, amplitude.ndim))
+                ) if self.router_groups > 1 else amplitude.detach().float().mean(),
+                "amplitude_second_moment": amplitude.detach().float().square().mean(
+                    dim=(0, 1, *range(3, amplitude.ndim))
+                ) if self.router_groups > 1 else amplitude.detach().float().square().mean(),
                 "allocation_mean_by_delay": allocation.detach().float().mean(
-                    dim=(0, 1, *range(3, allocation.ndim))
+                    dim=(0, 1, *range(4 if self.router_groups > 1 else 3, allocation.ndim))
                 ),
                 "allocation_second_moment_by_delay": allocation.detach().float().square().mean(
-                    dim=(0, 1, *range(3, allocation.ndim))
+                    dim=(0, 1, *range(4 if self.router_groups > 1 else 3, allocation.ndim))
                 ),
             }
         return gates, prediction
 
     @torch.no_grad()
     def _record_temporal_variation(self, sequence: torch.Tensor) -> None:
-        self.last_projected_diagnostics = None
-        self.last_projected_features = None
         if sequence.shape[0] < 2:
             self.last_temporal_variation = sequence.new_zeros((0, sequence.shape[1]))
             return
@@ -788,47 +653,8 @@ class CausalTemporalChannelMixer(nn.Module):
         numerator = (current - previous).square().mean(2)
         denominator = current.square().mean(2).clamp_min(1e-8)
         self.last_temporal_variation = numerator / denominator
-        if self.predictor_bottleneck is None or self.training:
-            return
-        projection = self.predictor_bottleneck.projection.weight.flatten(1).float()
-        _u, singular, rows = torch.linalg.svd(projection, full_matrices=False)
-        features = sequence.float()
-        coordinates = torch.einsum("kc,tbchw->tbkhw", rows, features)
-        reconstructed = torch.einsum("ck,tbkhw->tbchw", rows.T, coordinates)
-        complement = features - reconstructed
-
-        def variation(value: torch.Tensor) -> torch.Tensor:
-            current_step = value[1:].flatten(2)
-            previous_step = value[:-1].flatten(2)
-            return (current_step - previous_step).square().mean(2) / (
-                current_step.square().mean(2).clamp_min(1e-8)
-            )
-
-        probability = singular / singular.sum().clamp_min(1e-12)
-        effective_rank = torch.exp(
-            -(probability * probability.clamp_min(1e-12).log()).sum()
-        )
-        self.last_projected_diagnostics = {
-            "row_variation": variation(coordinates),
-            "complement_variation": variation(complement),
-            "effective_rank": effective_rank,
-            "minimum_singular_value": singular[-1],
-            "maximum_singular_value": singular[0],
-        }
-        self.last_projected_features = (coordinates, complement)
 
     def _causal_prediction(self, sequence: torch.Tensor, history: torch.Tensor) -> torch.Tensor:
-        # In observer mode the predictor follows the representation learned by the classifier,
-        # but its loss cannot make the causal history easier to predict. The target is already
-        # detached in ``_record_prediction_diagnostics``.
-        if self.predictor_detach_history:
-            history = history.detach()
-        if self.predictor_bottleneck is not None:
-            delayed = [
-                history[self.max_delay - delay : self.max_delay - delay + sequence.shape[0]]
-                for delay in self.delays
-            ]
-            return self.predictor_bottleneck(delayed)
         prediction = torch.zeros_like(sequence)
         if self.predictor_logits is not None:
             coefficients = self.predictor_logits.softmax(dim=0).to(sequence.dtype)
@@ -861,6 +687,31 @@ class CausalTemporalChannelMixer(nn.Module):
         if selected.ndim != contribution.ndim - 1:
             raise ValueError("Local gate geometry does not match the TCAP contribution.")
         return selected.unsqueeze(2)
+
+    def _apply_gate_to_contribution(
+        self, gates: torch.Tensor, delay_index: int, contribution: torch.Tensor
+    ) -> torch.Tensor:
+        if self.router_groups == 1:
+            return contribution * self._gate_for_contribution(gates, delay_index, contribution)
+        selected = gates[:, :, delay_index]
+        grouped = contribution.reshape(
+            *contribution.shape[:2], self.router_groups,
+            self.channels // self.router_groups, *contribution.shape[3:]
+        )
+        broadcast = selected.reshape(
+            *selected.shape[:3], 1, *selected.shape[3:],
+            *((1,) * (grouped.ndim - selected.ndim - 1))
+        )
+        return (grouped * broadcast).reshape_as(contribution)
+
+    def _contribution_magnitude_by_group(self, contribution: torch.Tensor) -> torch.Tensor:
+        if self.router_groups == 1:
+            return contribution.detach().abs().mean()
+        grouped = contribution.reshape(
+            *contribution.shape[:2], self.router_groups,
+            self.channels // self.router_groups, *contribution.shape[3:]
+        )
+        return grouped.detach().abs().mean(dim=(0, 1, 3, *range(4, grouped.ndim)))
 
     def auxiliary_loss(self) -> torch.Tensor | None:
         return self.last_auxiliary_loss

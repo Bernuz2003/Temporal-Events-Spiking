@@ -1,9 +1,0 @@
-extends: dvslip_predictive_s0.yaml
-
-experiment:
-  name: dvslip_predictive_s0_bottleneck_k32
-
-model:
-  temporal_channel_mixer_predictor_channel_groups: null
-  temporal_channel_mixer_predictor_rank: 32
-  temporal_channel_mixer_predictor_hidden_channels: 256

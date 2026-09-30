@@ -535,37 +535,6 @@ def test_cuda_amp_candidate_backward_at_dvslip_shape(model_kwargs):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires SMILIES CUDA runtime")
-def test_cuda_amp_surprise_tcap_backward_at_dvslip_shape():
-    model = MiniQKFormer(
-        2,
-        100,
-        frontend="pyramidal",
-        temporal_channel_mixer=True,
-        temporal_channel_mixer_delays=(1, 2, 4, 8),
-        temporal_channel_mixer_dynamic_routing=True,
-        temporal_channel_mixer_predictive_auxiliary=True,
-        temporal_channel_mixer_surprise_routing=True,
-        stage1_mixer="depthwise_conv",
-    ).cuda().train()
-    with torch.no_grad():
-        for module in model.modules():
-            if isinstance(module, CausalTemporalChannelMixer):
-                module.weight.normal_(std=0.01)
-    frames = torch.rand(1, 40, 2, 128, 128, device="cuda")
-    with torch.autocast("cuda", dtype=torch.float16):
-        logits = model(frames)
-        auxiliary = model.temporal_auxiliary_loss()
-        assert auxiliary is not None
-        loss = torch.nn.functional.cross_entropy(
-            logits, torch.tensor([3], device="cuda")
-        ) + 0.1 * auxiliary
-    loss.backward()
-    for name, parameter in model.named_parameters():
-        if any(token in name for token in ("content_router", "predictor_logits", "surprise_router")):
-            assert parameter.grad is not None and torch.isfinite(parameter.grad).all()
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires SMILIES CUDA runtime")
 @pytest.mark.parametrize(
     "model_kwargs,fine_size",
     [

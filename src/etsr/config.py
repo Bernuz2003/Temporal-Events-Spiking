@@ -359,19 +359,15 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError("Learnable delays require model.temporal_channel_mixer=true")
     dynamic_routing = model.get("temporal_channel_mixer_dynamic_routing", False)
     predictive_auxiliary = model.get("temporal_channel_mixer_predictive_auxiliary", False)
-    surprise_routing = model.get("temporal_channel_mixer_surprise_routing", False)
     for name, enabled in (
         ("dynamic_routing", dynamic_routing),
         ("predictive_auxiliary", predictive_auxiliary),
-        ("surprise_routing", surprise_routing),
         ("predictive_head", model.get("predictive_head", False)),
     ):
         if type(enabled) is not bool:
             raise ConfigError(f"model.{name} must be boolean")
     if (dynamic_routing or predictive_auxiliary) and not model.get("temporal_channel_mixer", False):
         raise ConfigError("Conditional temporal options require model.temporal_channel_mixer=true")
-    if surprise_routing and not predictive_auxiliary:
-        raise ConfigError("Surprise routing requires the predictive auxiliary")
     if learnable_delays and (dynamic_routing or predictive_auxiliary):
         raise ConfigError("Conditional routing is defined only for fixed TCAP delays")
     router_pooling = model.get("temporal_channel_mixer_router_pooling", "global")
@@ -384,7 +380,10 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError(
             "model.temporal_channel_mixer_router_hidden_divisor must be positive or null"
         )
-    if not (dynamic_routing or surprise_routing) and (
+    router_groups = model.get("temporal_channel_mixer_router_groups", 1)
+    if type(router_groups) is not int or router_groups <= 0:
+        raise ConfigError("model.temporal_channel_mixer_router_groups must be a positive integer")
+    if not dynamic_routing and (
         router_pooling != "global" or router_hidden_divisor is not None
     ):
         raise ConfigError("Temporal router geometry requires dynamic routing")
@@ -408,14 +407,19 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         )
     if not predictive_auxiliary and predictive_stages != [1, 2]:
         raise ConfigError("Predictive stages require the predictive auxiliary")
-    if surprise_routing and not set(routing_stages) <= set(predictive_stages):
-        raise ConfigError("Surprise routing needs a causal predictor in every routed stage")
     routing_parameterization = model.get(
         "temporal_channel_mixer_routing_parameterization", "independent"
     )
     if routing_parameterization not in {"independent", "amplitude_allocation"}:
         raise ConfigError("Unsupported temporal routing parameterization")
-    if not (dynamic_routing or surprise_routing) and (
+    if router_groups > 1:
+        if not dynamic_routing or routing_parameterization != "amplitude_allocation":
+            raise ConfigError("Groupwise routing requires dynamic amplitude-allocation routing")
+        for stage in routing_stages:
+            width = embed_dim // 2 if stage == 1 else embed_dim
+            if width % router_groups:
+                raise ConfigError("Router groups must divide every routed stage width")
+    if not dynamic_routing and (
         routing_stages != [1, 2] or routing_parameterization != "independent"
     ):
         raise ConfigError("Temporal routing controls require an enabled router")
@@ -434,35 +438,7 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         raise ConfigError(
             "model.temporal_channel_mixer_predictor_spatial_kernel_size must be a positive odd integer"
         )
-    predictor_rank = model.get("temporal_channel_mixer_predictor_rank")
-    predictor_hidden = model.get("temporal_channel_mixer_predictor_hidden_channels")
-    if predictor_rank is not None and (
-        type(predictor_rank) is not int
-        or predictor_rank <= 0
-        or predictor_rank > (embed_dim // 2 if 1 in predictive_stages else embed_dim)
-        or not predictive_auxiliary
-        or predictor_groups is not None
-    ):
-        raise ConfigError(
-            "model.temporal_channel_mixer_predictor_rank requires an auxiliary, no channel "
-            "groups, and a rank within every predicted stage width"
-        )
-    if predictor_hidden is not None and (
-        type(predictor_hidden) is not int or predictor_hidden <= 0 or predictor_rank is None
-    ):
-        raise ConfigError(
-            "model.temporal_channel_mixer_predictor_hidden_channels requires a positive bottleneck rank"
-        )
-    predictor_detach_history = model.get(
-        "temporal_channel_mixer_predictor_detach_history", False
-    )
-    if type(predictor_detach_history) is not bool:
-        raise ConfigError(
-            "model.temporal_channel_mixer_predictor_detach_history must be boolean"
-        )
-    if not predictive_auxiliary and (
-        predictor_groups is not None or predictor_kernel != 1 or predictor_detach_history
-    ):
+    if not predictive_auxiliary and (predictor_groups is not None or predictor_kernel != 1):
         raise ConfigError("Temporal predictor geometry requires predictive auxiliary training")
     predictive_head_kernel = model.get("predictive_head_spatial_kernel_size", 1)
     if (
@@ -627,14 +603,14 @@ def _validate_event_baseline(config: dict[str, Any], dataset_label: str) -> None
         and _declares_predictive_modules(model)
     ):
         raise ConfigError(
-            "Auxiliary predictors, predictive heads and surprise routing are trained only by a "
+            "Auxiliary predictors and predictive heads are trained only by a "
             "predictive objective; declare a predictive section with a positive-weight objective"
         )
     if continuation is not None:
         _validate_predictive_continuation(config)
 
 
-_PREDICTIVE_OBJECTIVE_MODES = {"none", "fine_future", "fine_same", "coarse_future", "late_prefix"}
+_PREDICTIVE_OBJECTIVE_MODES = {"none", "fine_future", "fine_same", "late_prefix"}
 _AUTHORITY_FIELDS = {"target_ratio", "max_step_factor", "min_weight", "max_weight"}
 
 
@@ -658,7 +634,6 @@ def _declares_predictive_modules(model: dict[str, Any]) -> bool:
     return bool(
         model.get("temporal_channel_mixer_predictive_auxiliary", False)
         or model.get("predictive_head", False)
-        or model.get("temporal_channel_mixer_surprise_routing", False)
     )
 
 
@@ -736,15 +711,6 @@ def _validate_predictive_section(config: dict[str, Any], objective_mode: str) ->
     minimum_ratio = objective.get("minimum_shared_gradient_ratio")
     if minimum_ratio is not None and (not _is_number(minimum_ratio) or minimum_ratio < 0.0):
         raise ConfigError("predictive.objective.minimum_shared_gradient_ratio must be non-negative")
-    predictor_history_detached = config["model"].get(
-        "temporal_channel_mixer_predictor_detach_history", False
-    )
-    if predictor_history_detached and authority is not None:
-        raise ConfigError("A detached temporal predictor cannot use shared-gradient authority")
-    if predictor_history_detached and minimum_ratio != 0.0:
-        raise ConfigError(
-            "A detached temporal predictor requires minimum_shared_gradient_ratio=0.0"
-        )
     auxiliary_declared = objective_mode != "none" or bool(
         config["model"].get("temporal_channel_mixer_predictive_auxiliary", False)
     )
@@ -785,7 +751,7 @@ def _validate_predictive_section(config: dict[str, Any], objective_mode: str) ->
         for field in ("teacher_config", "teacher_checkpoint"):
             if not isinstance(predictive.get(field), str) or not predictive[field].strip():
                 raise ConfigError(f"predictive.{field} is required by the objective")
-    head_required = objective_mode in {"fine_future", "fine_same", "coarse_future"}
+    head_required = objective_mode in {"fine_future", "fine_same"}
     if bool(config["model"].get("predictive_head", False)) != head_required:
         raise ConfigError("model.predictive_head must match the latent predictive objective")
     if head_required:

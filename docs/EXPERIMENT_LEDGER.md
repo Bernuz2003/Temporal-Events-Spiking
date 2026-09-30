@@ -401,21 +401,17 @@ perché durata, classi e protocollo differiscono.
 
 ## Prima esecuzione Predictive-Temporal-Coding — superseded
 
-I sette full della prima esecuzione (R0-v1, P-F, D-v1, R0-v2, D-v2, S0 e S1) e i relativi
+I run della prima esecuzione e i relativi
 bounded-overfit/preflight sono conservati sotto `artifacts/superseded/`. Non costituiscono evidenza
 a favore o contro P, D o S per i difetti di selezione, autorità del gradiente, formulazione e
 risoluzione statistica descritti in
-[`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). Nessun nuovo full è
-autorizzato prima del pacchetto checkpoint-only A1–A4; la nuova esecuzione mantiene i nomi canonici
-senza suffissi di correzione.
+[`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). L’audit checkpoint-only A1–A4 ha preceduto la successiva riesecuzione da zero.
 
 ## Audit checkpoint-only della fase predittiva — 2026-09-24
 
 Nessun training. Report `artifacts/predictive_phase1_audit/phase1_audit.json` (A1–A4 su C0, R0-v2 e
-S0 archiviati, A2 con 8192/2048 campioni) e probe di fattibilità in `artifacts/predictive_diagnostics/`
-(target fine a h=1/2/4, coarse a h=1/2/4/8). Esito e verdetti:
-[`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md), sezione 12. A1 della
-versione registrata misurava una sola classe ed è provvisorio.
+S0 archiviati, A2 con 8192/2048 campioni). Esito e limiti:
+[`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md), sezione «Esiti validi».
 
 ## Regola di aggiornamento
 

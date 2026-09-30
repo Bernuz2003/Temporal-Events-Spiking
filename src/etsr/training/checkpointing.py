@@ -39,24 +39,13 @@ def save_deployment_checkpoint(
 ) -> None:
     """Save only parameters used by the ordinary inference forward."""
 
-    remove_predictor = not bool(
-        config.get("model", {}).get("temporal_channel_mixer_surprise_routing", False)
-    )
     state = {
         name: value
         for name, value in model.state_dict().items()
         if not name.startswith("predictive_head.")
-        and not (
-            remove_predictor
-            and any(
-                token in name
-                for token in (
-                    ".predictor_logits",
-                    ".predictor_spatial.",
-                    ".predictor_projections.",
-                    ".predictor_bottleneck.",
-                )
-            )
+        and not any(
+            token in name
+            for token in (".predictor_logits", ".predictor_spatial.", ".predictor_projections.")
         )
     }
     _atomic_save(

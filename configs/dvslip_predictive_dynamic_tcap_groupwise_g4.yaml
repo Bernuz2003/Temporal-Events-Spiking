@@ -1,0 +1,9 @@
+extends: dvslip_predictive_dynamic_tcap.yaml
+
+experiment:
+  name: dvslip_predictive_dynamic_tcap_groupwise_g4
+
+# Same D backbone, dense TCAP matrices and scratch recipe; only the stage2 router
+# assigns separate amplitude and delay allocation to four output-channel groups.
+model:
+  temporal_channel_mixer_router_groups: 4

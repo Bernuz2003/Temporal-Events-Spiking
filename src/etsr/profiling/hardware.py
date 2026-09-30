@@ -210,23 +210,20 @@ class _HardwareProfiler:
             self.totals["multivalued_mac_potential"] += macs
             self.totals["state_reads"] += history_reads
             self.totals["recurrent_state_updates"] += output.numel()
-            has_conditional_gating = (
-                module.content_router is not None or module.surprise_router is not None
-            )
+            has_conditional_gating = module.content_router is not None
             if has_conditional_gating:
                 spatial_positions = math.prod(output.shape[3:]) if output.ndim > 3 else 1
                 routed_positions = spatial_positions if module.router_pooling == "local" else 1
-                router_outputs = len(module.delays) + int(
-                    module.routing_parameterization == "amplitude_allocation"
-                )
                 router_macs = 0
                 if module.content_router is not None and module.router_pooling != "constant":
+                    router_weights = sum(
+                        child.weight.numel()
+                        for child in module.content_router.modules()
+                        if isinstance(child, (nn.Linear, nn.Conv2d))
+                    )
                     router_macs = (
-                        output.shape[0]
-                        * output.shape[1]
-                        * routed_positions
-                        * module.channels
-                        * router_outputs
+                        output.shape[0] * output.shape[1] * routed_positions
+                        * router_weights
                     )
                 pooling_adds = (
                     output.numel()
@@ -244,8 +241,10 @@ class _HardwareProfiler:
                 if module.routing_parameterization == "independent":
                     self.totals["sigmoid"] += routed_observations * len(module.delays)
                 else:
-                    self.totals["sigmoid"] += routed_observations
-                    self.totals["softmax"] += routed_observations * len(module.delays)
+                    self.totals["sigmoid"] += routed_observations * module.router_groups
+                    self.totals["softmax"] += (
+                        routed_observations * module.router_groups * len(module.delays)
+                    )
             if module.predictive_auxiliary:
                 predictor_multiplies = (
                     output.numel() * len(module.delays)
@@ -257,55 +256,31 @@ class _HardwareProfiler:
                 layer["causal_predictor_add"] += predictor_adds
                 self.totals["elementwise_multiply"] += predictor_multiplies
                 self.totals["elementwise_add"] += predictor_adds
-            if module.surprise_routing:
-                observations = output.shape[0] * output.shape[1] * module.channels
-                # The vector-error projection is an nn.Linear and is counted by its own hook.
-                surprise_gate_multiplies = 0
-                surprise_elements = output.numel()
-                surprise_reduction_adds = 2 * (surprise_elements - observations)
-                surprise_mean_scales = 2 * observations
-                surprise_logit_adds = (
-                    output.shape[0] * output.shape[1] * len(module.delays)
-                    if module.content_router is not None
-                    else 0
-                )
-                layer["surprise_gate_multiply"] += surprise_gate_multiplies
-                layer["surprise_error_subtract"] += surprise_elements
-                layer["surprise_absolute_value"] += surprise_elements
-                layer["surprise_square"] += surprise_elements
-                layer["surprise_reduction_add"] += surprise_reduction_adds
-                layer["surprise_mean_scale_multiply"] += surprise_mean_scales
-                layer["surprise_sqrt"] += observations
-                layer["surprise_divide"] += observations
-                layer["surprise_logit_add"] += surprise_logit_adds
-                self.totals["elementwise_multiply"] += (
-                    surprise_gate_multiplies + surprise_mean_scales
-                )
-                self.totals["elementwise_add"] += surprise_logit_adds
-                self.totals["surprise_error_subtract"] += surprise_elements
-                self.totals["surprise_absolute_value"] += surprise_elements
-                self.totals["surprise_square"] += surprise_elements
-                self.totals["surprise_reduction_add"] += surprise_reduction_adds
-                self.totals["surprise_mean_scale_multiply"] += surprise_mean_scales
-                self.totals["surprise_sqrt"] += observations
-                self.totals["surprise_divide"] += observations
-                self.totals["surprise_logit_add"] += surprise_logit_adds
             routing = module.last_routing_statistics
             if routing is not None:
                 means = routing["gate_mean_by_delay"].cpu()
                 stds = routing["gate_std_by_delay"].cpu()
-                for index, delay in enumerate(module.delays):
-                    layer[f"observed_gate_mean_delay_{delay}"] += float(means[index])
-                    layer[f"observed_gate_std_delay_{delay}"] += float(stds[index])
+                for group in range(module.router_groups):
+                    for index, delay in enumerate(module.delays):
+                        coordinate = (index, group) if module.router_groups > 1 else index
+                        suffix = (
+                            f"group_{group}_delay_{delay}"
+                            if module.router_groups > 1 else f"delay_{delay}"
+                        )
+                        layer[f"observed_gate_mean_{suffix}"] += float(means[coordinate])
+                        layer[f"observed_gate_std_{suffix}"] += float(stds[coordinate])
                 contributions = routing.get("effective_contribution_mean_abs_by_delay")
                 if contributions is not None:
-                    for index, delay in enumerate(module.delays):
-                        layer[f"observed_effective_contribution_mean_abs_delay_{delay}"] += float(
-                            contributions[index].cpu()
-                        )
-                surprise = float(routing["surprise_mean"].cpu())
-                if not torch.isnan(torch.tensor(surprise)):
-                    layer["observed_normalized_surprise_mean"] += surprise
+                    for group in range(module.router_groups):
+                        for index, delay in enumerate(module.delays):
+                            coordinate = (index, group) if module.router_groups > 1 else index
+                            suffix = (
+                                f"group_{group}_delay_{delay}"
+                                if module.router_groups > 1 else f"delay_{delay}"
+                            )
+                            layer[f"observed_effective_contribution_mean_abs_{suffix}"] += float(
+                                contributions[coordinate].cpu()
+                            )
             state_elements = module.max_delay * output[0].numel() // output.shape[1]
             self.state_shapes[name] = (state_elements, output.element_size() * 8)
             self._activation(output)
@@ -449,14 +424,6 @@ class _HardwareProfiler:
                 "maxpool_comparison",
                 "elementwise_add",
                 "elementwise_multiply",
-                "surprise_error_subtract",
-                "surprise_absolute_value",
-                "surprise_square",
-                "surprise_reduction_add",
-                "surprise_mean_scale_multiply",
-                "surprise_sqrt",
-                "surprise_divide",
-                "surprise_logit_add",
             )
         }
         per_sample["sop_potential"] = (

@@ -196,23 +196,6 @@ def _accumulate_routing_statistics(
         contributions = statistics.get("effective_contribution_mean_abs_by_delay")
         if isinstance(contributions, torch.Tensor):
             weighted["effective_contribution_sum"] = contributions.detach().float() * observations
-        surprise_count = int(statistics.get("surprise_observation_count", 0))
-        surprise_mean = statistics.get("surprise_mean")
-        surprise_second_moment = statistics.get("surprise_second_moment")
-        if (
-            surprise_count > 0
-            and isinstance(surprise_mean, torch.Tensor)
-            and isinstance(surprise_second_moment, torch.Tensor)
-        ):
-            current["surprise_sum"] = current.get(
-                "surprise_sum", surprise_mean.new_zeros(())
-            ) + surprise_mean * surprise_count
-            current["surprise_second_moment_sum"] = current.get(
-                "surprise_second_moment_sum", surprise_second_moment.new_zeros(())
-            ) + surprise_second_moment * surprise_count
-            current["surprise_observation_count"] = (
-                current.get("surprise_observation_count", 0) + surprise_count
-            )
         for key, value in weighted.items():
             current[key] = current.get(key, torch.zeros_like(value)) + value
         current["observation_count"] += observations
@@ -260,47 +243,54 @@ def _finalize_routing_statistics(
             if allocation_mean is not None
             else None
         )
-        surprise_count = int(values.get("surprise_observation_count", 0))
-        surprise_mean = None
-        surprise_std = None
-        if surprise_count > 0:
-            surprise_mean = values["surprise_sum"] / surprise_count
-            surprise_second_moment = values["surprise_second_moment_sum"] / surprise_count
-            surprise_std = (surprise_second_moment - surprise_mean.square()).clamp_min(0).sqrt()
-        for index, delay in enumerate(values["delays"]):
-            gate_mean = float(mean[index].cpu())
-            gate_std = float(variance[index].sqrt().cpu())
-            row = {
-                "module": name,
-                "delay": int(delay),
-                "gate_mean": gate_mean,
-                "gate_std": gate_std,
-                "gate_cv": gate_std / max(abs(gate_mean), 1e-12),
-                "gate_between_sample_std": float(
-                    between_sample_variance[index].sqrt().cpu()
-                ),
-                "gate_within_sample_std": float(within_sample_variance[index].sqrt().cpu()),
-                "gate_observation_count": observations,
-                "sample_count": sample_count,
-            }
-            if contribution is not None:
-                row["effective_contribution_mean_abs"] = float(contribution[index].cpu())
-            if amplitude_mean is not None and amplitude_std is not None:
-                row["routing_amplitude_mean"] = float(amplitude_mean.cpu())
-                row["routing_amplitude_std"] = float(amplitude_std.cpu())
-            if allocation_mean is not None and allocation_std is not None:
-                row["routing_allocation_mean"] = float(allocation_mean[index].cpu())
-                row["routing_allocation_std"] = float(allocation_std[index].cpu())
-            if surprise_mean is not None and surprise_std is not None:
-                mean_value = float(surprise_mean.cpu())
-                std_value = float(surprise_std.cpu())
-                row.update(
-                    normalized_surprise_mean=mean_value,
-                    normalized_surprise_std=std_value,
-                    normalized_surprise_cv=std_value / max(abs(mean_value), 1e-12),
-                    surprise_observation_count=surprise_count,
-                )
-            rows.append(row)
+        group_count = mean.shape[1] if mean.ndim == 2 else 1
+        for group in range(group_count):
+            for index, delay in enumerate(values["delays"]):
+                coordinate = (index, group) if mean.ndim == 2 else index
+                gate_mean = float(mean[coordinate].cpu())
+                gate_std = float(variance[coordinate].sqrt().cpu())
+                row = {
+                    "module": name,
+                    "delay": int(delay),
+                    "gate_mean": gate_mean,
+                    "gate_std": gate_std,
+                    "gate_cv": gate_std / max(abs(gate_mean), 1e-12),
+                    "gate_between_sample_std": float(
+                        between_sample_variance[coordinate].sqrt().cpu()
+                    ),
+                    "gate_within_sample_std": float(
+                        within_sample_variance[coordinate].sqrt().cpu()
+                    ),
+                    "gate_observation_count": observations,
+                    "sample_count": sample_count,
+                }
+                if mean.ndim == 2:
+                    row["group"] = group
+                if contribution is not None:
+                    row["effective_contribution_mean_abs"] = float(
+                        contribution[coordinate].cpu()
+                    )
+                if amplitude_mean is not None and amplitude_std is not None:
+                    group_amplitude_mean = (
+                        amplitude_mean[group] if mean.ndim == 2 else amplitude_mean
+                    )
+                    group_amplitude_std = (
+                        amplitude_std[group] if mean.ndim == 2 else amplitude_std
+                    )
+                    row["routing_amplitude_mean"] = float(
+                        group_amplitude_mean.cpu()
+                    )
+                    row["routing_amplitude_std"] = float(
+                        group_amplitude_std.cpu()
+                    )
+                if allocation_mean is not None and allocation_std is not None:
+                    row["routing_allocation_mean"] = float(
+                        allocation_mean[coordinate].cpu()
+                    )
+                    row["routing_allocation_std"] = float(
+                        allocation_std[coordinate].cpu()
+                    )
+                rows.append(row)
     return rows
 
 
@@ -528,7 +518,7 @@ def evaluate(
         (name, module)
         for name, module in model.named_modules()
         if isinstance(module, CausalTemporalChannelMixer)
-        and (module.content_router is not None or module.surprise_router is not None)
+        and module.content_router is not None
     )
     routing_accumulators: dict[str, dict[str, Any]] = {}
     temporal_prediction_sums: dict[str, float] = {}

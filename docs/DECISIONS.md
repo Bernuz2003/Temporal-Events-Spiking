@@ -1,82 +1,18 @@
 # Decisioni attive
 
-**Aggiornate:** 2026-09-26
+**Aggiornate:** 2026-09-30
 
-## Decisioni correnti della fase predittiva
+## Fase predittiva e memoria condizionale
 
-1. F+DWC-3+TCAP-d8 è il riferimento congelato (C0). F+TCAP e MG+TCAP citati sotto sono riferimenti
-   storici della discovery, non il modello corrente.
-2. Prevale [`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). La prima
-   esecuzione non è evidenza sulle ipotesi; i suoi artifact sono conservati sotto
-   `artifacts/superseded/`. L'audit A1–A4 e i probe R5 sono completi; l'esito è nella sua sezione 12.
-3. **Regime per meccanismo.** L15 è una continuazione da C0, con BN a statistiche fisse, teacher in
-   eval e controllo R0. D, S0 e S1 si addestrano **da zero** con la ricetta congelata di C0: in
-   continuazione la rappresentazione non si muove (A3), e un router inserito a identità parte da un
-   punto stazionario. I controlli dei bracci da zero sono i seed archiviati di C0 (42/43/44).
-4. **Nessuna riproduzione di C0.** Il checkpoint congelato resta la base di confronto. L'equivalenza
-   della ricetta è coperta da un test: lo scheduler corrente riproduce esattamente quello di C0 in
-   tutte le 128 epoche. I bracci da zero partono dall'inizializzazione del backbone e dal flusso di
-   dati della topologia C0 allo stesso seed.
-5. **Programma chiuso.** Il vecchio tetto numerico in GPU-ore non è applicabile ai nuovi bracci
-   scratch da 128 epoche, ma non autorizza una ricerca aperta: R0/L15/D/S0 al seed 42; S1 soltanto
-   dopo una skill predittiva valida di S0; seed 43 e 44 soltanto per i bracci con firma coerente.
-   L'unità statistica di un'affermazione di superiorità è il seed, non l'epoca.
-6. Nessun gate di +1 pp su seed singolo. Ogni decisione legge insieme il corredo di evidenza della
-   sezione 9 dell'audit e viene registrata qui con il ragionamento.
-7. **Verdetti.** P-F e P-0 chiusi (target fine non predicibile a nessun orizzonte). P-C sospeso.
-   L15, D e S0 da eseguire nella forma corretta; S1 resta condizionato alla validazione del
-   meccanismo di S0. Una sola fusione, strutturata (sorpresa → ampiezza, contenuto → allocazione),
-   solo dopo due componenti positivi.
-8. **Correzioni attive.** Ramp escluso dalla selezione e dalla finestra del gate di overfit;
-   gradienti per blocco e regione su supporto identico; batch diagnostici stratificati per classe;
-   autorità ausiliaria calibrata e rimisurata ogni epoca, con minimo verificato dal preflight;
-   obiettivo S solo stage2 e solo regione attiva; routing solo stage2 con ampiezza separata
-   dall'allocazione; sorpresa locale; rapporto costante fra learning rate discriminativi; L15 al
-   solo prefisso di 1,5 s letto su denominatore fisso; gate dell'audit su ogni ingresso di training.
-9. Si promuove un solo vincitore confermato, poi si riprendono le augmentation sulla candidata.
-   B non riceve screen duplicati. I negativi validi restano parte dell'evidenza.
-10. Official test escluso. Profiling dal checkpoint deployabile del proprio best; nessun risparmio
-    attribuito automaticamente a gate soft. La disponibilità del teacher limita cosa può essere
-    trasferito fra dataset.
-11. **D si riesegue (2026-09-26).** Il primo run misurava un difetto: l'ampiezza esponenziale di
-    `amplitude_allocation` è esplosa addestrando da zero (finestra tardiva 48,87 contro 54,36 di
-    C0). `amplitude_allocation` usa ora univocamente ampiezza `2σ` e memoria totale in `(0, 2K)`;
-    la legge esponenziale è stata rimossa. Il vecchio run di D va sotto `artifacts/superseded/`.
-    Dettagli nella sezione 12.9 dell'audit.
-12. **S0 riceve il GO checkpoint-only, pur restando gate-negative (2026-09-26).** Il gate fallisce
-    soltanto sulla CE in eval: 1,567 contro la soglia 1,5, con accuracy 96,9% e tutto finito. Il
-    checkpoint migliore è stato quindi misurato sui 2.995 campioni mai usati dal gate dell'intera
-    development-validation. La skill attiva è **0,4055 contro la media dei ritardi** e **0,2428
-    contro la persistenza**, entrambe ben oltre la soglia predefinita di 0,10; la varianza del target
-    resta 1,2909. Il predittore generalizza quindi fuori dal subset e autorizza un solo full run S0
-    da zero a 128 epoche. Il gate non viene retroattivamente dichiarato superato e accuracy/F1 del
-    suo classificatore non vengono interpretate, perché quel classificatore ha visto solo 64 sample.
-13. **S0 a 128 epoche.** Il confronto è appaiato con C0 e C0 a 128 epoche è ricotto e limitato
-    dalla generalizzazione. Una durata maggiore si prova soltanto come coppia S0/C0, e solo se S0
-    chiude con CE di training chiaramente sopra C0 e F1 ancora in salita.
-14. **Esito seed 42 della prima ondata corretta (2026-09-26).** D bounded è l'unico braccio che
-    supera materialmente il controllo: 58,31% F1 contro 55,18% di C0 (+3,14 pp), con IC bootstrap
-    appaiato stratificato [1,30; 4,99] pp e finestra tardiva +3,05 pp. Passa quindi alla diagnostica
-    dynamic-vs-constant e, se questa conferma l'utilità dell'adattività, ai seed 43/44. L15 migliora
-    il prefisso mirato a 1,5 s (+3,54 pp su R0) ma non passa il criterio su endpoint o PrefixAUC;
-    S0 conserva skill predittiva senza collasso, ma il suo +0,79 pp F1 ha IC [−1,13; 2,70] e la CE
-    di training mostra forte sottofitting. Nessuno dei due riceve tuning o fusione prestazionale.
-    S1 resta ammesso una sola volta nella configurazione appaiata già congelata, per stabilire se la
-    sorpresa trasformi la skill valida di S0 in routing utile; aggiungere ora D soltanto a S1
-    confonderebbe i due effetti.
-15. **Prossima verifica della famiglia S (2026-09-27).** Prima di scegliere il rango, un probe
-    addestra soltanto predittori su feature congelate dell'ingresso TCAP di stage2 del best C0;
-    fit e holdout sono utterance disgiunti del development-train, senza validation né official test.
-    Confronta S0 lineare, bottleneck lineare e bottleneck con elaborazione congiunta non lineare
-    dei quattro ritardi a rango 32/64/128. La skill contro persistenza e media dei ritardi, il
-    divario fit–holdout e la varianza del target guidano la scelta; il 90% della skill full-rank è
-    un indicatore di adeguatezza, non un gate automatico. Un solo C0+bottleneck selezionato conserva
-    esattamente controllore, ramp, stage e regione di S0; il predittore è di solo training. Leggere
-    per epoca V_delta, varianza ed energia nel sottospazio di A e nel complemento, oltre a CE e
-    prefissi. La diagnostica a gate costanti del checkpoint D non sostituisce il controllo statico
-    riaddestrato. D seed 43/44 e C0+bottleneck sono indipendenti; D+bottleneck segue la prima
-    lettura meccanicistica, senza esclusione automatica per un C0+bottleneck neutro. Se positivo,
-    il confronto con rango 128 della stessa geometria isola l'effetto del rango.
+1. **Riferimento:** C0 è F+DWC-3+TCAP-d8, con 55,18% Macro-F1 al seed 42 e 54,88–56,56% sui tre seed DVS-Lip. Ogni confronto usa la development validation; l'official test resta embargoed.
+2. **Protocollo:** i bracci strutturali partono da zero con ricetta e seed appaiati a C0. Il controllo su un solo seed non stabilisce robustezza; si leggono anche finestra tardiva, prefissi, meccanismo e profilo del proprio checkpoint.
+3. **D bounded è il candidato corrente:** 58,31% F1 al seed 42 contro 55,18% di C0 e 55,45% del controllo D-static riaddestrato. La diagnostica a gate costanti sul checkpoint misura sensibilità, mentre il controllo riaddestrato supporta l'utilità della dipendenza dall'input. Restano da confermare altri seed.
+4. **Groupwise-D:** un solo test con quattro gruppi, stessa ricetta e matrici TCAP dense. Si confrontano risultato, politiche per gruppo e profilo; G=1 deve coincidere matematicamente con D. Nessuno sweep di gruppi e nessun limite prematuro di capacità.
+5. **S0 resta un controllo meccanicistico:** skill predittiva positiva, ma 55,97% F1 al seed 42 (+0,79 pp, IC appaiato [−1,13; 2,70]) e training accuracy 72,97% contro 89,10% di C0. La prevedibilità del latente non prova utilità per la classificazione anticipata.
+6. **Bracci S scartati:** il routing basato sull'errore predittivo nelle formulazioni S1 e S1-Decoupled non ha isolato un segnale futuro utile né dato un vantaggio robusto; il distacco del gradiente rende il predittore un osservatore, senza risolvere il problema di attribuzione.
+   Il collo di bottiglia k limita le direzioni del gradiente ma non impedisce la lentezza/il settling tardivo indotti dalla loss: il suo esito resta nel range dei seed di C0. Implementazioni e comandi relativi sono rimossi; S0 è l'unico controllo S mantenuto.
+7. **Nuovo predictive screen:** la formulazione è ancora in definizione. Il precedente screen è ritirato; nessun suo full run o implementazione va riutilizzato. Prima di qualunque nuovo pretraining, fissare target, contesto, controlli di informazione e causalità train/eval.
+8. **Sequenza:** completare Groupwise-D, definire e validare lo screen, poi considerare un solo full predittivo se il segnale è interpretabile. Solo dopo si congelano struttura e seed appaiati, quindi si riprendono augmentation e compressione. I negativi validi restano conservati come evidenza negli artifact, senza mantenere rami software obsoleti.
 
 ## Decisioni della discovery al 13 settembre — contesto storico
 

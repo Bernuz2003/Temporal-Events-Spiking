@@ -1,475 +1,53 @@
-# Roadmap operativa: supervisione predittiva e memoria temporale condizionale
-
-**Definita:** 2026-09-19. **Stato al 2026-09-24:** la prima esecuzione è stata invalidata come
-evidenza dal contratto
-[`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md), che prevale su questa
-roadmap per correzioni, ordine dei run e criteri decisionali. Le sezioni sotto restano il razionale
-delle ipotesi e non autorizzano la riesecuzione dell'albero originario.
-
-In particolare sono superati: la scelta di un'unica continuazione per tutti i bracci (§3) — D, S0 e
-S1 si addestrano ora da zero con la ricetta di C0; il vecchio tetto in GPU-ore (§3, §11), sostituito
-dal programma chiuso e dalle stop rule dell'audit; il gate
-di +1 pp (§9); la formulazione originale di L a due prefissi (§8), ora L15; i controlli P-0 e P-C
-(§5), rispettivamente chiuso e sospeso. Bracci, regimi e controlli vigenti sono nella sezione 12
-dell'audit.
-
-La fase precede la ripresa delle augmentation. Mantiene come riferimento **F+DWC-3+TCAP-d8** e
-riapre soltanto le ipotesi descritte qui. Motivazioni, anteriorità e limiti teorici sono nella
-[review scientifica](PREDICTIVE_TEMPORAL_RESEARCH_REVIEW.md). Non si riaprono ricerca sui neuroni,
-binning, dimensioni del backbone o grandi teacher.
-
-## 1. Obiettivo, riferimento e risultati da non confondere
-
-L'obiettivo primario è migliorare il **Macro-F1 finale a 2 s** rispetto alla stessa architettura
-con lo stesso budget di training. Il secondo obiettivo è anticipare decisioni utili senza perdere
-qualità finale. La riduzione energetica è una conclusione separata, da misurare.
-
-| Riferimento DVS-Lip | Macro-F1 % | Ruolo |
-|---|---:|---|
-| Congelata seed 42 | 55,18 | checkpoint iniziale C0 per lo screening |
-| Congelata seed 43 | 54,88 | riferimento della replica 43 |
-| Congelata seed 44 | 56,56 | riferimento della replica 44 |
-| Congelata, media ± SD campionaria | 55,54 ± 0,90 | variabilità osservata, non soglia scelta sul seed migliore |
-| Spatial erasing seed 42 | 56,69 | risultato augmentation separato, da conservare e riesaminare dopo questa fase |
-
-I valori sono development validation. Il test ufficiale resta escluso, anche per teacher,
-normalizzazione, diagnostiche e profiling. Un nuovo seed 42 non va confrontato selettivamente
-con il migliore fra 42/43/44. B non viene riaddestrata: il controllo scientifico è ora la candidata
-congelata, con lo stesso ulteriore training della variante.
-
-Per C0 si usa `dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt`, con hash
-registrato. I checkpoint MG e PLIF rimangono risorse diagnostiche, non vincitori presunti.
-
-## 2. Domande scientifiche e criteri di risposta
-
-| ID | Domanda | Confronto che può rispondere |
-|---|---|---|
-| Q1 | Predire un target futuro fine migliora la rappresentazione deployabile? | CRP contro controllo con uguale continuazione |
-| Q1a | Serve il futuro, oppure basta distillare il presente fine? | CRP contro distillazione fine simultanea |
-| Q1b | Serve la risoluzione fine, oppure basta predire feature coarse? | CRP contro predizione futura coarse |
-| Q2 | Il contenuto corrente aiuta a scegliere il peso dei ritardi? | TCAP dinamico contro statico; diagnostica gate dinamici contro gate costanti |
-| Q3 | L'errore predittivo aggiunge informazione al controllo della memoria? | Stessa auxiliary loss/predittore, con e senza errore disponibile al router |
-| Q4 | I benefici di supervisione e routing si sommano? | Una sola fusione contro entrambi i componenti già positivi |
-| QL | Possiamo anticipare la decisione senza introdurre PLIF? | Curve ai prefissi per ogni candidato; eventuale distillazione tardiva come fallback |
-
-Le domande sono distinte. Un aumento di F1 non autorizza da solo una spiegazione meccanicistica,
-e un aumento di PrefixAUC non equivale a un aumento di accuracy finale.
-
-## 3. Scelta di budget: continuazione controllata, non nuovi full da 128 epoche
-
-La discovery usa **64 epoche aggiuntive** dal medesimo C0, senza modificare la durata per
-salvare un candidato. Ogni braccio parte nuovamente da C0, mai dal best di un altro braccio,
-incluse le fusioni. Così una combinazione non riceve più aggiornamenti dei singoli componenti.
-
-La capacità aggiuntiva viene assegnata al meccanismo studiato prima della compressione:
-predictor cross-resolution spaziale training-only, router TCAP locale e predictor surprise
-MIMO. Backbone, classificatore, embedding e matrici TCAP restano invariati. Le formulazioni
-lineari, globali e depthwise restano ablation future di compressione, non l'unico test con cui
-rigettare l'ipotesi.
-
-Questo è uno studio di fine-tuning dopo pretraining supervisionato comune. Un risultato negativo
-chiude questa formulazione nel budget assegnato; non dimostra che il metodo non possa funzionare
-da zero o con un lungo pretraining. Un risultato positivo non viene presentato come confronto
-fra architetture addestrate tutte da zero.
-
-| Elemento | Scelta fissata per tutti i bracci |
-|---|---|
-| Recipe di fase corretta | `dvslip_predictive_continuation_64`, vincolata dal workflow dedicato |
-| Dati e input deployato | split development esistente; E0, 40×50 ms; mean/fixed-window |
-| Augmentation | solo flip orizzontale 0,5 già presente in C0; niente nuove augmentation |
-| Ottimizzazione | AdamW nuovo, senza momenti ereditati; batch 16, accumulo 2 |
-| Schedule | 64 epoche; LR ereditato `1e-5`, LR nuovi parametri `1e-4`, cosine proporzionale fino a `1e-6` sul gruppo ereditato; warmup 2 epoche |
-| Altri parametri | weight decay `5e-4`, label smoothing 0,1, clipping 1,0, AMP |
-| BatchNorm student | running mean/variance di C0 fisse in tutti i bracci; affine apprendibile |
-| Teacher | pesi e statistiche fissi; modalità eval; nessuna augmentation indipendente |
-| Selezione | massimo Macro-F1 validation a 2 s; stesso numero di occasioni di selezione |
-| Randomness | seed 42; ordine dati e trasformazioni riproducibili con stream RNG separato dai nuovi moduli |
-
-Le scelte numeriche sono convenzioni pragmatiche preregistrate, non ottimi garantiti dalla
-letteratura. Il LR è ridotto rispetto alla discovery perché si parte da un modello allenato.
-Non si trasferisce questo LR come tuning universale ad altri dataset.
-
-Non si prolunga post-hoc un candidato negativo. Un'estensione comune a 96/128 epoche può essere
-preregistrata solo dopo lo screen per un candidato già positivo la cui curva a epoca 64 sia ancora
-crescente, insieme al controllo R0 con identico orizzonte. Non fa parte degli otto screening.
-
-**R0, controllo obbligatorio:** stessa continuazione senza auxiliary loss né router.
-L'epoca 0 viene valutata e registrata separatamente: deve riprodurre C0 entro tolleranza numerica.
-Non viene usata per nascondere il fallimento della continuazione. Si riportano best post-update,
-ultima epoca e C0. Se il best post-update perde oltre 0,5 pp F1 da C0, la campagna si ferma per
-discutere la ricetta comune; non si aggiustano learning rate diversi per candidato.
-
-Il controllo R0 precede gli screening lunghi. La scelta di congelare le statistiche BN impedisce
-che il contesto student utilizzi statistiche dei timestep futuri e rende omogenea la comparazione.
-Non va confusa con `eval()` dell'intero student, che disabiliterebbe altri comportamenti di training.
-
-## 4. P0 — diagnostiche e contratto di causalità prima del training
-
-### P0.1 Integrità e costo
-
-Verificare checkpoint, split, allineamento coarse/fine, target e shape; reset degli stati per
-sequenza; nessuna dipendenza dal futuro nei percorsi dichiarati causali, anche in train con BN
-fissa. Perturbare eventi successivi a t non deve cambiare il contesto fino a t. Il teacher può
-vedere il target futuro, ma quel target non deve entrare nel forward student o nel router.
-
-Prima di allocare training: breve misura di throughput/VRAM e stima del costo di teacher,
-predittore e gate. La shape uguale non prova che due feature siano semanticamente allineate.
-I workflow generici `candidate`/`refine` non implementano questo contratto. Il comando dedicato
-`predictive-continuation` esegue preflight, gate warm-start, continuazione da C0 ed export
-deployabile; non deve essere sostituito con un training fresco accidentale.
-
-### P0.2 Target predittivo: controllo di fattibilità, non selezione su validation
-
-Il teacher fine iniziale è il ramo MG del checkpoint
-`dvslip_f_multigranular_temporal_capacity__20260912_135802_779469__seed42/best.pt`, prima
-dell'ultimo LIF. È supervisionato e co-adattato alla fusione: non lo definiamo teacher ottimale.
-Il contesto student è l'uscita stage1, comprendente la storia causale già codificata.
-
-Si fissa **h=2 macro-bin, 100 ms**: è un anticipo moderato, non scelto per massimizzare la
-predicibilità sulla validation e non derivato da un presunto tau universale. I tap `[1,2,4,8]`
-restano invariati; l'orizzonte della loss non è il raggio della memoria.
-
-Un probe lineare sui checkpoint congelati confronta target presente e futuro, media di training
-e persistenza. Fit e holdout diagnostico sono ricavati esclusivamente dal development-train,
-con partizione per sample, mai per finestre sovrapposte. Stessa partizione per tutti i probe;
-nessun dato holdout entra in fit o normalizzazione. Questo holdout serve al probe, non è una
-nuova validation per selezionare decine di varianti; dopo il probe i training usano l'intero train.
-
-Si riportano errore normalizzato, varianza dei target e skill rispetto ai riferimenti banali,
-separati per attività e coda. Il probe è un lower bound affine `1×1`, mentre il predictor
-discovery può compensare movimento locale: un risultato debole non falsifica il principio.
-Target degenerati, leakage o allineamento errato fermano P-F; skill affine positiva lo rafforza,
-ma non è più un veto contro l'unica prova preregistrata. Un esito positivo resta solo fattibilità.
-
-### P0.3 Errore predittivo e valore della storia
-
-Agli ingressi TCAP, confrontare il predittore causale convesso depthwise con persistenza e media
-dei tap come baseline diagnostica compressa.
-Usare errori normalizzati per scala dei canali, stimata sul train; valutare anche attività,
-transizioni e coda. Il confronto deve restare favorevole anche fuori dalla sola coda.
-
-Verificare se l'errore aggiunge informazione rispetto ad ampiezza/event rate sul danno della
-rimozione della storia, valutato sui sample di holdout. Il danno è diagnostico: l'ablazione di
-una rete co-adattata non è il controfattuale di una rete riaddestrata. Le etichette di training
-possono servire a questa analisi, mai al router a inference.
-
-Il suo fallimento non rigetta il predictor MIMO/spaziale usato da S: segnala quanto costa la
-formulazione compressa. S0 è il controllo addestrato che stabilisce se il predictor capace
-apprende un residuo utile. Target degenerati o leakage fermano comunque il ramo.
-
-## 5. P — supervisione predittiva, primo asse
-
-**P-F:** CE finale più predizione del target fine a t+2. Il predictor training-only condiviso
-nel tempo usa `DWConv 3×3 → Conv 64→128 → GELU → Conv 128→64` (17.152 parametri), così può
-modellare movimento locale senza aumentare il modello deployato. Non si tenta di
-ricostruire eventi singoli o spike binari. Target e predizione sono confrontati nello spazio
-pre-LIF standardizzato per canale con statistiche del training e scala minima dichiarata.
-
-Si usa SmoothL1 mediata su feature/posizioni e tempi, con peso massimo **0,1**, portato da zero
-a tale valore nelle prime quattro epoche. Il termine CE mantiene peso uno. La quantità di target
-non deve moltiplicare implicitamente la forza della loss. Questa scelta viene mantenuta anche
-nei controlli; si registrano separatamente loss e norme dei gradienti dei due obiettivi.
-
-Per la loss predittiva, ogni sample pesa ugualmente; si usano le coppie con target entro l'ultimo
-bin raw occupato. Gli eventuali bin vuoti interni restano validi. Si esclude così la lunga coda
-artificiale dall'obiettivo, senza affermare che le sue feature siano nulle. L'endpoint è metadato
-offline della loss, non input del modello. Tutti i sample, incluse eventuali sequenze prive di
-coppie valide, conservano la CE finale. Si registra la copertura dei target.
-
-Per comparare presente e futuro senza confondere durata e target, entrambi i controlli usano
-gli stessi indici di contesto validi per P-F, lo stesso numero di coppie e la stessa normalizzazione
-della loss. Il teacher deve ricevere la stessa trasformazione spaziale dello student; un flip
-delle feature cached non viene assunto equivalente a ricodificare l'input con un encoder appreso.
-
-**Controlli condizionati al successo di P-F:**
-
-| ID | Unica domanda aggiunta | Target |
-|---|---|---|
-| P-0 | Serve anticipare? | stesso teacher fine a t |
-| P-C | Serve l'informazione fine? | feature stage1 del teacher C0 coarse a t+2 |
-
-P-C mantiene la stessa geometria del target e la stessa classe/capacità di predictor. Non usa
-un teacher più grande. Se un controllo eguaglia P-F entro 0,5 pp, non rivendichiamo superiorità
-del meccanismo più complesso; preferiamo il più economico, tenendo conto della variabilità.
-Se P-0 è migliore, resta una distillazione utile, ma la tesi non attribuisce il guadagno al futuro.
-
-## 6. D — TCAP dinamico, secondo asse indipendente
-
-**D:** mantenere tap e matrici TCAP; introdurre pesi per tap dipendenti dal contenuto corrente
-alla risoluzione della feature TCAP. Nessun delay apprendibile.
-
-\[
-y_t=x_t+\sum_d g_{t,d,h,w}W_dx_{t-d},\qquad
-g_{t,d,h,w}=2\sigma(R(x_{t,:,h,w})_d).
-\]
-
-`R` è un MLP locale `C→C/2→4` implementato con convoluzioni `1×1`. L'ultimo affine
-inizia a zero: sul checkpoint allenato la funzione iniziale coincide con C0, con gate unitari.
-I due router aggiungono 10.728 parametri. La decisione locale evita che GAP diluisca una
-transizione confinata alla bocca; operazioni e traffico vengono profilati. P-F e D possono
-procedere in parallelo dopo R0: entrambi partono da C0.
-
-Sul best di D, confrontare senza riaddestrare gate dinamici e gate costanti pari alla media
-stimata sul train. Registrare distribuzioni dei gate e contributi effettivi `g*W*x`, non soltanto
-pesi o norme. Se la sostituzione non cambia le prestazioni, il risultato sostiene ricalibrazione
-o regolarizzazione, non dimostra routing utile. Anche un calo per gate costanti è evidenza
-diagnostica, non sostituisce una futura ablation riaddestrata qualora si volesse una rivendicazione
-forte di novità architetturale.
-
-### Esito dello screen seed 42 e confronto confermativo
-
-Lo screen ha ottenuto 55,57% Macro-F1, pari a +0,60 pp su R0 e +0,40 pp su C0: il margine
-non supera il gate prestazionale di +1 pp. La diagnostica checkpoint-only già prevista ha però
-mostrato che sostituire i gate locali con le rispettive medie di training riduce il Macro-F1 a
-54,04% e l'accuracy a 54,02%. Il contributo dinamico sullo stesso checkpoint è quindi +1,53 pp
-Macro-F1 e +1,70 pp accuracy. Questo sostiene la dipendenza dal contenuto, pur senza equivalere
-a un'ablation riaddestrata.
-
-R0 ha inoltre mostrato che la continuazione comune riporta in tre epoche il learning rate dei
-pesi ereditati da circa `4e-6` a `1e-4`, degradando rapidamente C0. Prima di chiudere D viene
-pertanto eseguito un solo blocco confermativo preregistrato con learning rate discriminativi:
-
-- pesi ereditati: massimo `1e-5`;
-- soli parametri nuovi del router: massimo `1e-4`;
-- stesso parent C0, 64 epoche, dati, BN fissa, schedule, seed e criteri di selezione;
-- nuovo R0 appaiato con la stessa ricetta, senza parametri a learning rate alto.
-
-Ad ogni epoca D registra sul validation set, a pesi fissi e senza augmentation, media, deviazione
-standard e coefficiente di variazione dei gate per layer e delay. La varianza totale su
-sample×tempo×spazio viene inoltre decomposta in variabilità fra sample e variabilità interna al
-sample. In questo modo il cambiamento del bias medio resta separato dalla risposta agli input;
-il confronto finale con gate medi rimane comunque obbligatorio.
-
-Questo blocco non rivaluta P-F e non autorizza una griglia di learning rate. D viene promosso
-solo se supera il nuovo R0 di almeno +1 pp Macro-F1, non perde materialmente accuracy e conserva
-evidenza dinamica nel confronto con gate medi. In caso contrario il routing di contenuto viene
-chiuso e non entra in fusione.
-
-## 7. S — surprise come informazione aggiuntiva, senza imporne il segno
-
-Questo asse si apre solo dopo P0.3 e l'esito di D. Il residuo non viene interpretato automaticamente
-come «passato sbagliato»; non imponiamo che alta sorpresa sopprima la memoria.
-
-Si confrontano **S0 e S1**, entrambi da C0 con lo stesso predittore, la stessa loss predittiva e
-lo stesso budget. Per ogni tap il predictor applica una depthwise `3×3` causale e una proiezione
-MIMO `C→C`; somma poi i quattro contributi. Aggiunge 88.832 parametri e può modellare movimento
-locale e dinamiche cross-channel. I kernel spaziali partono come identità e le proiezioni come
-media diagonale dei tap. La loss ricostruisce x corrente con target stop-gradient;
-scala, peso 0,1 e ramp-up sono fissati come nel ramo P. Non si sommano ancora le loss P e S.
-
-| Braccio | Accesso del router all'errore | Ruolo |
-|---|---|---|
-| S0 | nessuno | controllo del beneficio della sola auxiliary loss/predittore |
-| S1 | residuo normalizzato per canale `C→4` | misura il valore dell'errore per il routing |
-
-Se D ha superato lo screen, entrambi contengono il router di contenuto D; altrimenti S1 usa solo
-coefficienti per tap moltiplicati per l'errore, senza bias né termine di contenuto.
-Questa diramazione è decisa dall'esito di D, non scegliendo dopo quale variante S funzioni meglio.
-In S1 la proiezione lineare dell'errore per canale aggiunge 768 parametri; parte da zero e può
-apprendere entrambi i segni.
-Non si sovrappongono due gate moltiplicativi con scale non identificabili.
-
-Il residuo passato al router è staccato dal gradiente: la classificazione allena i coefficienti
-del router, non deforma direttamente il predittore per fabbricare il segnale. L'auxiliary loss
-allena predittore e storia student. Il target resta mobile perché le feature student cambiano:
-si controllano varianza, skill predittiva e contributi CE/auxiliary durante tutto il training.
-
-Per S la loss usa tutta la finestra, con media prima per sample e poi per due regioni: fino
-all'ultimo evento e coda, peso uguale alle regioni presenti. Non si introduce `last_event+8`.
-Le metriche delle due regioni restano separate; a inference non viene passato alcun endpoint.
-Le statistiche del router sono causali, senza normalizzazione sulla sequenza intera.
-
-Per promuovere S1 servono vantaggio sul controllo S0 e assenza di collasso del predittore. Se
-migliorano entrambi allo stesso modo, il beneficio appartiene alla supervisione ausiliaria.
-Se S0 è migliore, si conserva eventualmente quella ricetta; si chiude la proposta di surprise routing.
-Non si dichiara riduzione dei MAC grazie a gate soft che non saltano materialmente operazioni.
-
-### S1-Decoupled: controllo causale del modellamento del backbone
-
-S1-Decoupled conserva topologia, predittore e router di S1, ma applica stop-gradient anche alla
-storia causale usata dal predictor. Il target era già staccato. La loss predittiva diventa quindi
-un addestramento del solo predictor-osservatore; la CE continua a usare il residuo staccato per
-allenare il surprise router, senza addestrare il predictor. Si usa peso fisso 1, nessun ramp e
-nessun controllore di autorità, perché il gradiente ausiliario condiviso deve essere esattamente
-zero. Questo confronto separa il valore del residuo per il routing dall'effetto di rendere lo
-stage2 più predicibile. Il preflight richiede: gradiente auxiliary nullo sul backbone e non nullo
-sul predictor, gradiente CE nullo sul predictor e non nullo sul router dopo il warm-up causale.
-Come S1, il braccio porta predictor e surprise router anche in inferenza: 571.817 parametri totali,
-70.789 in più di C0. Il confronto conserva intenzionalmente questo costo; un predictor depthwise
-più leggero è una successiva domanda di compressione, ammessa soltanto se il residuo porta valore.
-
-Il predictive subspace non viene combinato con questo braccio: resta una domanda successiva,
-subordinata alla misura dello smoothing e con un solo collo di bottiglia preregistrato.
-
-## 8. Come sfruttiamo PLIF, senza riaprire il neuron model
-
-La diagnostica B/PLIF ha mostrato **+3,47 pp di F1-PrefixAUC** e circa **+10 pp F1 fra L+100 e
-L+300 ms**, con risultato finale invece inferiore a B di 0,47 pp. Sono riferimenti di quel
-confronto, non vantaggi già osservati sul finalista attuale.
-
-Da questo derivano tre scelte concrete:
-
-1. Per tutti i best, valutare la curva a prefissi ogni 50 ms e confrontarla con R0; osservare
-   separatamente miglioramento prima della fine dell'input e durante la coda.
-2. Valutare diagnostiche event-aligned con endpoint oracle e quota di clipping esplicite, senza
-   utilizzarle per definire un readout deployabile o scegliere una costante di settling.
-3. Tenere un **fallback L** di supervisione dei prefissi se P-F viene fermato dal probe o non
-   supera lo screen. L sostituisce i controlli P-0/P-C, non si aggiunge a una ricerca P già positiva.
-
-**L:** teacher C0 congelato a finestra completa; student supervisionato con CE finale e
-distillazione soft dei logit ai prefissi fissi 1,0 e 1,5 s. KL teacher→student, temperatura 2,
-fattore T² convenzionale, media dei due prefissi e peso massimo 0,1 con ramp-up di quattro epoche.
-Non si impone una label dura ai primi 500 ms. Un target soft non elimina l'ambiguità dei prefissi,
-ma evita di trattare ogni prefisso come parola già completamente osservata.
-
-È una variante di supervisione tardiva motivata da PLIF, non una replica di MEOM né un trasferimento
-automatico della sua dinamica. Il teacher è il finalista più accurato; PLIF non viene scelto come
-teacher globale meno accurato senza evidenza di complementarità sul modello corrente.
-Il beneficio di L può riguardare solo latenza: in quel caso viene riportato come tale, senza
-spacciarlo per soluzione al punteggio finale. L può occupare il ruolo di supervisione nella
-fusione solo se supera anche il criterio di accuracy principale.
-
-## 9. Criteri preregistrati: avanzare, fermare, replicare
-
-Le soglie sono regole decisionali pratiche, non test di significatività né valori estratti dai
-nuovi risultati. Per P-F, D, S0 e L il controllo comune è R0. Per attribuire il routing S1 il
-controllo è S0, oltre al confronto con R0.
-
-| Esito seed 42 | Decisione |
-|---|---|
-| ≥+1,0 pp F1 sul controllo, accuracy non inferiore di oltre 0,5 pp | segnale prestazionale materiale, ammesso ai controlli/alla selezione |
-| ≥+2,0 pp F1 | priorità alta per la conferma multi-seed |
-| ΔF1 inferiore a +1,0 pp | nessuna fusione prestazionale o tuning per inseguire il margine |
-| F1 finale entro −0,5 pp, F1-PrefixAUC normalizzata ≥+2,0 pp | candidato di latenza distinto; non sostituisce il vincitore di accuracy |
-| NaN, target degenerati, gradienti assenti o causalità violata | run non valido; correggere il difetto, non classificarlo come evidenza negativa dell'idea |
-
-Per S1 il gate di +1 pp deve essere soddisfatto rispetto a S0 e il risultato deve superare R0
-di almeno +1 pp. Il valore della predizione non è dimostrato se il router cresce ma il predittore
-non batte più i riferimenti banali.
-
-Si riportano intervalli bootstrap appaiati stratificati per classe per i delta di validation.
-Un IC che attraversa zero resta un esito incerto, anche se supera la soglia pratica: può motivare
-la replica, non una dichiarazione di superiorità. La selezione sullo stesso validation e fra
-più candidati resta esplorativa; il bootstrap entro seed non sostituisce la variabilità fra seed.
-
-Un componente prima di entrare in una fusione deve superare lo screen e avere un'interpretazione
-compatibile con i controlli. Nessuna soglia o budget viene abbassata dopo un risultato deludente.
-
-## 10. Una sola fusione, poi conferma e trasferimento
-
-Si sceglie un vincitore della supervisione (P-F, P-0, P-C, oppure L) e uno del routing (D oppure
-S1, che può già contenere D). Se solo uno è positivo, non si forza la combinazione.
-
-**FUS:** i due vincitori insieme, da C0 per le stesse 64 epoche. Per conservare la forza delle
-singole loss, i pesi già fissati non cambiano; qualora siano presenti due auxiliary loss si
-registrano separatamente anche le norme del gradiente totale. L'aumento dell'obiettivo ausiliario
-è un'interazione da dichiarare, non prova automatica di sinergia. Non si aggiunge una griglia di
-pesi per recuperare un'eventuale interferenza.
-
-La fusione deve migliorare il migliore componente di almeno **0,5 pp F1**, conservando il
-vantaggio materiale su R0. Se non passa, si seleziona il migliore singolo. Questa sola fusione
-può già riunire tutte e tre le idee: supervisione cross-resolution + router di contenuto + errore.
-
-Solo il vincitore finale e R0 proseguono ai seed **43 e 44**, ciascuno dal proprio C0 già
-disponibile. Teacher MG seed 42 e protocollo target restano fissi: la replica misura variabilità
-dello student, non quella della scelta del teacher. Eventuale sensitivity del teacher resta
-un limite dichiarato, non un nuovo sweep.
-
-Promozione finale: delta F1 medio appaiato ≥+1 pp rispetto a R0, positivo in almeno due seed su
-tre, nessun seed sotto −0,5 pp; riportare comunque tutti i valori, SD, intervalli entro seed,
-accuracy e profilo. Con tre seed non si afferma una certezza statistica generale. Se la regola
-non passa si mantiene C0 o, se migliore e confermato, il solo controllo di continuazione.
-
-Per un metodo promosso segue DVS-Gesture seed 42: stessa struttura/direzione della loss e
-controllo di continuazione appaiato, usando il checkpoint Gesture congelato. Parametri del
-protocollo dataset-specific rimangono quelli Gesture, senza flip e senza tuning dei tap.
-L'orizzonte h=2 resta in bin; non si sostiene identità del tempo fisico fra dataset.
-
-Il trasferimento P-F/P-0 richiede un teacher fine Gesture comparabile, che oggi non è attestato:
-non si usa MG-Lip come teacher Gesture senza uno studio distinto. Se manca, si trasferisce solo
-la componente implementabile (routing, oppure futura supervisione coarse già validata) e si
-dichiara il trasferimento **parziale**. Un nuovo teacher MG-Gesture è fuori dal budget corrente.
-Non si promette quindi generalizzazione dell'intera pipeline prima di poterla valutare.
-
-## 11. Sequenza operativa, parallelismo e tetto di spesa
-
-| Ordine | Attività | Nuovi training di continuazione | Dipendenza |
-|---:|---|---:|---|
-| 0 | P0: causalità, target, probe, diagnostica PLIF-informed, throughput | 0 | checkpoint e contratto verificati |
-| 1 | R0, controllo comune | 1 | P0 integrità |
-| 2 | P-F e D in parallelo | fino a 2 | R0 valido; P-F richiede P0.2 |
-| 3 | P-0 e P-C **oppure** fallback L | fino a 2 **oppure 1** | esito di P-F |
-| 4 | S0 e S1 in parallelo | fino a 2 | P0.3 valido e risultato di D |
-| 5 | unica fusione | fino a 1 | componenti positivi e controllati |
-| 6 | vincitore + R0, seed 43/44 | 4 | candidato seed 42 scelto |
-| 7 | trasferimento possibile + controllo Gesture seed 42 | fino a 2 | conferma Lip, teacher disponibili |
-
-**Massimo screening: 8 training da 64 epoche**, non otto full da 128; spesso meno perché i rami
-sono condizionali. Massimo fino a conferma Lip: 12 continuazioni; con trasferimento: 14.
-Otto continuazioni hanno 512 epoche student totali, nominalmente quattro full storici; non sono
-equivalenti in ore GPU perché il teacher può aggiungere costo significativo.
-
-Prima del primo run P si converte il throughput misurato in un preventivo e si registra un tetto
-in GPU-ore. Il budget discovery pianificato è **cinque volte** il training del full C0 seed 42;
-il limite invalicabile è **sei volte**, comprensivo di controllo, teacher online, probe, gate e
-fusioni. Conferma e trasferimento hanno budget separato. Con 8,972 ore per C0, i due valori sono
-**44,86** e **53,83 GPU-ore**;
-il budget dei nuovi run include anche le valutazioni necessarie, non soltanto gli optimizer step.
-Non basta restare entro il numero di run. Se il preventivo non rientra, si sospende
-per primo S, poi la fusione; non si tagliano i controlli necessari per attribuire P o D.
-Il confronto usa il tempo C0 del server di riferimento e registra hardware e throughput per
-evitare di interpretare differenze fra server come costo intrinseco del metodo.
-
-Non occorre tenere tutte le risorse occupate: parallelismo solo fra confronti già determinati
-da informazioni disponibili. I run in corso della fase augmentation possono terminare e restano
-nel registro; nessuno viene interrotto o cancellato da questo piano.
-
-## 12. Requisiti prima dei lanci e output obbligatori
-
-Prima di avviare un braccio: test di forma, backward e gradienti utili nei nuovi moduli;
-causalità train/eval; CUDA/AMP; invarianza iniziale rispetto a C0 dove promessa; conservazione
-di reset, allineamento e trasformazioni teacher/student; subset overfit previsto dalla recipe.
-Il gate deve verificare la CE separatamente dalla loss totale: la soglia 1,5 non viene applicata
-alla somma arbitraria di CE e ausiliarie. Per warm-start si usa una copia del checkpoint e si
-controlla che il successo non mascheri un predictor/router privo di gradienti. I pesi modificati
-nel gate non entrano nella continuazione di produzione. Non si allenta il gate dopo l'esito.
-
-Il manifest di ogni run conserva: hash C0/teacher; parent checkpoint; recipe nuova; seed dei dati
-e moduli; stato BN; maschere/pesi delle loss; normalizzazione fittata solo sul train; epoche,
-aggiornamenti e GPU-ore; configurazione/commit/ambiente; best, last e predizioni per sample.
-
-| Categoria | Output necessario |
-|---|---|
-| Qualità finale | Macro-F1, accuracy, Acc1/Acc2, confusioni e delta appaiati contro R0 e C0 |
-| Dinamica | F1/accuracy ogni 50 ms sul best, PrefixAUC normalizzata su intervallo fisso comune; distinguere dalla AUC sui soli prefissi configurati |
-| Event-aligned | endpoint oracle dichiarato, attività/coda e quota clippata; nessun cutoff selezionato |
-| Training | CE e ogni auxiliary loss separate; gradienti, clipping/overflow, best/last, tempo, VRAM |
-| Teacher/predizione | varianza dei target, skill rispetto a persistenza/media, copertura, stabilità train/holdout |
-| Routing | gate e contributi per tap, controllo a gate costanti, residuo normalizzato; niente inferenze da sole norme |
-| Hardware | parametri deployati e training-only separati, stato/traffico, MAC multivalore, AC/SOP potenziali e ad attività, firing rate, Horowitz densa/ad attività |
-
-Il profilo viene dal best del candidato; se manca non si rivendica superiorità Pareto. Nessun
-gate soft viene contabilizzato come skip automatico; nessuna proxy aritmetica viene presentata
-come energia FPGA misurata. Le curve dense vengono prodotte sui checkpoint selezionati, non a
-ogni epoca, per contenere il costo della valutazione.
-
-## 13. Chiusura e ripresa delle augmentation
-
-La fase si chiude al vincitore confermato, all'esaurimento del budget o all'esito negativo dei
-rami ammessi. Un insuccesso viene conservato con la sua portata: non si cancella la storia per
-rendere invisibili esperimenti validi ma negativi.
-
-Il riferimento finale può essere C0, C0 con sola continuazione, una ricetta predittiva a struttura
-identica, oppure un modello con routing. Si congelano insieme **struttura, inizializzazione e
-procedura di training**, prima di riprendere augmentation sulla sola candidata.
-
-Spatial erasing mantiene la propria evidenza positiva sul vecchio C0; se il modello cambia, il
-suo beneficio non si assume additivo e richiede un confronto sul nuovo riferimento. Temporal
-Maskout resta negativo nella configurazione già provata. Non si duplicano gli screen su B.
-Un grande pretraining JEPA/EMA da zero e nuovi teacher non sono autorizzati da questa roadmap.
-
-La base bibliografica e i limiti di confronto sono nella [review](PREDICTIVE_TEMPORAL_RESEARCH_REVIEW.md).
-In particolare [F³](https://arxiv.org/abs/2509.25146) motiva l'apprendimento predittivo su eventi;
-[MEOM](https://proceedings.iclr.cc/paper_files/paper/2026/hash/f04957cc30544d62386f402e1da0b001-Abstract-Conference.html)
-motiva la domanda sulla supervisione temporale. Le formule e le scelte numeriche qui fissate
-sono proposte locali, non repliche né garanzie di riprodurne i guadagni.
+# Roadmap Predictive-Temporal-Coding
+
+**Aggiornata:** 2026-09-30. La fase mira a verificare se una memoria condizionata o un
+pretraining predittivo aggiungano valore al modello congelato C0. Le decisioni vincolanti sono in
+[DECISIONS.md](DECISIONS.md); i difetti della prima esecuzione sono riassunti
+nell'[audit](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md).
+
+## Riferimenti e risultati acquisiti
+
+C0 è F+DWC-3+TCAP-d8, E0, tap `[1,2,4,8]`: DVS-Lip 55,18% Macro-F1 al seed 42 e
+55,54 ± 0,90% sui tre seed. Il trasferimento DVS-Gesture seed 42 ottiene 88,81% F1. Sono
+risultati development; l'official test resta embargoed.
+
+D bounded ottiene 58,31% F1 al seed 42. Il controllo D-static riaddestrato ottiene 55,45%; il
+vantaggio di D richiede ancora conferma fra seed. S0 conserva una skill predittiva valida ma non
+un miglioramento robusto del F1, e peggiora il fit discriminativo. L15 migliora il prefisso a
+1,5 s, non il risultato finale. Non si combinano automaticamente meccanismi positivi su metriche
+diverse.
+
+## Passo 1 — Groupwise-D
+
+Un solo run completo con quattro gruppi. Le matrici TCAP restano dense e la ricetta coincide con
+D: l'esperimento isola l'effetto di una policy di ampiezza/allocazione distinta per gruppo. Il
+modulo G=1 deve coincidere con D. Prima del full: test, preflight causale e bounded overfit. Dopo:
+F1 best e tardivo, prefissi, statistiche dei gate per gruppo, profilo del proprio best. La
+separazione delle politiche è necessaria per interpretare il meccanismo, ma da sola non promuove
+la variante. Nessuno sweep di G e nessuna compressione prematura.
+
+## Passo 2 — Nuovo screen predittivo
+
+Il disegno è ancora aperto. Prima di implementarlo si fissano esplicitamente il contesto
+osservabile, il target, i controlli causali e di capacità, il holdout utterance-disgiunto e la
+misura di informazione utile oltre alla sola qualità di ricostruzione. Lo screen precedente non
+fornisce un protocollo valido da riutilizzare. Nessun run completo di pretraining parte dalla
+sola plausibilità teorica del target.
+
+Uno screen positivo deve mostrare che il segnale previsto è accessibile causalmente e che la
+sua utilità supera i controlli rilevanti sullo stesso holdout. Il costo del predittore non è un
+vincolo di scoperta: misurarlo, poi comprimere soltanto un meccanismo valido. La BatchNorm che
+mescola tempo e batch può far trapelare il futuro in train; il test di causalità va superato sia
+in eval sia in train prima di un full.
+
+## Passo 3 — Conferma, trasferimento, raffinamento
+
+Se lo screen supera i controlli, eseguire un solo full con pretraining predittivo e fine-tuning
+supervisionato puro, più il controllo a pari budget necessario per attribuire l'eventuale
+beneficio al futuro predetto. Una candidata positiva viene confrontata con D e C0 su seed
+appaiati; si valutano anche prefissi e profilo. Solo dopo il freeze si riprendono le augmentation
+dataset-specific sulla candidata, quindi eventuali compressione e quantizzazione. L'official
+test viene usato nella campagna finale.
+
+Non si riaddestra B per ogni raffinamento. Un risultato negativo valido chiude quel ramo; un
+bug lo invalida e richiede correzione, non tuning esplorativo.

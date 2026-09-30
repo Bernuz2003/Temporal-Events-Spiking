@@ -634,9 +634,6 @@ def train_experiment(
         diagnostic_batch(bundle.train, config["dataset"], device)
         if predictive_objective is not None
         and predictive_objective.auxiliary_declared
-        and not config["model"].get(
-            "temporal_channel_mixer_predictor_detach_history", False
-        )
         else None
     )
     delay_modules = {
@@ -657,15 +654,9 @@ def train_experiment(
         for name, parameter in model.named_parameters()
         if parameter.requires_grad
         and not name.startswith("predictive_head.")
-        and not (
-            any(
-                token in name
-                for token in (
-                    ".predictor_logits", ".predictor_spatial.",
-                    ".predictor_projections.", ".predictor_bottleneck.",
-                )
-            )
-            and not config["model"].get("temporal_channel_mixer_surprise_routing", False)
+        and not any(
+            token in name
+            for token in (".predictor_logits", ".predictor_spatial.", ".predictor_projections.")
         )
     )
 
@@ -998,26 +989,10 @@ def train_experiment(
         deployment_config["model"].pop("predictive_head", None)
         deployment_config["model"].pop("predictive_head_spatial_kernel_size", None)
         deployment_config["model"].pop("predictive_head_hidden_channels", None)
-        if not deployment_config["model"].get(
-            "temporal_channel_mixer_surprise_routing", False
-        ):
-            deployment_config["model"].pop(
-                "temporal_channel_mixer_predictive_auxiliary", None
-            )
-            deployment_config["model"].pop(
-                "temporal_channel_mixer_predictor_channel_groups", None
-            )
-            deployment_config["model"].pop(
-                "temporal_channel_mixer_predictor_spatial_kernel_size", None
-            )
-            deployment_config["model"].pop("temporal_channel_mixer_predictor_rank", None)
-            deployment_config["model"].pop(
-                "temporal_channel_mixer_predictor_hidden_channels", None
-            )
-            deployment_config["model"].pop(
-                "temporal_channel_mixer_predictor_detach_history", None
-            )
-            deployment_config["model"].pop("temporal_channel_mixer_predictive_stages", None)
+        deployment_config["model"].pop("temporal_channel_mixer_predictive_auxiliary", None)
+        deployment_config["model"].pop("temporal_channel_mixer_predictor_channel_groups", None)
+        deployment_config["model"].pop("temporal_channel_mixer_predictor_spatial_kernel_size", None)
+        deployment_config["model"].pop("temporal_channel_mixer_predictive_stages", None)
         if objective_config.get("mode") in {"fine_future", "fine_same"}:
             parent_config = load_config(continuation["parent_config"])
             deployment_config["representation"] = copy.deepcopy(parent_config["representation"])

@@ -450,7 +450,7 @@ def test_predictive_continuation_failure_blocks_the_full_run(tmp_path, monkeypat
 
 
 def test_predictive_scratch_failure_blocks_the_full_run(tmp_path, monkeypatch):
-    config = load_config("configs/dvslip_predictive_s1.yaml")
+    config = load_config("configs/dvslip_predictive_s0.yaml")
     calls = []
     _bypass_audit_and_preflight(tmp_path, monkeypatch)
     monkeypatch.setattr(workflows, "train_experiment", _failing_gate(tmp_path, calls))
@@ -504,7 +504,7 @@ def test_predictive_scratch_rejects_recipe_topology_and_regime_drift():
     with pytest.raises(ValueError, match="must not declare a continuation"):
         workflows.run_predictive_scratch(config)
 
-    config = load_config("configs/dvslip_predictive_s1.yaml")
+    config = load_config("configs/dvslip_predictive_s0.yaml")
     config["predictive"]["phase1_audit_report"] = "artifacts/other_audit.json"
     with pytest.raises(ValueError, match="canonical phase-1 audit report"):
         workflows.run_predictive_scratch(config)

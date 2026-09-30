@@ -43,13 +43,10 @@ PREDICTIVE_MODEL_FIELDS = frozenset(
         "temporal_channel_mixer_dynamic_routing",
         "temporal_channel_mixer_router_pooling",
         "temporal_channel_mixer_router_hidden_divisor",
+        "temporal_channel_mixer_router_groups",
         "temporal_channel_mixer_predictive_auxiliary",
         "temporal_channel_mixer_predictor_channel_groups",
         "temporal_channel_mixer_predictor_spatial_kernel_size",
-        "temporal_channel_mixer_predictor_rank",
-        "temporal_channel_mixer_predictor_hidden_channels",
-        "temporal_channel_mixer_predictor_detach_history",
-        "temporal_channel_mixer_surprise_routing",
         "temporal_channel_mixer_routing_stages",
         "temporal_channel_mixer_routing_parameterization",
         "temporal_channel_mixer_predictive_stages",
@@ -62,8 +59,6 @@ NEW_MODULE_PARAMETER_TOKENS = (
     ".predictor_logits",
     ".predictor_spatial.",
     ".predictor_projections.",
-    ".predictor_bottleneck.",
-    ".surprise_router",
 )
 PREDICTIVE_SCRATCH_REFERENCE_CONFIG = "configs/dvslip_f_tcap_stage1_dwc3_d8.yaml"
 PREDICTION_PREFIX_READOUTS = {"prefix_mean", "fixed_window_denominator"}
@@ -297,7 +292,7 @@ class PredictiveBatchResult:
 class PredictiveTrainingObjective:
     """Compute the preregistered auxiliary loss without changing deployment forward."""
 
-    MODES = {"none", "fine_future", "fine_same", "coarse_future", "late_prefix"}
+    MODES = {"none", "fine_future", "fine_same", "late_prefix"}
 
     def __init__(
         self,

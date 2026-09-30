@@ -41,6 +41,9 @@ def build_model(config: dict[str, Any], num_classes: int) -> nn.Module:
         temporal_channel_mixer_router_hidden_divisor=config.get(
             "temporal_channel_mixer_router_hidden_divisor"
         ),
+        temporal_channel_mixer_router_groups=config.get(
+            "temporal_channel_mixer_router_groups", 1
+        ),
         temporal_channel_mixer_predictive_auxiliary=config.get(
             "temporal_channel_mixer_predictive_auxiliary", False
         ),
@@ -49,18 +52,6 @@ def build_model(config: dict[str, Any], num_classes: int) -> nn.Module:
         ),
         temporal_channel_mixer_predictor_spatial_kernel_size=int(
             config.get("temporal_channel_mixer_predictor_spatial_kernel_size", 1)
-        ),
-        temporal_channel_mixer_predictor_rank=config.get(
-            "temporal_channel_mixer_predictor_rank"
-        ),
-        temporal_channel_mixer_predictor_hidden_channels=config.get(
-            "temporal_channel_mixer_predictor_hidden_channels"
-        ),
-        temporal_channel_mixer_predictor_detach_history=config.get(
-            "temporal_channel_mixer_predictor_detach_history", False
-        ),
-        temporal_channel_mixer_surprise_routing=config.get(
-            "temporal_channel_mixer_surprise_routing", False
         ),
         temporal_channel_mixer_routing_stages=tuple(
             config.get("temporal_channel_mixer_routing_stages", (1, 2))

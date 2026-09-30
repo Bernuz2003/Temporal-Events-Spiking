@@ -119,7 +119,7 @@ def test_hardware_profile_counts_pyramidal_pooling_and_temporal_fir_state():
     assert first["state_reads"] > first["state_writes"]
 
 
-def test_conditional_tcap_profile_counts_router_once_and_surprise_primitives():
+def test_conditional_tcap_profile_counts_router_once():
     frames = torch.rand(1, 4, 2, 32, 32)
     loader = DataLoader(TensorDataset(frames, torch.tensor([0]), torch.arange(1)))
     common = {
@@ -149,28 +149,43 @@ def test_conditional_tcap_profile_counts_router_once_and_surprise_primitives():
         - fixed_profile["operations_per_sample"]["multivalued_mac_potential"]
     ) == pytest.approx(router_macs)
 
-    surprise = MiniQKFormer(
-        **common,
-        temporal_channel_mixer_predictive_auxiliary=True,
-        temporal_channel_mixer_surprise_routing=True,
+    assert dynamic_profile["inference_non_linearities"]["sigmoid_per_sample"] > 0
+
+
+def test_groupwise_router_profile_counts_four_policies_without_grouping_tcap_weights():
+    frames = torch.rand(1, 4, 2, 32, 32)
+    loader = DataLoader(TensorDataset(frames, torch.tensor([0]), torch.arange(1)))
+    common = {
+        "in_channels": 2, "num_classes": 4, "embed_dim": 32, "num_heads": 4,
+        "frontend": "pyramidal", "stage1_mixer": "depthwise_conv",
+        "temporal_channel_mixer": True, "temporal_channel_mixer_delays": (1, 2, 4),
+        "temporal_channel_mixer_dynamic_routing": True,
+        "temporal_channel_mixer_router_pooling": "local",
+        "temporal_channel_mixer_router_hidden_divisor": 2,
+        "temporal_channel_mixer_routing_stages": (2,),
+        "temporal_channel_mixer_routing_parameterization": "amplitude_allocation",
+    }
+    original = MiniQKFormer(**common).eval()
+    groupwise = MiniQKFormer(
+        **common, temporal_channel_mixer_router_groups=4
     ).eval()
-    surprise.load_state_dict(fixed.state_dict(), strict=False)
-    surprise_profile = profile_model(surprise, loader, torch.device("cpu"), 1)
-    operations = surprise_profile["operations_per_sample"]
-    assert operations["elementwise_multiply"] > fixed_profile["operations_per_sample"][
-        "elementwise_multiply"
-    ]
-    assert surprise_profile["inference_non_linearities"]["sigmoid_per_sample"] > 0
-    for field in (
-        "surprise_error_subtract",
-        "surprise_absolute_value",
-        "surprise_square",
-        "surprise_reduction_add",
-        "surprise_mean_scale_multiply",
-        "surprise_sqrt",
-        "surprise_divide",
-    ):
-        assert operations[field] > 0
+    original_mixer = original.patch_embed2.down.temporal_channel_mixer
+    grouped_mixer = groupwise.patch_embed2.down.temporal_channel_mixer
+    assert original_mixer.weight.shape == grouped_mixer.weight.shape == (3, 32, 32)
+    original_profile = profile_model(original, loader, torch.device("cpu"), 1)
+    group_profile = profile_model(groupwise, loader, torch.device("cpu"), 1)
+    base = original_profile["inference_non_linearities"]
+    grouped = group_profile["inference_non_linearities"]
+    assert grouped["sigmoid_per_sample"] == 4 * base["sigmoid_per_sample"]
+    assert grouped["softmax_elements_per_sample"] == 4 * base["softmax_elements_per_sample"]
+    assert (
+        group_profile["operations_per_sample"]["temporal_channel_mixer_mac"]
+        == original_profile["operations_per_sample"]["temporal_channel_mixer_mac"]
+    )
+    assert (
+        group_profile["parameters"]["trainable_elements"]
+        > original_profile["parameters"]["trainable_elements"]
+    )
 
 
 def test_hardware_profile_counts_temporal_capacity_and_plif_separately():

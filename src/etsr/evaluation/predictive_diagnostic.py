@@ -183,8 +183,8 @@ def run_cross_resolution_probe(
         raise ValueError("Predictive probe requires continuation and predictive sections.")
     objective = predictive["objective"]
     mode = str(objective["mode"])
-    if mode not in {"fine_future", "fine_same", "coarse_future"}:
-        raise ValueError("Probe supports fine_future, fine_same or coarse_future configurations.")
+    if mode not in {"fine_future", "fine_same"}:
+        raise ValueError("Probe supports fine_future or fine_same configurations.")
     if max_train_samples <= 0 or max_validation_samples <= 0 or ridge <= 0:
         raise ValueError("Probe sample limits and ridge must be positive.")
 
@@ -309,8 +309,6 @@ _NEW_MODULE_FAMILIES = (
     "predictor_logits",
     "predictor_spatial",
     "predictor_projections",
-    "predictor_bottleneck",
-    "surprise_router",
 )
 
 
@@ -364,33 +362,6 @@ def _gradient_family_norms(model: torch.nn.Module) -> tuple[dict[str, float | No
     return gradient_norms, family_norms, finite
 
 
-def _selected_gradient_norm(
-    loss: torch.Tensor,
-    model: torch.nn.Module,
-    tokens: tuple[str, ...],
-) -> float:
-    """Return the gradient norm for parameters whose names contain one selected token."""
-
-    parameters = [
-        parameter
-        for name, parameter in model.named_parameters()
-        if parameter.requires_grad and any(token in name for token in tokens)
-    ]
-    if not parameters:
-        return 0.0
-    gradients = torch.autograd.grad(
-        loss,
-        parameters,
-        retain_graph=True,
-        allow_unused=True,
-    )
-    squared = loss.new_zeros((), dtype=torch.float64)
-    for gradient in gradients:
-        if gradient is not None:
-            squared += gradient.detach().double().square().sum()
-    return float(squared.sqrt().cpu())
-
-
 def _perturb_future(frames, cutoff: int):
     if isinstance(frames, dict):
         altered = {name: value.clone() for name, value in frames.items()}
@@ -416,65 +387,6 @@ def _prefix_differences(model, frames, altered, cutoff: int) -> tuple[float, flo
         float((stage1[:cutoff] - altered_stage1[:cutoff]).abs().max().item()),
         float((encoded - altered_encoded).abs().max().item()),
     )
-
-
-def _bottleneck_gradient_contract(model: MiniQKFormer) -> dict[str, float | bool | str] | None:
-    """Check the predictor-history gradient subspace in stable reference arithmetic.
-
-    CUDA convolutions can leave a ~1e-4 relative residual in this numerical rank test even
-    when every history path begins with the shared projection. The small predictor is copied
-    to CPU float64 for the contract; this does not alter the model used by training.
-    """
-
-    mixers = [
-        module for module in model.modules()
-        if isinstance(module, CausalTemporalChannelMixer)
-        and module.predictor_bottleneck is not None
-    ]
-    if not mixers:
-        return None
-    errors = []
-    gradient_norms = []
-    for mixer in mixers:
-        assert mixer.predictor_bottleneck is not None
-        reference = CausalTemporalChannelMixer(
-            mixer.channels,
-            mixer.delays,
-            predictive_auxiliary=True,
-            predictor_spatial_kernel_size=mixer.predictor_spatial_kernel_size,
-            predictor_rank=mixer.predictor_rank,
-            predictor_hidden_channels=mixer.predictor_hidden_channels,
-        ).to(device="cpu", dtype=torch.float64)
-        assert reference.predictor_bottleneck is not None
-        reference.predictor_bottleneck.load_state_dict(
-            mixer.predictor_bottleneck.state_dict()
-        )
-        history = torch.randn(
-            mixer.max_delay + 3, 1, mixer.channels, 2, 2,
-            device="cpu", dtype=torch.float64, requires_grad=True,
-        )
-        target = torch.randn(3, 1, mixer.channels, 2, 2, device="cpu", dtype=torch.float64)
-        prediction = reference._causal_prediction(target, history)
-        gradient = torch.autograd.grad(
-            torch.nn.functional.smooth_l1_loss(prediction, target), history
-        )[0]
-        gradient_norms.append(float(gradient.norm()))
-        projection = reference.predictor_bottleneck.projection.weight.flatten(1)
-        _u, _s, rows = torch.linalg.svd(projection, full_matrices=False)
-        row_component = torch.einsum(
-            "ck,tbkhw->tbchw", rows.T,
-            torch.einsum("kc,tbchw->tbkhw", rows, gradient),
-        )
-        errors.append(float(
-            (gradient - row_component).norm() / gradient.norm().clamp_min(1e-12)
-        ))
-    maximum = max(errors)
-    return {
-        "arithmetic": "cpu_float64_reference",
-        "minimum_history_gradient_norm": min(gradient_norms),
-        "relative_outside_row_gradient": maximum,
-        "passed": maximum <= 1e-8 and min(gradient_norms) > 1e-12,
-    }
 
 
 def run_predictive_preflight(
@@ -558,20 +470,13 @@ def run_predictive_preflight(
             _prefix_differences(candidate, frames, altered, cutoff)
         )
 
-    predictor_history_detached = bool(
-        config["model"].get("temporal_channel_mixer_predictor_detach_history", False)
-    )
-    calibration = (
-        None
-        if predictor_history_detached
-        else objective.calibrate(
-            candidate,
-            frames,
-            targets,
-            criterion,
-            epoch=0,
-            freeze_batchnorm_statistics=freeze,
-        )
+    calibration = objective.calibrate(
+        candidate,
+        frames,
+        targets,
+        criterion,
+        epoch=0,
+        freeze_batchnorm_statistics=freeze,
     )
     full_weight_epoch = max(1, objective.ramp_epochs)
     candidate.zero_grad(set_to_none=True)
@@ -629,56 +534,12 @@ def run_predictive_preflight(
     gradient_result = objective(
         gradient_model, frames, targets, criterion, epoch=full_weight_epoch
     )
-    decoupled_contract = None
-    if predictor_history_detached:
-        decoupled_authority = objective_gradient_diagnostics(
-            gradient_model,
-            gradient_result.classification_loss,
-            gradient_result.auxiliary_loss,
-            objective.weight,
-        )
-        predictor_tokens = (
-            "predictor_logits", "predictor_spatial", "predictor_projections",
-            "predictor_bottleneck",
-        )
-        shared_auxiliary_norm = decoupled_authority["gradient_shared_auxiliary_norm"]
-        predictor_auxiliary_norm = _selected_gradient_norm(
-            gradient_result.auxiliary_loss, gradient_model, predictor_tokens
-        )
-        predictor_classification_norm = _selected_gradient_norm(
-            gradient_result.classification_loss, gradient_model, predictor_tokens
-        )
-        router_classification_norm = _selected_gradient_norm(
-            gradient_result.classification_loss, gradient_model, ("surprise_router",)
-        )
-        shared_classification_norm = decoupled_authority[
-            "gradient_shared_classification_norm"
-        ]
-        decoupled_contract = {
-            "shared_auxiliary_gradient_norm": shared_auxiliary_norm,
-            "shared_classification_gradient_norm": shared_classification_norm,
-            "predictor_auxiliary_gradient_norm": predictor_auxiliary_norm,
-            "predictor_auxiliary_to_shared_classification_ratio": (
-                objective.weight * predictor_auxiliary_norm / shared_classification_norm
-                if shared_classification_norm > 0.0
-                else float("nan")
-            ),
-            "predictor_classification_gradient_norm": predictor_classification_norm,
-            "surprise_router_classification_gradient_norm": router_classification_norm,
-            "passed": (
-                shared_auxiliary_norm <= 1e-12
-                and predictor_auxiliary_norm > 1e-12
-                and predictor_classification_norm <= 1e-12
-                and router_classification_norm > 1e-12
-            ),
-        }
     gradient_result.total_loss.backward()
     gradient_norms, gradient_family_norms, finite_gradients = _gradient_family_norms(gradient_model)
     nonzero_gradients = all(value > 1e-12 for value in gradient_family_norms.values())
     teacher_gradients_absent = teacher is None or all(
         parameter.grad is None for parameter in teacher.parameters()
     )
-    bottleneck_gradient_contract = _bottleneck_gradient_contract(gradient_model)
     report = {
         "schema_version": 3,
         "experiment": config["experiment"]["name"],
@@ -730,8 +591,6 @@ def run_predictive_preflight(
         "new_parameter_gradient_family_norms": gradient_family_norms,
         "new_parameter_gradients_finite": finite_gradients,
         "new_parameter_gradient_families_nonzero": nonzero_gradients,
-        "decoupled_predictor_gradient_contract": decoupled_contract,
-        "bottleneck_gradient_contract": bottleneck_gradient_contract,
         "teacher_gradients_absent": teacher_gradients_absent,
         "batchnorm_running_statistics": "fixed" if freeze else "training",
         "official_test_used": False,
@@ -744,8 +603,6 @@ def run_predictive_preflight(
             report["new_parameter_gradients_finite"],
             report["new_parameter_gradient_families_nonzero"],
             report["shared_gradient_authority_passed"],
-            decoupled_contract is None or decoupled_contract["passed"],
-            bottleneck_gradient_contract is None or bottleneck_gradient_contract["passed"],
             report["teacher_gradients_absent"],
         )
     )
@@ -780,7 +637,6 @@ class _TCAPPredictiveAccumulator:
         self.coefficients: dict[str, torch.Tensor] = {}
         self.statistics: dict[str, dict[str, torch.Tensor]] = {}
         self.region_errors: dict[str, dict[str, list[torch.Tensor]]] = {}
-        self.sample_surprise: dict[str, list[torch.Tensor]] = {}
         self._handles = []
         for name, module in model.named_modules():
             if isinstance(module, CausalTemporalChannelMixer):
@@ -864,12 +720,9 @@ class _TCAPPredictiveAccumulator:
                 for region in ("active", "tail")
             },
         )
-        learned_by_step = None
         for method, prediction in predictions.items():
             normalized = ((prediction - sequence) / scale.reshape(scale_shape)).square()
             per_step = normalized.flatten(2).mean(2)
-            if method == "learned_convex":
-                learned_by_step = per_step
             positions = torch.arange(sequence.shape[0], device=sequence.device).unsqueeze(1)
             active = positions < self.endpoints.unsqueeze(0)
             for region, mask in (("active", active), ("tail", ~active)):
@@ -878,17 +731,6 @@ class _TCAPPredictiveAccumulator:
                 if bool(present.any().item()):
                     values = (per_step * mask).sum(0) / counts.clamp_min(1)
                     layer_errors[f"{method}_{region}"].append(values[present].cpu())
-        assert learned_by_step is not None
-        positions = torch.arange(sequence.shape[0], device=sequence.device).unsqueeze(1)
-        active = positions < self.endpoints.unsqueeze(0)
-        active_count = active.sum(0).clamp_min(1)
-        tail_count = (~active).sum(0)
-        surprise = (learned_by_step * active).sum(0) / active_count
-        has_tail = tail_count > 0
-        if bool(has_tail.any().item()):
-            tail = (learned_by_step * ~active).sum(0) / tail_count.clamp_min(1)
-            surprise = torch.where(has_tail, (surprise + tail) / 2, surprise)
-        self.sample_surprise.setdefault(name, []).append(surprise.cpu())
 
 
 def _fit_convex_tcap_predictors(
@@ -921,22 +763,6 @@ def _pearson(left: torch.Tensor, right: torch.Tensor) -> float:
     right = right.double() - right.double().mean()
     denominator = left.square().sum().sqrt() * right.square().sum().sqrt()
     return float((left * right).sum().div(denominator.clamp_min(1e-12)).item())
-
-
-def _partial_correlation(
-    surprise: torch.Tensor,
-    damage: torch.Tensor,
-    amplitude: torch.Tensor,
-    event_rate: torch.Tensor,
-) -> float:
-    design = torch.stack(
-        (torch.ones_like(amplitude), amplitude, event_rate), dim=1
-    ).double()
-    solution_surprise = torch.linalg.lstsq(design, surprise.double().unsqueeze(1)).solution
-    solution_damage = torch.linalg.lstsq(design, damage.double().unsqueeze(1)).solution
-    residual_surprise = surprise.double() - (design @ solution_surprise).squeeze(1)
-    residual_damage = damage.double() - (design @ solution_damage).squeeze(1)
-    return _pearson(residual_surprise, residual_damage)
 
 
 def run_tcap_predictive_probe(
@@ -1024,12 +850,6 @@ def run_tcap_predictive_probe(
                 metrics[f"learned_skill_vs_uniform_{region}"] = 1.0 - learned / uniform
         metrics["coefficients_by_delay_and_channel"] = coefficients[name].tolist()
         layer_reports[name] = metrics
-    surprise = torch.stack(
-        [
-            torch.cat(holdout_accumulator.sample_surprise[name])
-            for name in sorted(holdout_accumulator.sample_surprise)
-        ]
-    ).mean(0)
     damage = torch.cat(damages)
     amplitude = torch.cat(amplitudes)
     event_rate = torch.cat(event_rates)
@@ -1042,10 +862,6 @@ def run_tcap_predictive_probe(
         "layers": layer_reports,
         "history_damage": {
             "mean_cross_entropy_increase": float(damage.mean().item()),
-            "surprise_damage_pearson": _pearson(surprise, damage),
-            "surprise_damage_partial_correlation_given_amplitude_event_rate": (
-                _partial_correlation(surprise, damage, amplitude, event_rate)
-            ),
             "amplitude_damage_pearson": _pearson(amplitude, damage),
             "event_rate_damage_pearson": _pearson(event_rate, damage),
             "interpretation_limit": (
@@ -1069,10 +885,7 @@ def run_dynamic_routing_diagnostic(
 ) -> dict[str, Any]:
     """Compare learned content-dependent TCAP gates with train-mean constant gates."""
 
-    if not (
-        config["model"].get("temporal_channel_mixer_dynamic_routing", False)
-        or config["model"].get("temporal_channel_mixer_surprise_routing", False)
-    ):
+    if not config["model"].get("temporal_channel_mixer_dynamic_routing", False):
         raise ValueError("Routing diagnostic requires a conditional TCAP checkpoint.")
     seed_everything(int(config["experiment"]["seed"]), True)
     no_aug = copy.deepcopy(config)
@@ -1106,9 +919,7 @@ def run_dynamic_routing_diagnostic(
         return collect
 
     for name, module in model.named_modules():
-        if isinstance(module, CausalTemporalChannelMixer) and (
-            module.content_router is not None or module.surprise_router is not None
-        ):
+        if isinstance(module, CausalTemporalChannelMixer) and module.content_router is not None:
             handles.append(module.register_forward_hook(hook(name)))
     for frames, _targets, _indices in build_loader(
         bundle.train, no_aug["dataset"], shuffle=False
@@ -1125,18 +936,10 @@ def run_dynamic_routing_diagnostic(
     load_model_state(checkpoint_path, constant, device)
     constant.eval().requires_grad_(False)
     for name, module in constant.named_modules():
-        if isinstance(module, CausalTemporalChannelMixer) and (
-            module.content_router is not None or module.surprise_router is not None
-        ):
-            for router in (module.content_router, module.surprise_router):
-                if router is not None:
-                    for parameter in router.parameters():
-                        parameter.zero_()
-            selected_router = (
-                module.content_router
-                if module.content_router is not None
-                else module.surprise_router
-            )
+        if isinstance(module, CausalTemporalChannelMixer) and module.content_router is not None:
+            selected_router = module.content_router
+            for parameter in selected_router.parameters():
+                parameter.zero_()
             final = (
                 selected_router[-1]
                 if isinstance(selected_router, torch.nn.Sequential)
@@ -1146,6 +949,15 @@ def run_dynamic_routing_diagnostic(
             if module.routing_parameterization == "independent":
                 mean = mean.clamp(1e-5, 2 - 1e-5)
                 bias = torch.log(mean / (2 - mean))
+            elif module.router_groups > 1:
+                amplitude = mean.mean(dim=0).clamp(1e-5, 2 - 1e-5)
+                allocation = (
+                    mean / mean.sum(dim=0, keepdim=True).clamp_min(1e-12)
+                ).clamp_min(1e-12)
+                amplitude_logit = torch.log(amplitude / (2 - amplitude))
+                bias = torch.cat(
+                    (amplitude_logit[:, None], allocation.T.log()), dim=1
+                ).reshape(-1)
             else:
                 amplitude = mean.mean().clamp(1e-5, 2 - 1e-5)
                 allocation = (mean / mean.sum().clamp_min(1e-12)).clamp_min(1e-12)

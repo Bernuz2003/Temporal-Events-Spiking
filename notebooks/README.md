@@ -3,6 +3,16 @@
 Notebooks are secondary analysis records, not authoritative protocols or machine-readable experiment
 artifacts. A notebook must identify its phase, source artifacts and lifecycle.
 
+## Active result views
+
+- `developer_architecture_results.ipynb`: DVS-Lip architectural milestones, profiling,
+  three-seed baseline/final comparison, and DVS-Gesture transfer.
+- `predictive_temporal_results.ipynb`: D, static routing control, S0, learning curves, prefixes, and mechanism diagnostics.
+
+Both notebooks are read-only, use exact artifact IDs, and can be rerun from source artifacts. Re-run them
+from the repository with a Python kernel providing NumPy, Matplotlib and IPython. The shared
+`artifact_data.py` helper validates development-only summaries and best-checkpoint profiles.
+
 ## Frozen archive
 
 `archive/dvsgc/mechanistic_audit_analysis.ipynb`

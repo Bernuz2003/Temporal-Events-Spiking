@@ -105,190 +105,22 @@ invariati. Non cambiare kernel, ritardi o soglia del gate.
 
 ## Fase predictive-temporal
 
-Programma e motivazioni: sezione 12 di
-[`PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md`](PREDICTIVE_TEMPORAL_PHASE1_AUDIT.md). La prima esecuzione è
-archiviata sotto `artifacts/superseded/`; il report dell'audit è in
-`artifacts/predictive_phase1_audit/phase1_audit.json` ed è richiesto da ogni ingresso di training.
-
-**Un job per GPU.** I due fallimenti dell'audit del 23 settembre erano OOM causati da un processo
-residuo della campagna precedente e da job concorrenti. Prima di ogni lancio `nvidia-smi` deve
-mostrare la GPU libera; `run_command.sh` rifiuta inoltre un worktree non pulito.
-
-### 1. Obbligatorio: rigenerare l'audit con A1 stratificato
-
-La versione registrata di A1 misurava 16 campioni di una sola parola. Il contratto corrente accetta
-soltanto lo schema 2: quattro batch stratificati su 64 classi e A2 con 8192/2048 campioni. Il report
-presente, schema 1, blocca intenzionalmente ogni ingresso di training finché questo comando non lo
-rigenera.
+Usare una GPU libera per server e un commit pulito. Ogni workflow `predictive-scratch` esegue
+preflight, bounded overfit, full e profiling; se il gate fallisce, il full non parte. Le decisioni
+correnti sono in [DECISIONS.md](DECISIONS.md).
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-phase1-audit -- \
-  predictive-phase1-audit \
-  --c0-config     artifacts/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/config_resolved.yaml \
-  --c0-checkpoint checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt \
-  --r0-config     artifacts/superseded/dvslip_predictive_r0_discriminative_lr__20260921_110121_131705__seed42/config_resolved.yaml \
-  --r0-checkpoint checkpoints/dvslip_predictive_r0_discriminative_lr__20260921_110121_131705__seed42/best.pt \
-  --s0-config     artifacts/superseded/dvslip_predictive_s0__20260922_210709_490368__seed42/config_resolved.yaml \
-  --s0-checkpoint checkpoints/dvslip_predictive_s0__20260922_210709_490368__seed42/best.pt \
-  --output        artifacts/predictive_phase1_audit \
-  --fit-samples 8192 --holdout-samples 2048 --feature-samples 256
-```
-
-### 2. Preflight da leggere prima di ogni lancio
-
-Il preflight è eseguito anche dai workflow, ma lanciarlo da solo permette di leggere il report prima
-che parta il training. Campi da leggere: `initialization_passed`, `causal_prefix_passed`,
-`diagnostic_batch_classes` (16), `shared_gradient_ratio` rispetto a `minimum_shared_gradient_ratio`,
-`authority_calibration`, e `training_batchnorm_prefix_max_abs_difference`, che per i bracci da
-zero è atteso diverso da zero e va solo registrato.
-
-```bash
-for arm in r0 late_prefix dynamic_tcap s0 s1; do
-  CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh --foreground \
-    predictive-check --config configs/dvslip_predictive_$arm.yaml \
-    --output artifacts/predictive_preflight/dvslip_predictive_${arm}__seed42.json
-done
-```
-
-### 3. Bracci del seed 42
-
-Continuazioni da C0 (L15 e il suo controllo R0) e bracci da zero con la ricetta di C0. I server sono
-macchine fisiche distinte: su ciascuna si usa la GPU locale `0`. Con quattro server, la prima ondata
-contiene R0, L15, D e S0; S1 parte sulla prima macchina che si libera, dopo che S0 ha prodotto il
-proprio controllo diretto **e** ha mostrato una skill predittiva di validation finita e positiva
-rispetto ai riferimenti causali. Se S0 non apprende il meccanismo, S1 non riceve un full run.
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-r0 -- predictive-continuation --config configs/dvslip_predictive_r0.yaml
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-late-prefix -- predictive-continuation --config configs/dvslip_predictive_late_prefix.yaml
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-dynamic-tcap -- predictive-scratch --config configs/dvslip_predictive_dynamic_tcap.yaml
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0 -- predictive-scratch --config configs/dvslip_predictive_s0.yaml
-```
-
-Seconda ondata, soltanto dopo la lettura della firma meccanicistica di S0:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s1 -- predictive-scratch --config configs/dvslip_predictive_s1.yaml
-```
-
-Controllo disaccoppiato della stessa famiglia S:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s1-decoupled -- predictive-scratch --config configs/dvslip_predictive_s1_decoupled.yaml
-```
-
-**Stato al 2026-09-26.** L15 è completato e D bounded è stato rilanciato. S0 ha fallito il gate
-soltanto sulla CE, ma il controllo sui 2.995 campioni held-out ha superato il criterio predefinito:
-skill 0,4055 contro la media dei ritardi e 0,2428 contro la persistenza. Il full S0 seed 42 è quindi
-autorizzato direttamente da zero. I vecchi run difettosi restano sotto `artifacts/superseded/`.
-
-```bash
-mkdir -p artifacts/superseded
-mv artifacts/dvslip_predictive_dynamic_tcap_overfit__20260925_103713_162684__seed42 \
-   artifacts/dvslip_predictive_dynamic_tcap__20260925_104725_998808__seed42 \
-   artifacts/dvslip_predictive_s0_overfit__20260925_200905_695697__seed42 \
-   artifacts/superseded/
-```
-
-S0 e il profiling del suo checkpoint deployabile sono:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0 -- train --config configs/dvslip_predictive_s0.yaml
-# a run concluso, con <run-id> = dvslip_predictive_s0__<timestamp>__seed42
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0-profile -- profile-checkpoint --config artifacts/<run-id>/deployment_config_resolved.yaml --checkpoint checkpoints/<run-id>/deployment.pt --output artifacts/<run-id>/hardware_profile_v4.json --samples 64
-```
-
-Il primo controllo si fa dopo l'epoca 1: con il ramp a peso zero deve coincidere con C0. I valori di
-riferimento sono nella sezione 12.9 dell'audit.
-
-Le due diagnostiche checkpoint-only rimaste aperte usano lo stesso comando. Il primo job produce
-A4 per L15; il secondo fornisce il riferimento `V_Δ` di C0 (e anche il suo A4 nello stesso formato):
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-a4-l15 -- \
-  predictive-checkpoint-audit \
-  --config artifacts/dvslip_predictive_late_prefix__20260924_153414_101029__seed42/deployment_config_resolved.yaml \
-  --checkpoint checkpoints/dvslip_predictive_late_prefix__20260924_153414_101029__seed42/deployment.pt \
-  --output artifacts/dvslip_predictive_late_prefix__20260924_153414_101029__seed42/checkpoint_audit
-
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-vdelta-c0 -- \
-  predictive-checkpoint-audit \
-  --config artifacts/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/config_resolved.yaml \
-  --checkpoint checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt \
-  --output artifacts/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/checkpoint_audit
-```
-
-Ogni output contiene `predictive_checkpoint_audit.json` e `a4_per_sample.csv`. Il JSON riporta
-`temporal_variation_stage1_active` e `temporal_variation_stage2_active` sotto
-`A4_tail_margin.temporal_variation`. Se il checkpoint contiene il predittore S0, la sezione
-`A4_tail_margin.temporal_diagnostics` riporta anche loss e skill contro persistenza e media dei
-ritardi sull'intera development-validation.
-
-Prima di autorizzare il full S0, il controllo held-out del checkpoint del gate è:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-s0-heldout-audit -- \
-  predictive-checkpoint-audit \
-  --config artifacts/dvslip_predictive_s0_overfit__20260925_154302_017223__seed42/config_resolved.yaml \
-  --checkpoint checkpoints/dvslip_predictive_s0_overfit__20260925_154302_017223__seed42/best.pt \
-  --output artifacts/dvslip_predictive_s0_overfit__20260925_154302_017223__seed42/heldout_checkpoint_audit
-```
-
-Questo job non riaddestra il modello. Per S0 vanno interpretate le metriche predittive; accuracy e
-F1 del classificatore non sono un test utile, perché il checkpoint è stato addestrato su 64 sample.
-
-Ogni workflow esegue preflight, gate bounded (finestra finale a peso ausiliario pieno), run completo
-e profiling del checkpoint deployabile, e scrive `predictive_workflow.json`. Nella storia per epoca
-di S0 e S1 vanno letti `auxiliary_nominal_weight`, `authority_nominal_shared_ratio`,
-`authority_shared_ratio` effettivo dopo il ramp, `authority_shared_cosine` e
-`train_temporal_variation_stage{1,2}_active`.
-
-### 4. Seed 43 e 44, solo per i bracci con firma coerente
-
-I bracci da zero si replicano con la stessa configurazione; i loro controlli sono i seed 43 e 44
-archiviati di C0.
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh dvslip-predictive-s0-43 -- replicate --config configs/dvslip_predictive_s0.yaml --seed 43
-```
-
-Le continuazioni non si replicano così: un seed diverso richiede il C0 dello stesso seed come parent
-e come teacher, e il gate dell'audit confronta l'hash del parent con il C0 esaminato dall'audit
-(seed 42). Va deciso prima, se servirà.
-
-### Bottleneck predittivo e conferma del routing D
-
-Prima dei full, addestrare le sole teste del probe sulle feature congelate del best C0. Il report
-usa esclusivamente development-train e confronta skill causale, fit–holdout e rango 32/64/128;
-non seleziona automaticamente una configurazione. Dopo il commit e il check sul server:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-s1d-routing -- dynamic-routing-diagnostic --config artifacts/dvslip_predictive_s1_decoupled__20260926_153036_326403__seed42/config_resolved.yaml --checkpoint checkpoints/dvslip_predictive_s1_decoupled__20260926_153036_326403__seed42/best.pt --output artifacts/dvslip_predictive_s1_decoupled__20260926_153036_326403__seed42/dynamic_routing_diagnostic.json
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh bottleneck-feature-probe -- bottleneck-feature-probe --config artifacts/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/config_resolved.yaml --checkpoint checkpoints/dvslip_f_tcap_stage1_dwc3_d8__20260914_093427_434930__seed42/best.pt --output artifacts/predictive_bottleneck_probe.json --fit-samples 256 --holdout-samples 256 --steps 600
-```
-
-`k32` non lineare è il candidato principale se la sua skill holdout è convincente; sono già
-disponibili `k64` e le varianti lineari qualora il probe le favorisca. Ogni training usa il gate
-bounded, riparte da zero con ricetta C0 e profila il deployment. Su server distinti:
-
-```bash
+# Riferimento D già misurato; usare solo se serve una replica con seed appaiato.
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-d-43 -- predictive-scratch --config configs/dvslip_predictive_dynamic_tcap_seed43.yaml
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-d-44 -- predictive-scratch --config configs/dvslip_predictive_dynamic_tcap_seed44.yaml
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-d-static -- predictive-scratch --config configs/dvslip_predictive_dynamic_tcap_static_control.yaml
-CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-s0-bottleneck-k32 -- predictive-scratch --config configs/dvslip_predictive_s0_bottleneck_k32.yaml
+
+# Nuova domanda strutturale: quattro politiche di memoria per gruppo.
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh predictive-d-groupwise-g4 -- predictive-scratch --config configs/dvslip_predictive_dynamic_tcap_groupwise_g4.yaml
 ```
 
-Il quarto comando va lanciato **solo dopo la lettura del probe**. Se vince `k64`, usare
-`configs/dvslip_predictive_s0_bottleneck_k64.yaml`; se la testa lineare generalizza meglio,
-usare la corrispondente config `_linear.yaml`. Il preflight registra il rango del gradiente sulla
-storia. In `history.csv` leggere `validation_temporal_variation_stage2_{row,complement}_active`,
-`validation_temporal_feature_variance_stage2_{row,complement}_active`, rango effettivo di A,
-skill attiva, CE e prestazioni ai prefissi. Le epoche 4/8/16 sono punti di lettura, non stop
-automatici. Dopo l'analisi di questa ondata, la fusione con D usa la config
-`dvslip_predictive_dynamic_tcap_bottleneck_k32.yaml` o la corrispondente variante `k64`/`_linear`
-coerente col probe.
-Solo dopo un segnale positivo del bottleneck, il controllo `s0_bottleneck_k128` della stessa
-famiglia (anche `_linear`) separa l'effetto del rango da quello della nuova testa.
+S0 resta un controllo meccanicistico disponibile in `configs/dvslip_predictive_s0.yaml`;
+non è previsto un nuovo full senza una domanda scientifica preregistrata. Lo screen predittivo
+successivo è ancora in definizione e non ha un comando di lancio valido.
 
 ## Monitoraggio e ripresa
 
