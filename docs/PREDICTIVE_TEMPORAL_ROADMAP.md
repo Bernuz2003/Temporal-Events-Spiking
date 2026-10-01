@@ -28,11 +28,11 @@ la variante. Nessuno sweep di G e nessuna compressione prematura.
 
 ## Passo 2 — Nuovo screen predittivo
 
-Il disegno dello screen sul **futuro sensoriale** è ancora aperto. Prima di implementarlo si fissano esplicitamente il contesto
-osservabile, il target, i controlli causali e di capacità, il holdout utterance-disgiunto e la
-misura di informazione utile oltre alla sola qualità di ricostruzione. Lo screen precedente non
-fornisce un protocollo valido da riutilizzare. Nessun run completo di pretraining parte dalla
-sola plausibilità teorica del target.
+Il disegno dello screen sul **futuro sensoriale** è fissato nel
+[protocollo dedicato](FUTURE_SENSORY_SCREEN_PROTOCOL.md): passato E0 causale, FEPF-2 e voxel-4
+come due target alternativi, controllo `M0` derivato senza un terzo training, holdout interno al
+development-train e confronto con ricostruzione del presente prima del full. Lo screen precedente
+non fornisce un protocollo valido da riutilizzare.
 
 Uno screen positivo deve mostrare che il segnale previsto è accessibile causalmente e che la
 sua utilità supera i controlli rilevanti sullo stesso holdout. Il costo del predittore non è un

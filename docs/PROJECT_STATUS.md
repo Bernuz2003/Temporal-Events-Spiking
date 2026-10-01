@@ -62,9 +62,11 @@ conserva le diagnostiche e i profili storici.
 ## Prossimo passo
 
 Il prossimo braccio strutturale è **Groupwise-D, G=4**, senza comprimere le matrici TCAP dense.
-In parallelo si formalizza un nuovo screen predittivo, ancora da fissare; un full di
-pretraining seguirà solo un segnale interpretabile rispetto a controlli preregistrati. Parametri, costo e attività vanno misurati, non usati ora per restringere artificialmente
-la capacità del meccanismo. I seed appaiati seguono la selezione del candidato.
+In parallelo è stato definito il
+[protocollo dello screen sul futuro sensoriale](FUTURE_SENSORY_SCREEN_PROTOCOL.md), ancora da
+implementare. Un full di pretraining seguirà solo un segnale interpretabile rispetto a controlli
+preregistrati. Parametri, costo e attività vanno misurati, non usati ora per restringere
+artificialmente la capacità del meccanismo. I seed appaiati seguono la selezione del candidato.
 
 Tutte le metriche citate sono development validation. L'implementazione non produce da sola nuova
 evidenza empirica; nessun accesso all'official test.
