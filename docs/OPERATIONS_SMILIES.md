@@ -121,6 +121,10 @@ dopo la fine di entrambi valutare l'holdout interno una volta:
 CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh sensory-evaluate -- future-sensory-evaluate --config configs/dvslip_future_sensory_screen.yaml --fit-dirs artifacts/future_sensory_fepf2_seed42 artifacts/future_sensory_voxel4_seed42 --output artifacts/future_sensory_evaluation_seed42
 ```
 
+Se il budget iniziale è stato esteso a 80 epoche, anche le successive repliche 43/44 e i
+controlli sul passato devono essere ripresi da 40 a 80 con `--resume` **prima** della loro
+valutazione. Fit, resume e valutazione richiedono lo stesso commit e lo stesso codice eseguibile.
+
 Usare una GPU libera per server e un commit pulito. Ogni workflow `predictive-scratch` esegue
 preflight, bounded overfit, full e profiling; se il gate fallisce, il full non parte. Le decisioni
 correnti sono in [DECISIONS.md](DECISIONS.md).

@@ -57,7 +57,11 @@ densità ottenuto gratuitamente per somma; **non è un terzo training dello scre
    perché l'identità speaker non è disponibile: questa limitazione va dichiarata. Niente
    development validation, official test o selezione di checkpoint tramite queste partizioni.
 2. Misurare sul solo fit la distribuzione di count, celle vuote, finestre attive e durata. Un
-   bounded overfit su campioni del fit deve verificare capacità del predittore e target non
+   bounded overfit su campioni del fit deve verificare separatamente un calo di almeno il 5%
+   sia nella devianza count sia nella KL timing, oltre al calo del 10% della loss combinata;
+   misura il movimento dei pesi del router e del tap `d=8`. Dopo questo overfit, ripetere il
+   preflight causale sulla copia allenata usando almeno nove passi di storia, così il tap
+   lungo è effettivamente attivo. Deve verificare capacità del predittore e target non
    degeneri **prima** del fit principale. Se fallisce, si corregge l'implementazione o si
    ridisegna lo screen *prima* di aprire l'holdout; non si conclude che la prediction sia inutile.
 3. Addestrare FEPF-2 e Voxel-4 da zero con **la stessa topologia del trunk D G=1**
@@ -74,6 +78,10 @@ densità ottenuto gratuitamente per somma; **non è un terzo training dello scre
    braccio scende ancora di oltre il 5% nelle ultime 8 epoche, estendere **entrambi** a 80 prima di
    leggere l'holdout; non estendere un solo braccio in base al suo punteggio. Il braccio vincente
    riceve altre **due** inizializzazioni se il primo screen è positivo: tre seed in totale.
+   Le repliche e i controlli sul passato usano obbligatoriamente lo **stesso** budget finale
+   `40` oppure `80` dei due bracci iniziali. AdamW: `lr=3·10⁻⁴`, `weight_decay=5·10⁻⁴`,
+   accumulo di 2 batch, clipping globale a 1 e AMP FP16 se disponibile; nessun tuning sul
+   holdout. Conservare per ogni seed lo stato esatto dell'encoder prima dell'SSL.
 4. Il timestamp dell'ultimo evento `t_last` definisce soltanto la **maschera della loss**:
    sono validi i cutoff `0 < t < t_last` con `t+H ≤ 2 s`. La finestra futura può oltrepassare
    `t_last`: quegli zeri rappresentano l'offset reale dell'attività e conservano le transizioni
@@ -97,8 +105,12 @@ densità ottenuto gratuitamente per somma; **non è un terzo training dello scre
    fissa è `0,5·D_bal/max(s_N,10⁻⁶) + 0,5·KL/max(s_q,10⁻⁶)`. Se una scala è degenere, il
    preflight si ferma prima dell'holdout. Riportare anche devianza e KL non normalizzate.
 6. Baseline causali senza un nuovo modello: count zero come controllo di degenerazione;
-   **mean field spaziale** `N̄_{t,p,u}` dal solo fit; persistenza del count nell'ultima finestra
+   **mean field spaziale** `N̄_{t,p,u}` dal solo fit, stimato con gli stessi pesi
+   occupied/empty, cutoff e utterance della devianza valutata; persistenza del count nell'ultima finestra
    E0 di 100 ms; media dei count delle **ultime due finestre E0 di 100 ms** (200 ms totali).
+   Le due baseline di storia ricevono una calibrazione positiva `a·count+b` stimata sul
+   solo fit minimizzando la stessa devianza bilanciata. Il prior `q̄` usa analogamente la
+   media delle distribuzioni temporali pesata come la KL di valutazione.
    Per `q`, prior `q̄_{t,p,u}` calcolato sulle celle occupate del fit con pseudo-count `α=1` per
    componente, più profilo della finestra passata e media dei due profili passati. I profili
    causali usano **solo E0**: per FEPF-2 gli eventi di ciascun bin E0 sono posti al suo centro
@@ -139,10 +151,18 @@ La ricostruzione non basta. Sul holdout interno, senza riaddestrare l'encoder, s
   finale e ai prefissi fissi di 1,0/1,5 s. Le teste usano etichette del fit e sono valutate su
   utterance disgiunti; il readout non usa l'endpoint futuro.
 
-Per le sonde dei **campi futuri**, usare i cutoff fissi `t=50,100,...,750 ms` per tutti gli
-utterance, senza selezionarli dall'ultimo evento; riportare anche la quota di finestre già
-terminate. Il confronto sul futuro vero è un oracle diagnostico, mentre quello sulle predizioni
-misura accessibilità precoce. Per la sonda dell'**encoder** si mantengono tutti i 40 passi e il
+Per le sonde dei **campi futuri**, usare i cutoff fissi `t=50,100,...,750 ms`. Il confronto
+decisivo usa gli utterance con `t_last>750 ms`, così **tutti e 15** i cutoff hanno ricevuto
+supervisione: l'endpoint seleziona soltanto la popolazione, non entra nelle feature, non crea
+una maschera per cella e non cambia la lunghezza del readout. Si dichiarano numerosità e classi
+per fit/holdout; la promozione richiede che tutte le classi siano rappresentate in entrambi.
+Se ne manca qualcuna, il report viene comunque prodotto ma il gate fallisce. Perdite
+sull'intera popolazione e quota post-evento restano descrittive.
+Non addestrare ulteriori sonde classificative sui cutoff post-evento non supervisionati.
+Non usare `N` vero futuro per azzerare `q̂`: quella
+maschera darebbe alla sonda informazione oracle. Il confronto sul futuro vero è diagnostico,
+mentre quello sulle predizioni misura accessibilità precoce condizionata a questa popolazione.
+Per la sonda dell'**encoder** si mantengono tutti i 40 passi e il
 readout fisso di D, perché è questa rappresentazione che il full dovrà trasferire. Ogni sonda
 dei campi riceve il **campo in massa** `m_j=Nq_j` per polarità, ovvero il target originale
 `B_j`/`V_j` per l'oracle. Il controllo density-only mantiene la stessa shape e usa
@@ -166,7 +186,10 @@ degenerazione). Si richiede anche un limite inferiore bootstrap appaiato per utt
 zero per il guadagno assoluto rispetto a **ciascuna** baseline obbligatoria.
 La sonda sulle predizioni complete deve inoltre battere `N̂`-only di almeno **1 pp Macro-F1**,
 con limite inferiore bootstrap sopra zero; la sonda dell'encoder deve battere di almeno **1 pp**
-l'encoder casuale congelato. Queste sono soglie operative di ROI, non costanti teoriche.
+l'encoder casuale congelato **della medesima inizializzazione pre-SSL e del medesimo seed**.
+Come controllo di plausibilità, l'oracle temporale vero deve battere il suo density-only con
+delta positivo e limite bootstrap inferiore sopra zero; altrimenti non attribuiamo il vantaggio
+del campo predetto al timing futuro. Queste sono soglie operative di ROI, non costanti teoriche.
 Non si decide usando milioni di celle come repliche indipendenti: unità statistica e bootstrap
 sono l'utterance. Per i delta Macro-F1 delle sonde il bootstrap è **appaiato e stratificato per
 classe**, con numerosità di ogni classe fissa in ciascuna replica. F1, differenze e curve dei
@@ -177,7 +200,8 @@ Se il primo passaggio è positivo, il vincitore riceve due controlli **prima** d
 campo **fine del passato** `[t−H,t)` anziché il futuro. Questo è un *matched non-future target*:
 mantiene tipo di target e decoder, ma E0 non contiene timestamp intra-bin, quindi **non** è
 ricostruzione esatta né isola da solo il beneficio di un generico pretraining. È semanticamente
-appaiato, non di pari difficoltà: E0 contiene già il count del passato ma non quello futuro.
+appaiato, non di pari difficoltà: E0 contiene già il count del passato **salvo il proprio cap
+per pixel**, ma non quello futuro.
 Se il passato vince, non falsifica ogni possibile rappresentazione predittiva; per questo
 progetto riduce però la giustificazione prestazionale del futuro. La ricostruzione
 esatta delle ultime due count-frame E0, già contenute nell'input e aggregate sulla stessa griglia
@@ -186,8 +210,9 @@ ON/OFF dei due bin fisici da 50 ms in `[t−H,t)`, con zero-padding all'inizio; 
 trunk, il decoder stage2-only, il budget di pretraining e una loss count normalizzata sul fit.
 Non riceve subito un full; entra
 nella verifica sequenziale soltanto se il full predittivo supera il controllo scratch.
-Promozione solo se il vincitore conserva skill temporale e miglioramento della sonda dell'encoder in **tutti e
-tre** i seed, e batte il controllo sul presente in Macro-F1 in almeno **2/3 coppie** con delta
+Promozione solo se il vincitore ripete **l'intero primo gate** in **tutti e tre** i seed,
+incluso il vantaggio discriminativo del timing predetto e il controllo oracle, e batte il
+controllo sul passato in Macro-F1 in almeno **2/3 coppie** con delta
 medio di almeno **1 pp** sul holdout. Il bootstrap sui campioni non sostituisce la dispersione
 fra i tre fit: si riportano entrambi. I numeri sono segnali di selezione, non prova di guadagno
 end-to-end; nessun esito del checkpoint D seed 42
@@ -236,3 +261,5 @@ per il gate appaiato. In questa seconda valutazione `--previous-evaluation` rius
 bloccati dei primi due bracci senza rileggere quei checkpoint sull'holdout. Il confronto
 end-to-end con scratch GroupNorm resta una decisione
 successiva, condizionata allo screen.
+Fit, resume ed evaluation devono usare lo stesso commit e l'identico hash del codice
+eseguibile; la valutazione verifica anche l'hash dello stato iniziale dell'encoder.

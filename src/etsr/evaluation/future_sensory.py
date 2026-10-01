@@ -20,6 +20,14 @@ GRID = 16
 MODES = ("fepf2", "voxel4")
 
 
+def spatial_e0_count(frames: torch.Tensor) -> torch.Tensor:
+    """Sum each E0 polarity frame into nonoverlapping 8×8 target-grid cells."""
+    batch, time, polarity = frames.shape[:3]
+    return F.avg_pool2d(frames.reshape(-1, 1, 128, 128), 8, stride=8).reshape(
+        batch, time, polarity, GRID, GRID
+    ) * 64
+
+
 def target_field(sample: EventSample, mode: str, *, past: bool = False) -> np.ndarray:
     """Return [40,2,J,16,16]; no clipping, endpoint or label enters the target."""
     if mode not in MODES:
@@ -167,6 +175,22 @@ class LossParts:
     timing: torch.Tensor  # [B], utterance means
 
 
+def balanced_count_weights(count: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    """Exact cell weights of the balanced count loss, including utterance averaging."""
+    positive = count > 0
+    spatial_dims = (2, 3, 4)
+    pos_count = positive.sum(dim=spatial_dims).clamp_min(1).to(count.dtype)
+    empty_count = (~positive).sum(dim=spatial_dims).clamp_min(1).to(count.dtype)
+    groups = (positive.any(dim=spatial_dims).to(count.dtype)
+              + (~positive).any(dim=spatial_dims).to(count.dtype))
+    weights = torch.where(
+        positive,
+        pos_count[:, :, None, None, None].reciprocal(),
+        empty_count[:, :, None, None, None].reciprocal(),
+    ) / groups[:, :, None, None, None]
+    return weights * valid[:, :, None, None, None] / valid.sum(dim=1).clamp_min(1)[:, None, None, None, None]
+
+
 def sensory_loss_parts(
     count_hat: torch.Tensor, q_hat: torch.Tensor, field: torch.Tensor, valid: torch.Tensor
 ) -> LossParts:
@@ -189,16 +213,12 @@ def sensory_loss_parts(
     ).sum(dim=3)
     spatial_dims = (2, 3, 4)
     pos_count = positive.sum(dim=spatial_dims)
-    empty_count = (~positive).sum(dim=spatial_dims)
-    pos_dev = (deviance * positive).sum(dim=spatial_dims) / pos_count.clamp_min(1)
-    empty_dev = (deviance * ~positive).sum(dim=spatial_dims) / empty_count.clamp_min(1)
-    n_groups = (pos_count > 0).to(deviance.dtype) + (empty_count > 0).to(deviance.dtype)
-    balanced = (pos_dev * (pos_count > 0) + empty_dev * (empty_count > 0)) / n_groups
     kl = (divergence * positive).sum(dim=spatial_dims) / pos_count.clamp_min(1)
-    cutoff_count = valid.sum(dim=1).clamp_min(1)
     if not bool(valid.any(dim=1).all()):
         raise ValueError("Every utterance needs at least one valid active cutoff")
-    count_per_utterance = (balanced * valid).sum(dim=1) / cutoff_count
+    count_per_utterance = (deviance * balanced_count_weights(target_count, valid)).sum(
+        dim=(1, 2, 3, 4)
+    )
     # A cutoff without occupied cells contributes only count loss. Its zero
     # KL must not dilute timing on other valid/occupied cutoffs.
     timing_valid = valid & (pos_count > 0)

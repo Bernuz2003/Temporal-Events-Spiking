@@ -17,22 +17,21 @@ from etsr.evaluation.future_sensory import (
     SensoryDataset,
     build_causal_d,
     sensory_loss_parts,
+    spatial_e0_count,
 )
-from etsr.evaluation.future_sensory_fit import _loader, screen_config, stratified_split
-from etsr.reproducibility import seed_everything
+from etsr.evaluation.future_sensory_fit import (
+    _loader,
+    screen_code_sha256,
+    screen_config,
+    stratified_split,
+)
+from etsr.reproducibility import git_commit, seed_everything
 from etsr.utils.io import ensure_dir, sha256_file, write_json
 
 PROBE_EPOCHS = 30
 PROBE_BATCH = 64
 PROBE_SEED = 20261002
 BOOTSTRAP_DRAWS = 2000
-
-
-def _spatial_e0(frames: torch.Tensor) -> torch.Tensor:
-    batch, time, polarity = frames.shape[:3]
-    return F.avg_pool2d(frames.reshape(-1, 1, 128, 128), 8, stride=8).reshape(
-        batch, time, polarity, 16, 16
-    ) * 64
 
 
 def _shift(values: torch.Tensor, delay: int) -> torch.Tensor:
@@ -60,21 +59,34 @@ def _past_profile(older: torch.Tensor, newer: torch.Tensor, mode: str) -> torch.
     return result / count.unsqueeze(3).clamp_min(1e-9)
 
 
-def e0_baselines(frames: torch.Tensor, prior: dict, mode: str) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
-    pooled = _spatial_e0(frames)
+def e0_baselines(
+    frames: torch.Tensor, prior: dict, mode: str, *, past: bool = False
+) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+    pooled = spatial_e0_count(frames)
     recent = [_shift(pooled, delay) for delay in range(4)]
     mean_n = prior["mean_count"].to(frames.device)[None].expand(frames.shape[0], -1, -1, -1, -1)
     prior_q = prior["q_prior"].to(frames.device)[None].expand(frames.shape[0], -1, -1, -1, -1, -1)
     last100 = recent[0] + recent[1]
     recent200 = (last100 + recent[2] + recent[3]) / 2
+    calibration = prior["count_calibration"]
+    if not past:
+        last_count = (last100 * calibration["last_100ms"]["scale"]
+                      + calibration["last_100ms"]["offset"])
+        recent_count = (recent200 * calibration["mean_200ms"]["scale"]
+                        + calibration["mean_200ms"]["offset"])
+    else:
+        # Read the past count directly from E0; rare capped pixels can make it
+        # lower than the corresponding unbounded raw-event target.
+        last_count = last100
+        recent_count = recent200
     q_last = _past_profile(recent[1], recent[0], mode)
     q_older = _past_profile(recent[3], recent[2], mode)
     q_last = torch.where(last100.unsqueeze(3) > 0, q_last, prior_q)
     q_older = torch.where((recent[2] + recent[3]).unsqueeze(3) > 0, q_older, prior_q)
     return {
         "mean_field": (mean_n.clamp_min(1e-6), prior_q),
-        "last_100ms": (last100.clamp_min(1e-6), q_last),
-        "mean_200ms": (recent200.clamp_min(1e-6), (q_last + q_older) / 2),
+        "last_100ms": (last_count.clamp_min(1e-6), q_last),
+        "mean_200ms": (recent_count.clamp_min(1e-6), (q_last + q_older) / 2),
         "zero_alarm": (torch.full_like(last100, 1e-6), prior_q),
     }
 
@@ -221,7 +233,10 @@ def _collect_partition(
         durations.extend(duration_us.tolist())
         endpoints.extend(last_us.tolist())
         if collect_losses:
-            variants = {"model": (count, q), **e0_baselines(frames, prior, mode)}
+            variants = {
+                "model": (count, q),
+                **e0_baselines(frames, prior, mode, past=dataset.past),
+            }
             for name, (variant_n, variant_q) in variants.items():
                 parts = sensory_loss_parts(variant_n, variant_q, field, valid)
                 record = losses.setdefault(name, {"count": [], "timing": []})
@@ -254,11 +269,14 @@ def _collect_partition(
 
 
 @torch.no_grad()
-def _random_encoder_cache(config, dataset, device, base: Path) -> np.ndarray:
-    from etsr.evaluation.future_sensory import build_causal_d
-
+def _random_encoder_cache(
+    config, dataset, device, base: Path, initial_state_path: Path
+) -> np.ndarray:
     seed_everything(PROBE_SEED)
     model = build_causal_d(config, 100).to(device).eval()
+    model.load_state_dict(
+        torch.load(initial_state_path, map_location=device, weights_only=False), strict=True
+    )
     array = np.lib.format.open_memmap(
         base / "random_encoder.npy", mode="w+", dtype=np.uint8,
         shape=(len(dataset), 40, 128, 8, 8),
@@ -298,16 +316,22 @@ def _macro_f1(targets: np.ndarray, predicted: np.ndarray, classes: int) -> float
 
 
 def _probe_train_eval(
-    name, train_arrays, holdout_arrays, prior_q, *, classes, device
+    name, train_arrays, holdout_arrays, prior_q, *, classes, device,
+    train_indices: np.ndarray | None = None,
+    holdout_indices: np.ndarray | None = None,
 ) -> dict:
     seed_everything(PROBE_SEED)
     channels = 128 if name.startswith("encoder") else 2 * prior_q.shape[2]
     head = ClassProbe(channels, classes).to(device)
     optimizer = torch.optim.AdamW(head.parameters(), lr=1e-3, weight_decay=1e-4)
+    if train_indices is None:
+        train_indices = np.arange(len(train_arrays["label"]))
+    if holdout_indices is None:
+        holdout_indices = np.arange(len(holdout_arrays["label"]))
     targets = np.asarray(train_arrays["label"], dtype=np.int64)
     for epoch in range(PROBE_EPOCHS):
         head.train()
-        order = np.random.default_rng(PROBE_SEED + epoch).permutation(len(targets))
+        order = np.random.default_rng(PROBE_SEED + epoch).permutation(train_indices)
         for start in range(0, len(order), PROBE_BATCH):
             indices = order[start : start + PROBE_BATCH]
             x = _probe_input(train_arrays, name, indices, prior_q).to(device)
@@ -321,14 +345,14 @@ def _probe_train_eval(
     if name.startswith("encoder"):
         predictions.update({"prefix_1000ms": [], "prefix_1500ms": []})
     with torch.no_grad():
-        for start in range(0, len(holdout_arrays["label"]), PROBE_BATCH):
-            indices = np.arange(start, min(start + PROBE_BATCH, len(holdout_arrays["label"])))
+        for start in range(0, len(holdout_indices), PROBE_BATCH):
+            indices = holdout_indices[start : start + PROBE_BATCH]
             x = _probe_input(holdout_arrays, name, indices, prior_q).to(device)
             predictions["full"].append(head(x).argmax(dim=1).cpu().numpy())
             if name.startswith("encoder"):
                 for key, steps in (("prefix_1000ms", 20), ("prefix_1500ms", 30)):
                     predictions[key].append(head(x, steps=steps).argmax(dim=1).cpu().numpy())
-    y_true = np.asarray(holdout_arrays["label"], dtype=np.int64)
+    y_true = np.asarray(holdout_arrays["label"], dtype=np.int64)[holdout_indices]
     result: dict = {"trainable_parameters": sum(p.numel() for p in head.parameters())}
     for key, chunks in predictions.items():
         y_pred = np.concatenate(chunks)
@@ -349,6 +373,11 @@ def _stratified_resample_indices(
     ])
 
 
+def _active_field_indices(last_event_us: np.ndarray) -> np.ndarray:
+    """A fixed 15-step cohort; no endpoint-dependent mask enters the probe."""
+    return np.flatnonzero(last_event_us > 15 * 50_000)
+
+
 def _bootstrap_f1_delta(y, c, b, classes, seed=42):
     rng = np.random.default_rng(seed)
     groups = [np.flatnonzero(y == label) for label in np.unique(y)]
@@ -359,15 +388,30 @@ def _bootstrap_f1_delta(y, c, b, classes, seed=42):
     return np.quantile(draws, [0.025, 0.975]).tolist()
 
 
+def _first_pass_gate(skills: dict, comparisons: dict) -> bool:
+    return bool(
+        skills["count"]["passed"] and skills["timing"]["passed"]
+        and comparisons["predicted_vs_density"]["delta_macro_f1"] >= .01
+        and comparisons["predicted_vs_density"]["bootstrap_95"][0] > 0
+        and comparisons["encoder_vs_random"]["delta_macro_f1"] >= .01
+        and comparisons["oracle_vs_density"]["delta_macro_f1"] > 0
+        and comparisons["oracle_vs_density"]["bootstrap_95"][0] > 0
+    )
+
+
 def _screen_one(
     fit_dir: Path, config: dict, bundle, split: dict, output: Path,
-    device: torch.device, random_cache: dict[str, np.ndarray],
+    device: torch.device, random_cache: dict[str, dict[str, np.ndarray]],
 ):
     fit_report = json.loads((fit_dir / "fit_report.json").read_text())
     if fit_report["split_sha256"] != sha256_file(fit_dir / "train_only_split.json"):
         raise ValueError("Fit split was modified")
     if fit_report["config_resolved_sha256"] != sha256_file(fit_dir / "config_resolved.yaml"):
         raise ValueError("Fit resolved configuration was modified")
+    initial_state_path = fit_dir / "initial_encoder_state.pt"
+    initial_sha256 = sha256_file(initial_state_path)
+    if fit_report["initial_encoder_sha256"] != initial_sha256:
+        raise ValueError("Fit initial encoder checkpoint was modified")
     if yaml.safe_load((fit_dir / "config_resolved.yaml").read_text()) != {
         key: value for key, value in config.items() if not key.startswith("_")
     }:
@@ -389,7 +433,10 @@ def _screen_one(
     base = ensure_dir(output / f"{mode}_{'past' if past else 'future'}_seed{fit_report['seed']}")
     train_dir = ensure_dir(base / "fit_cache")
     held_dir = ensure_dir(base / "holdout_cache")
-    _collect_partition(model, decoder, fit_data, config, prior, device, train_dir, mode, collect_losses=False)
+    _, _, _, fit_endpoints = _collect_partition(
+        model, decoder, fit_data, config, prior, device, train_dir, mode,
+        collect_losses=False,
+    )
     loss_arrays, diagnostic_arrays, durations, endpoints = _collect_partition(
         model, decoder, held_data, config, prior, device, held_dir, mode, collect_losses=True
     )
@@ -424,16 +471,29 @@ def _screen_one(
         }
     train_arrays = _cache_arrays(train_dir, len(fit_data), mode, write=False)
     held_arrays = _cache_arrays(held_dir, len(held_data), mode, write=False)
-    if not random_cache:
-        shared = ensure_dir(output / "shared_random_encoder")
-        random_cache["fit"] = _random_encoder_cache(
-            config, fit_data, device, ensure_dir(shared / "fit")
-        )
-        random_cache["holdout"] = _random_encoder_cache(
-            config, held_data, device, ensure_dir(shared / "holdout")
-        )
-    train_arrays["random_encoder"] = random_cache["fit"]
-    held_arrays["random_encoder"] = random_cache["holdout"]
+    # No endpoint enters a probe input or changes its number of steps. The
+    # primary field comparison is conditional on every fixed cutoff having
+    # received training loss; full-population losses and coverage are descriptive.
+    fit_active = _active_field_indices(fit_endpoints)
+    held_active = _active_field_indices(endpoints)
+    fit_labels = np.asarray(train_arrays["label"], dtype=np.int64)[fit_active]
+    held_labels = np.asarray(held_arrays["label"], dtype=np.int64)[held_active]
+    if not len(fit_active) or not len(held_active):
+        raise RuntimeError("The fixed-cutoff active probe has no eligible utterances")
+    fit_class_support = np.bincount(fit_labels, minlength=len(bundle.classes))
+    held_class_support = np.bincount(held_labels, minlength=len(bundle.classes))
+    if initial_sha256 not in random_cache:
+        shared = ensure_dir(output / "paired_initial_encoders" / initial_sha256)
+        random_cache[initial_sha256] = {
+            "fit": _random_encoder_cache(
+                config, fit_data, device, ensure_dir(shared / "fit"), initial_state_path
+            ),
+            "holdout": _random_encoder_cache(
+                config, held_data, device, ensure_dir(shared / "holdout"), initial_state_path
+            ),
+        }
+    train_arrays["random_encoder"] = random_cache[initial_sha256]["fit"]
+    held_arrays["random_encoder"] = random_cache[initial_sha256]["holdout"]
     probe_names = (
         "oracle", "oracle_density", "predicted", "predicted_density",
         "encoder_ssl", "encoder_random",
@@ -442,6 +502,12 @@ def _screen_one(
         name: _probe_train_eval(
             name, train_arrays, held_arrays, prior["q_prior"],
             classes=len(bundle.classes), device=device,
+            train_indices=(fit_active if name in {
+                "oracle", "oracle_density", "predicted", "predicted_density"
+            } else None),
+            holdout_indices=(held_active if name in {
+                "oracle", "oracle_density", "predicted", "predicted_density"
+            } else None),
         )
         for name in probe_names
     }
@@ -454,28 +520,42 @@ def _screen_one(
     ):
         left_predictions = np.asarray(probes[left]["full"]["predictions"])
         right_predictions = np.asarray(probes[right]["full"]["predictions"])
+        paired_targets = held_labels if key in {
+            "predicted_vs_density", "oracle_vs_density"
+        } else y
         comparisons[key] = {
             "delta_macro_f1": probes[left]["full"]["macro_f1"] - probes[right]["full"]["macro_f1"],
             "bootstrap_95": _bootstrap_f1_delta(
-                y, left_predictions, right_predictions, len(bundle.classes)
+                paired_targets, left_predictions, right_predictions, len(bundle.classes)
             ),
         }
-    gate = (
-        skills["count"]["passed"] and skills["timing"]["passed"]
-        and comparisons["predicted_vs_density"]["delta_macro_f1"] >= .01
-        and comparisons["predicted_vs_density"]["bootstrap_95"][0] > 0
-        and comparisons["encoder_vs_random"]["delta_macro_f1"] >= .01
-    )
+    gate = (_first_pass_gate(skills, comparisons)
+            and bool((fit_class_support > 0).all() and (held_class_support > 0).all()))
     result = {
         "fit_dir": str(fit_dir), "mode": mode, "past": past,
         "fit_checkpoint_sha256": sha256_file(fit_dir / "last_state.pt"),
+        "initial_encoder_sha256": initial_sha256,
+        "code_sha256": fit_report["code_sha256"],
         "seed": fit_report["seed"], "epochs": fit_report["epochs"],
         "losses": losses, "skills": skills, "probes": probes,
+        "baseline_contract": {
+            "count_weighted_mean_and_history_calibration_fit_only": True,
+            "past_last_100ms_count_direct_from_e0_subject_to_cap": bool(past),
+        },
         "descriptive_breakdown": {
             name: {key: float(values.mean()) if len(values) else None for key, values in record.items()}
             for name, record in diagnostic_arrays.items()
         },
         "duration_bands": duration_bands,
+        "field_probe_population": {
+            "primary": "last_event_strictly_after_750ms; fixed 15-step readout",
+            "fit_utterances": int(len(fit_active)),
+            "holdout_utterances": int(len(held_active)),
+            "fit_classes_covered": int((fit_class_support > 0).sum()),
+            "holdout_classes_covered": int((held_class_support > 0).sum()),
+            "requires_all_classes_for_promotion": True,
+            "full_population_losses_and_post_end_fraction_are_descriptive": True,
+        },
         "fraction_finished_at_fixed_probe_cutoffs": {
             str(step * 50_000): float((endpoints <= step * 50_000).mean())
             for step in range(1, 16)
@@ -506,6 +586,16 @@ def evaluate_future_sensory(
         raise RuntimeError("At least one arm was still falling >5%; extend both to 80 before opening holdout")
     if any(report["epochs"] != initial[0]["epochs"] for report in initial):
         raise ValueError("Unequal initial target training budgets")
+    if any(report["epochs"] != initial[0]["epochs"] for report in reports):
+        raise ValueError("All future replicas and matched-past controls need the initial 40/80 budget")
+    current_commit = git_commit()
+    current_code_sha256 = screen_code_sha256()
+    if any(
+        report["git_commit"] != current_commit
+        or report["code_sha256"] != current_code_sha256
+        for report in reports
+    ):
+        raise ValueError("Evaluation requires the exact fit commit and executable source")
     output = ensure_dir(output_dir)
     if (output / "evaluation.json").exists():
         raise FileExistsError("The internal holdout has already been evaluated at this output")
@@ -513,7 +603,7 @@ def evaluate_future_sensory(
     split = stratified_split(bundle.train.targets, bundle.train.sample_ids)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     results = []
-    random_cache: dict[str, np.ndarray] = {}
+    random_cache: dict[str, dict[str, np.ndarray]] = {}
     for directory, fit_report in zip(fit_dirs, reports, strict=True):
         suffix = f"{fit_report['mode']}_{'past' if fit_report['past'] else 'future'}_seed{fit_report['seed']}"
         previous_path = (
@@ -528,6 +618,11 @@ def evaluate_future_sensory(
                 raise ValueError(f"Previous evaluation disagrees with current fit: {previous_path}")
             if arm["fit_checkpoint_sha256"] != sha256_file(Path(directory) / "last_state.pt"):
                 raise ValueError(f"Previous evaluation used another checkpoint: {previous_path}")
+            if arm["code_sha256"] != current_code_sha256 or (
+                arm["initial_encoder_sha256"]
+                != sha256_file(Path(directory) / "initial_encoder_state.pt")
+            ):
+                raise ValueError(f"Previous evaluation used another implementation: {previous_path}")
             results.append(arm)
         else:
             results.append(
@@ -559,11 +654,7 @@ def evaluate_future_sensory(
         }
         if set(future) >= {42, 43, 44} and set(past) >= {42, 43, 44}:
             seed_gates = {
-                seed: bool(
-                    future[seed]["skills"]["count"]["passed"]
-                    and future[seed]["skills"]["timing"]["passed"]
-                    and future[seed]["comparisons"]["encoder_vs_random"]["delta_macro_f1"] >= .01
-                )
+                seed: bool(future[seed]["first_pass_gate"])
                 for seed in (42, 43, 44)
             }
             paired_deltas = {

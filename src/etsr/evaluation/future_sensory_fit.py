@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import yaml
 from torch import nn
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from etsr.config import save_config
@@ -19,8 +20,10 @@ from etsr.data.factory import build_dataset_bundle
 from etsr.evaluation.future_sensory import (
     FutureDecoder,
     SensoryDataset,
+    balanced_count_weights,
     build_causal_d,
     sensory_loss_parts,
+    spatial_e0_count,
 )
 from etsr.profiling.hardware import profile_model
 from etsr.reproducibility import git_commit, seed_everything
@@ -29,6 +32,16 @@ from etsr.utils.io import ensure_dir, sha256_file, write_json
 SPLIT_SEED = 20261001
 FIRST_BUDGET = 40
 EXTENDED_BUDGET = 80
+
+
+def screen_code_sha256() -> str:
+    """Bind a fit to the executable package, including uncommitted source edits."""
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*.py")):
+        digest.update(str(path.relative_to(root)).encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def screen_config(config: dict) -> dict:
@@ -104,12 +117,15 @@ def train_causality_preflight(
     """Check representation, output and gradient future-independence in train and eval."""
     torch_state = torch.get_rng_state()
     results = {}
+    prefix_steps = 9
     for training in (True, False):
         model.train(training)
         decoder.train(training)
-        source = torch.rand(2, 6, 2, 128, 128, device=device)
+        # The ninth observed step has a real d=8 history; the initial and
+        # post-overfit checks together exercise a trained long-delay path.
+        source = torch.rand(2, 11, 2, 128, 128, device=device)
         future = source.clone()
-        future[:, 4:] = torch.rand_like(future[:, 4:]) * 9
+        future[:, prefix_steps:] = torch.rand_like(future[:, prefix_steps:]) * 9
 
         def run(frames: torch.Tensor):
             with torch.autocast(
@@ -118,11 +134,11 @@ def train_causality_preflight(
             ):
                 stage = model._encode(frames)
                 count, q = decoder(stage)
-            return stage[:4], count[:, :4], q[:, :4]
+            return stage[:prefix_steps], count[:, :prefix_steps], q[:, :prefix_steps]
 
         reference = run(source)
         changed = run(future)
-        prefix = run(source[:, :4])
+        prefix = run(source[:, :prefix_steps])
         value_tolerance = 2e-3 if amp else 2e-5
         for left, right in (*zip(reference, changed, strict=True), *zip(reference, prefix, strict=True)):
             torch.testing.assert_close(left, right, atol=value_tolerance, rtol=value_tolerance)
@@ -134,49 +150,144 @@ def train_causality_preflight(
         loss_b = run(b)[1].float().sum() * (1024 if amp else 1)
         grad_a = torch.autograd.grad(loss_a, a)[0]
         grad_b = torch.autograd.grad(loss_b, b)[0]
-        prefix_gradient_norm = float(grad_a[:, :4].norm().item())
+        prefix_gradient_norm = float(grad_a[:, :prefix_steps].norm().item())
         if prefix_gradient_norm <= 1e-8:
             raise RuntimeError("Causality test is vacuous: prefix prediction has no input gradient")
         gradient_tolerance = 3e-3 if amp else 3e-5
         torch.testing.assert_close(
-            grad_a[:, :4], grad_b[:, :4], atol=gradient_tolerance, rtol=gradient_tolerance
+            grad_a[:, :prefix_steps], grad_b[:, :prefix_steps],
+            atol=gradient_tolerance, rtol=gradient_tolerance
         )
-        torch.testing.assert_close(grad_a[:, 4:], torch.zeros_like(grad_a[:, 4:]), atol=0, rtol=0)
-        torch.testing.assert_close(grad_b[:, 4:], torch.zeros_like(grad_b[:, 4:]), atol=0, rtol=0)
+        torch.testing.assert_close(
+            grad_a[:, prefix_steps:], torch.zeros_like(grad_a[:, prefix_steps:]), atol=0, rtol=0
+        )
+        torch.testing.assert_close(
+            grad_b[:, prefix_steps:], torch.zeros_like(grad_b[:, prefix_steps:]), atol=0, rtol=0
+        )
         results["train" if training else "eval"] = {
             "representation_max_abs": float((reference[0] - changed[0]).abs().max().item()),
             "prediction_max_abs": float((reference[1] - changed[1]).abs().max().item()),
-            "gradient_max_abs": float((grad_a[:, :4] - grad_b[:, :4]).abs().max().item()),
+            "gradient_max_abs": float((grad_a[:, :prefix_steps] - grad_b[:, :prefix_steps]).abs().max().item()),
             "prefix_gradient_norm": prefix_gradient_norm,
         }
     torch.set_rng_state(torch_state)
     return results
 
 
+def _history_count_fields(frames: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    pooled = spatial_e0_count(frames)
+    zero = torch.zeros_like(pooled[:, :1])
+    previous = torch.cat((zero, pooled[:, :-1]), dim=1)
+    two_back = torch.cat((zero.expand(-1, 2, -1, -1, -1), pooled[:, :-2]), dim=1)
+    three_back = torch.cat((zero.expand(-1, 3, -1, -1, -1), pooled[:, :-3]), dim=1)
+    return pooled + previous, pooled + previous + two_back + three_back
+
+
+def _add_history_histogram(
+    sums: tuple[np.ndarray, np.ndarray], history: torch.Tensor,
+    weights: torch.Tensor, target: torch.Tensor,
+) -> tuple[np.ndarray, np.ndarray]:
+    keys = history.round().to(torch.int64).flatten().numpy()
+    support = np.bincount(keys, weights=weights.flatten().numpy())
+    weighted_target = np.bincount(keys, weights=(weights * target).flatten().numpy())
+    length = max(len(sums[0]), len(support))
+    return (
+        np.pad(sums[0], (0, length - len(sums[0]))) + np.pad(support, (0, length - len(support))),
+        np.pad(sums[1], (0, length - len(sums[1])))
+        + np.pad(weighted_target, (0, length - len(weighted_target))),
+    )
+
+
+def _fit_count_calibration(
+    support: np.ndarray, weighted_target: np.ndarray, *, history_divisor: float,
+) -> dict[str, float]:
+    """Fit positive affine history calibration to the exact balanced count objective."""
+    x = torch.arange(len(support), dtype=torch.float64) / history_divisor
+    weight = torch.from_numpy(support)
+    target = torch.from_numpy(weighted_target)
+    raw = nn.Parameter(torch.tensor([0.5413, -2.2522], dtype=torch.float64))
+    optimizer = torch.optim.LBFGS([raw], lr=1.0, max_iter=80, line_search_fn="strong_wolfe")
+
+    def closure():
+        optimizer.zero_grad()
+        scale, offset = F.softplus(raw).unbind()
+        prediction = scale * x + offset + 1e-6
+        objective = ((weight * prediction - target * prediction.log()).sum()
+                     / weight.sum().clamp_min(1))
+        objective.backward()
+        return objective
+
+    optimizer.step(closure)
+    scale, offset = F.softplus(raw).detach().tolist()
+    if not np.isfinite(scale) or not np.isfinite(offset):
+        raise RuntimeError("Count baseline calibration diverged")
+    with torch.no_grad():
+        fitted = scale * x + offset + 1e-6
+        raw_history = x.clamp_min(1e-6)
+        fitted_objective = (weight * fitted - target * fitted.log()).sum()
+        raw_objective = (weight * raw_history - target * raw_history.log()).sum()
+        if fitted_objective > raw_objective + 1e-7 * raw_objective.abs().clamp_min(1):
+            raise RuntimeError("Count calibration was worse than the uncalibrated E0 baseline")
+    return {"scale": scale, "offset": offset}
+
+
 @torch.no_grad()
 def fit_prior(loader: DataLoader, components: int, device: torch.device) -> dict[str, torch.Tensor | float]:
-    total = torch.zeros(40, 2, components, 16, 16, dtype=torch.float64)
-    q_sum = total.clone()
+    q_sum = torch.zeros(40, 2, components, 16, 16, dtype=torch.float64)
+    q_weight_sum = torch.zeros(40, 2, 1, 16, 16, dtype=torch.float64)
     cutoff_support = torch.zeros(40, 1, 1, 1, 1, dtype=torch.float64)
     cell_support = torch.zeros(40, 2, 1, 16, 16, dtype=torch.float64)
+    weighted_count = torch.zeros(40, 2, 16, 16, dtype=torch.float64)
+    count_weight = torch.zeros_like(weighted_count)
+    history_histograms = {
+        "last_100ms": (np.zeros(1), np.zeros(1)),
+        "mean_200ms": (np.zeros(1), np.zeros(1)),
+    }
     occupied = 0
     all_cells = 0
-    for batch_index, (_, field, valid, _, _, _, _) in enumerate(loader):
+    for batch_index, (frames, field, valid, _, _, _, _) in enumerate(loader):
         field = field.double()
         count = field.sum(dim=3)
+        weights = balanced_count_weights(count, valid).double()
+        weighted_count += (weights * count).sum(dim=0)
+        count_weight += weights.sum(dim=0)
+        positive = count > 0
+        positive_cells = positive.sum(dim=(2, 3, 4)).clamp_min(1)
+        timing_valid = valid & positive.any(dim=(2, 3, 4))
+        timing_cutoffs = timing_valid.sum(dim=1).clamp_min(1)
+        timing_weights = (
+            positive.double() * timing_valid[:, :, None, None, None]
+            / positive_cells[:, :, None, None, None]
+            / timing_cutoffs[:, None, None, None, None]
+        )
+        q_sum += (
+            (field / count.unsqueeze(3).clamp_min(1e-9)) * timing_weights.unsqueeze(3)
+        ).sum(dim=0)
+        q_weight_sum += timing_weights.unsqueeze(3).sum(dim=0)
+        last100, recent200_twice = _history_count_fields(frames)
+        history_histograms["last_100ms"] = _add_history_histogram(
+            history_histograms["last_100ms"], last100, weights, count
+        )
+        history_histograms["mean_200ms"] = _add_history_histogram(
+            history_histograms["mean_200ms"], recent200_twice, weights, count
+        )
         mask = valid[:, :, None, None, None]
-        total += (field * mask.unsqueeze(3)).sum(dim=0)
-        q_sum += ((field / count.unsqueeze(3).clamp_min(1e-9)) * (count > 0).unsqueeze(3) * mask.unsqueeze(3)).sum(dim=0)
         cutoff_support += valid.double().sum(dim=0)[:, None, None, None, None]
         cell_support += (((count > 0) & mask).double()).sum(dim=0).unsqueeze(2)
         occupied += int(((count > 0) & mask).sum().item())
         all_cells += int(mask.sum().item()) * 2 * 16 * 16
         if (batch_index + 1) % 100 == 0:
             print(f"prior statistics: {batch_index + 1}/{len(loader)} batches", flush=True)
-    mean_count = (total.sum(dim=2, keepdim=True) / cutoff_support.clamp_min(1)).float().squeeze(2)
+    mean_count = (weighted_count / count_weight.clamp_min(1e-30)).float()
+    count_calibration = {
+        name: _fit_count_calibration(*histogram, history_divisor=1 if name == "last_100ms" else 2)
+        for name, histogram in history_histograms.items()
+    }
     # A fixed alpha=1 pseudo-observation per component and cell, not per event.
     alpha = 1.0
-    q_prior = ((q_sum + alpha) / (cell_support + components * alpha)).float()
+    q_mean = q_sum / q_weight_sum.clamp_min(1e-30)
+    q_prior = ((q_mean * cell_support + alpha)
+               / (cell_support + components * alpha)).float()
     if int(cutoff_support[0]) == 0:
         raise ValueError("No valid onset cutoffs in fit")
     n_total = 0.0
@@ -199,6 +310,7 @@ def fit_prior(loader: DataLoader, components: int, device: torch.device) -> dict
         raise ValueError("Mean-field loss scale is degenerate")
     return {
         "mean_count": mean_count,
+        "count_calibration": count_calibration,
         "q_prior": q_prior,
         "scale_n": scale_n,
         "scale_q": scale_q,
@@ -233,7 +345,10 @@ def _bounded_overfit(model, decoder, dataset, prior, config, device):
     router_initial = [parameter.detach().clone() for parameter in router]
     router_gradient = 0.0
     with torch.no_grad():
-        initial = float(_batch_loss(model, decoder, batch, prior, device)[0].item())
+        initial_loss, initial_parts = _batch_loss(model, decoder, batch, prior, device)
+        initial = float(initial_loss.item())
+        initial_count = float(initial_parts.count.mean().item())
+        initial_timing = float(initial_parts.timing.mean().item())
     for _ in range(80):
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp):
@@ -249,9 +364,16 @@ def _bounded_overfit(model, decoder, dataset, prior, config, device):
         scaler.step(optimizer)
         scaler.update()
     with torch.no_grad():
-        final = float(_batch_loss(model, decoder, batch, prior, device)[0].item())
+        final_loss, final_parts = _batch_loss(model, decoder, batch, prior, device)
+        final = float(final_loss.item())
+        final_count = float(final_parts.count.mean().item())
+        final_timing = float(final_parts.timing.mean().item())
     if not np.isfinite(final) or final >= initial * 0.9:
         raise RuntimeError(f"Bounded sensory overfit did not improve 10%: {initial:.4g} -> {final:.4g}")
+    if initial_count <= 0 or final_count >= initial_count * 0.95:
+        raise RuntimeError("Bounded sensory count deviance did not improve by 5%")
+    if initial_timing <= 0 or final_timing >= initial_timing * 0.95:
+        raise RuntimeError("Bounded sensory timing KL did not improve by 5%")
     router_delta = sum(
         float((parameter.detach() - original).norm().item())
         for parameter, original in zip(router, router_initial, strict=True)
@@ -262,6 +384,8 @@ def _bounded_overfit(model, decoder, dataset, prior, config, device):
         raise RuntimeError("Bounded sensory fit did not train the stage2 content router")
     return {
         "initial": initial, "final": final, "relative_drop": 1 - final / initial,
+        "initial_count": initial_count, "final_count": final_count,
+        "initial_timing": initial_timing, "final_timing": final_timing,
         "router_gradient_norm_sum": router_gradient,
         "router_parameter_delta_norm": router_delta,
     }
@@ -282,6 +406,8 @@ def fit_future_sensory(
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     config = screen_config(config)
+    run_commit = git_commit()
+    run_code_sha256 = screen_code_sha256()
     seed_everything(seed, deterministic=bool(config["experiment"].get("deterministic", True)))
     output = ensure_dir(output_dir)
     resolved_config_path = output / "config_resolved.yaml"
@@ -295,6 +421,14 @@ def fit_future_sensory(
         key: value for key, value in config.items() if not key.startswith("_")
     }:
         raise ValueError("Resume configuration differs from the original fit")
+    if resume:
+        previous_report = json.loads((output / "fit_report.json").read_text())
+        if (previous_report["git_commit"] != run_commit
+                or previous_report["code_sha256"] != run_code_sha256):
+            raise ValueError("Resume requires the exact fit commit and executable source")
+        initial_path = output / "initial_encoder_state.pt"
+        if sha256_file(initial_path) != previous_report["initial_encoder_sha256"]:
+            raise ValueError("Initial encoder checkpoint changed before resume")
     bundle = build_dataset_bundle(config)
     split = stratified_split(bundle.train.targets, bundle.train.sample_ids)
     split_path = output / "train_only_split.json"
@@ -308,6 +442,14 @@ def fit_future_sensory(
     model = build_causal_d(config, len(bundle.classes)).to(device)
     components = 3 if mode == "fepf2" else 4
     decoder = FutureDecoder(components).to(device)
+    init_model = copy.deepcopy(model.state_dict())
+    init_decoder = copy.deepcopy(decoder.state_dict())
+    if not resume:
+        torch.save(
+            {name: value.detach().cpu().clone() for name, value in init_model.items()},
+            output / "initial_encoder_state.pt",
+        )
+    initial_encoder_sha256 = sha256_file(output / "initial_encoder_state.pt")
     loader = _loader(dataset, config, shuffle=True, seed=seed)
     if resume:
         state = torch.load(output / "last_state.pt", map_location="cpu", weights_only=False)
@@ -328,13 +470,28 @@ def fit_future_sensory(
         print(json.dumps({"stage": "fit_only_prior", "mode": mode, "seed": seed}), flush=True)
         prior = fit_prior(_loader(dataset, config, shuffle=False, seed=seed), components, device)
         torch.save(prior, output / "fit_prior.pt")
-        init_model = copy.deepcopy(model.state_dict())
-        init_decoder = copy.deepcopy(decoder.state_dict())
         print(json.dumps({"stage": "bounded_overfit", "mode": mode, "seed": seed}), flush=True)
         bounded = _bounded_overfit(model, decoder, dataset, prior, config, device)
+        from etsr.models.temporal import CausalTemporalChannelMixer
+
+        d8_weights = [
+            module.weight[module.delays.index(8)].detach()
+            for module in model.modules()
+            if isinstance(module, CausalTemporalChannelMixer) and 8 in module.delays
+        ]
+        d8_max_abs = max((float(weight.abs().max()) for weight in d8_weights), default=0.0)
+        if d8_max_abs <= 0:
+            raise RuntimeError("Bounded fit did not activate the d=8 TCAP path")
+        post_bounded_causality = train_causality_preflight(
+            model, decoder, device, amp=bool(config["training"].get("amp", False))
+        )
         model.load_state_dict(init_model, strict=True)
         decoder.load_state_dict(init_decoder, strict=True)
-        preflight = {"causality": causality, "bounded_overfit": bounded, "passed": True}
+        preflight = {
+            "causality": causality, "post_bounded_causality": post_bounded_causality,
+            "bounded_overfit": bounded, "d8_weight_max_abs_after_bounded": d8_max_abs,
+            "passed": True,
+        }
         write_json(preflight, output / "preflight.json")
         start = 1
     screen_parameters = _screen_parameters(model, decoder)
@@ -430,14 +587,21 @@ def fit_future_sensory(
         "sample_partition": "fit",
     }
     write_json(profile, output / "hardware_profile_v4.json")
+    if git_commit() != run_commit or screen_code_sha256() != run_code_sha256:
+        raise RuntimeError("Executable source changed during the sensory fit")
+    if sha256_file(output / "initial_encoder_state.pt") != initial_encoder_sha256:
+        raise RuntimeError("Initial encoder checkpoint changed during the sensory fit")
     report = {
         "mode": mode, "past": past, "seed": seed, "epochs": total_epochs,
         "extension_requested_by_this_arm": extension_needed,
         "split_sha256": sha256_file(split_path),
         "config_resolved_sha256": sha256_file(resolved_config_path),
         "config_source": config.get("_source_path"),
-        "git_commit": git_commit(), "preflight": preflight,
+        "git_commit": run_commit, "code_sha256": run_code_sha256,
+        "initial_encoder_sha256": initial_encoder_sha256,
+        "preflight": preflight,
         "fit_count_scale": prior["scale_n"], "fit_timing_scale": prior["scale_q"],
+        "fit_count_baseline_calibration": prior["count_calibration"],
         "fit_occupied_fraction": prior["occupied_fraction"],
         "fit_valid_cutoffs_per_utterance": prior["valid_cutoffs_per_utterance"],
         "optimized_parameters": sum(p.numel() for p in screen_parameters),
