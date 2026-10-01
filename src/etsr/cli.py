@@ -93,6 +93,26 @@ def build_parser() -> argparse.ArgumentParser:
     innovation_evaluate.add_argument("--checkpoint", required=True)
     innovation_evaluate.add_argument("--fit-dir", required=True)
     innovation_evaluate.add_argument("--output", required=True)
+    sensory_fit = subparsers.add_parser(
+        "future-sensory-fit",
+        help="Fit one causal future-event target on development-train only",
+    )
+    sensory_fit.add_argument("--config", required=True)
+    sensory_fit.add_argument("--output", required=True)
+    sensory_fit.add_argument("--mode", required=True, choices=("fepf2", "voxel4"))
+    sensory_fit.add_argument("--seed", type=int, default=42)
+    sensory_fit.add_argument("--past", action="store_true", help="Matched fine-past control")
+    sensory_fit.add_argument("--resume", action="store_true", help="Continue the fixed 40-to-80 extension")
+    sensory_evaluate = subparsers.add_parser(
+        "future-sensory-evaluate",
+        help="Open the internal train-only holdout after both target fits are complete",
+    )
+    sensory_evaluate.add_argument("--config", required=True)
+    sensory_evaluate.add_argument("--fit-dirs", required=True, nargs="+")
+    sensory_evaluate.add_argument("--output", required=True)
+    sensory_evaluate.add_argument(
+        "--previous-evaluation", help="Reuse the locked first-pass arm reports without reopening them"
+    )
     dynamic_routing_diagnostic = subparsers.add_parser(
         "dynamic-routing-diagnostic",
         help="Compare learned dynamic TCAP gates with their train-set mean constants",
@@ -388,6 +408,23 @@ def main() -> None:
             load_config(args.config), args.checkpoint, args.fit_dir, args.output
         )
         print({"evaluation": str(Path(args.output) / "evaluation.json"), "promotion_gate_passed": report["promotion_gate_passed"]})
+    elif args.command == "future-sensory-fit":
+        from etsr.config import load_config
+        from etsr.evaluation.future_sensory_fit import fit_future_sensory
+
+        report = fit_future_sensory(
+            load_config(args.config), args.output,
+            mode=args.mode, seed=args.seed, past=args.past, resume=args.resume,
+        )
+        print({"fit_report": str(Path(args.output) / "fit_report.json"), "epochs": report["epochs"]})
+    elif args.command == "future-sensory-evaluate":
+        from etsr.config import load_config
+        from etsr.evaluation.future_sensory_evaluate import evaluate_future_sensory
+
+        print(evaluate_future_sensory(
+            load_config(args.config), args.fit_dirs, args.output,
+            previous_evaluation=args.previous_evaluation,
+        ))
     elif args.command == "dynamic-routing-diagnostic":
         from etsr.config import load_config
         from etsr.evaluation.predictive_diagnostic import run_dynamic_routing_diagnostic

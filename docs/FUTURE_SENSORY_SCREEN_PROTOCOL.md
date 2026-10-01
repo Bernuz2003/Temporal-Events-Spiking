@@ -1,6 +1,6 @@
 # Screen del futuro sensoriale su DVS-Lip
 
-**Definito il 1 ottobre 2026; codice e controlli ancora da realizzare.**
+**Definito il 1 ottobre 2026; screen train-only implementato nel branch sperimentale.**
 Lo screen sceglie un *obiettivo di pretraining*, non una nuova rappresentazione di input né un
 nuovo modulo da mantenere in deployment. Usa soltanto il development-train; la development
 validation e l'official test restano chiusi fino alla decisione sul candidato completo.
@@ -99,7 +99,7 @@ densità ottenuto gratuitamente per somma; **non è un terzo training dello scre
 6. Baseline causali senza un nuovo modello: count zero come controllo di degenerazione;
    **mean field spaziale** `N̄_{t,p,u}` dal solo fit; persistenza del count nell'ultima finestra
    E0 di 100 ms; media dei count delle **ultime due finestre E0 di 100 ms** (200 ms totali).
-   Per `q`, prior `q̄_{t,p,u}` calcolato sulle celle occupate del fit con uno pseudo-count per
+   Per `q`, prior `q̄_{t,p,u}` calcolato sulle celle occupate del fit con pseudo-count `α=1` per
    componente, più profilo della finestra passata e media dei due profili passati. I profili
    causali usano **solo E0**: per FEPF-2 gli eventi di ciascun bin E0 sono posti al suo centro
    temporale (fasi `0,25` e `0,75`); per Voxel-4 ogni count E0 è ripartito uniformemente nei
@@ -115,11 +115,13 @@ densità ottenuto gratuitamente per somma; **non è un terzo training dello scre
 La BatchNorm attuale del backbone appiattisce `T × B` prima della normalizzazione: durante il
 training una feature al cutoff può quindi dipendere dal futuro del medesimo utterance. Per lo
 screen fissiamo **GroupNorm applicata separatamente a ciascun passo e campione** al posto delle
-BN del trunk (`4` gruppi per 16 canali, `8` gruppi da 32 canali in su); gli affine restano
+BN del trunk (`2` gruppi per 8 canali, `4` per 16, `8` da 32 canali in su); gli affine restano
 addestrabili. Questo cambia il modello rispetto al D originale: il confronto BN-D resta un
 benchmark prestazionale, **non** il controllo causale dell'effetto del pretraining. Preflight
 obbligatorio in `train()` **e** `eval()`:
-perturbare eventi dopo `t` non cambia rappresentazione, predizione o gradiente al cutoff; il
+perturbare eventi dopo `t` non cambia rappresentazione, predizione o gradiente **rispetto
+all'input** al cutoff (`∂prediction_t/∂input_{>t}=0`); il gradiente della loss rispetto ai
+parametri può invece cambiare se cambia il target futuro. Il
 prefisso isolato coincide con il prefisso del forward completo entro tolleranza numerica.
 BatchNorm che vede tutta la sequenza non è ammessa come prova di prediction causale.
 
@@ -142,8 +144,11 @@ utterance, senza selezionarli dall'ultimo evento; riportare anche la quota di fi
 terminate. Il confronto sul futuro vero è un oracle diagnostico, mentre quello sulle predizioni
 misura accessibilità precoce. Per la sonda dell'**encoder** si mantengono tutti i 40 passi e il
 readout fisso di D, perché è questa rappresentazione che il full dovrà trasferire. Ogni sonda
-dei campi riceve canali `[N,q]` per polarità; il controllo density-only mantiene la stessa shape
-e sostituisce `q` con il prior del fit. Architettura fissata: due convoluzioni `3×3` a 128 canali,
+dei campi riceve il **campo in massa** `m_j=Nq_j` per polarità, ovvero il target originale
+`B_j`/`V_j` per l'oracle. Il controllo density-only mantiene la stessa shape e usa
+`m_j=Nq̄_j` con lo stesso count e il prior del fit. In celle con `N→0`, `m→0`: i valori
+arbitrari del timing, non supervisionati nelle celle vuote, non diventano un canale di classe.
+La fattorizzazione `(N,q)` resta invariata nella loss di training. Architettura fissata: due convoluzioni `3×3` a 128 canali,
 GroupNorm locale al passo, GELU, media spaziale, lineare `128→100` per passo e media dei logit
 sui cutoff fissati. La sonda dell'encoder usa la medesima testa con proiezione iniziale da 128
 canali. Ciascun confronto ha stesso seed, ordine dei batch e **30 epoche fisse** di AdamW
@@ -163,13 +168,18 @@ La sonda sulle predizioni complete deve inoltre battere `N̂`-only di almeno **1
 con limite inferiore bootstrap sopra zero; la sonda dell'encoder deve battere di almeno **1 pp**
 l'encoder casuale congelato. Queste sono soglie operative di ROI, non costanti teoriche.
 Non si decide usando milioni di celle come repliche indipendenti: unità statistica e bootstrap
-sono l'utterance. F1, differenze e curve dei singoli seed restano visibili.
+sono l'utterance. Per i delta Macro-F1 delle sonde il bootstrap è **appaiato e stratificato per
+classe**, con numerosità di ogni classe fissa in ciascuna replica. F1, differenze e curve dei
+singoli seed restano visibili.
 
 Se il primo passaggio è positivo, il vincitore riceve due controlli **prima** del full:
 (a) replica con altri due seed; (b) stesso encoder, testa e budget addestrati a inferire il
 campo **fine del passato** `[t−H,t)` anziché il futuro. Questo è un *matched non-future target*:
 mantiene tipo di target e decoder, ma E0 non contiene timestamp intra-bin, quindi **non** è
-ricostruzione esatta né isola da solo il beneficio di un generico pretraining. La ricostruzione
+ricostruzione esatta né isola da solo il beneficio di un generico pretraining. È semanticamente
+appaiato, non di pari difficoltà: E0 contiene già il count del passato ma non quello futuro.
+Se il passato vince, non falsifica ogni possibile rappresentazione predittiva; per questo
+progetto riduce però la giustificazione prestazionale del futuro. La ricostruzione
 esatta delle ultime due count-frame E0, già contenute nell'input e aggregate sulla stessa griglia
 `16 × 16`, è un controllo distinto di pretraining generico. Il suo target sono i quattro canali
 ON/OFF dei due bin fisici da 50 ms in `[t−H,t)`, con zero-padding all'inizio; usa lo stesso
@@ -202,9 +212,27 @@ primario end-to-end** è appaiato fra:
 
 Se vince Groupwise-D, sostituire entrambi con `G4_causalnorm` mantenendo l'appaiamento. Il
 contrasto con il D/Groupwise-D originale a BatchNorm è soltanto prestazionale: un eventuale
-vantaggio lì potrebbe derivare anche dalla normalizzazione. Solo se il full futuro batte il
+vantaggio lì potrebbe derivare anche dalla normalizzazione. Separiamo l'**attribuzione**
+(`future` contro `causalnorm_scratch` con stessa struttura e normalizzazione) dall'**utilità**
+(`future` contro il miglior modello operativo D/Groupwise-D verificato). Un beneficio causale
+che non supera il migliore attuale resta un risultato scientifico ma non promuove il modello
+finale. Solo se il full futuro batte il
 controllo scratch, eseguire a pari passi di ottimizzazione il full *matched non-future* sui
 campi fini del passato; se il segnale resta, eseguire il full di ricostruzione esatta E0.
 Questi due controlli rispondono a domande differenti e nessuno, da solo, è una prova perfetta
 che il futuro sia l'unica causa del guadagno. Soltanto dopo questa sequenza fare seed appaiati
 e profiling del modello deployabile, senza decoder.
+
+## Esecuzione dello screen
+
+`future-sensory-fit` costruisce lo split stratificato, verifica causalità in `train()` e
+`eval()`, esegue il bounded overfit e addestra un target per 40 epoche senza leggere l'holdout.
+I due fit iniziali usano il seed 42 e possono andare in parallelo. Se almeno un
+`fit_report.json` richiede estensione, riprendere **entrambi** con `--resume` fino a 80 epoche.
+Solo allora `future-sensory-evaluate` apre l'holdout interno e produce skill, controlli E0,
+sonde e decisione del primo passaggio. Dopo un esito positivo, replicare il target vincente
+con seed 43/44 e allenare il controllo `--past` con seed 42/43/44; rivalutare insieme i fit
+per il gate appaiato. In questa seconda valutazione `--previous-evaluation` riusa i report
+bloccati dei primi due bracci senza rileggere quei checkpoint sull'holdout. Il confronto
+end-to-end con scratch GroupNorm resta una decisione
+successiva, condizionata allo screen.

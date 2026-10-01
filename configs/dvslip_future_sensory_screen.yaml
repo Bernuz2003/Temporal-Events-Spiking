@@ -1,0 +1,9 @@
+extends: dvslip_predictive_dynamic_tcap.yaml
+
+experiment:
+  name: dvslip_future_sensory_screen
+
+# The screen CLI fixes the target, horizon, split and budgets. This config
+# defines only the established D trunk and E0 recipe shared by both arms.
+augmentation:
+  horizontal_flip_probability: 0.0

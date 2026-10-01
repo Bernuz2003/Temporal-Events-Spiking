@@ -105,6 +105,22 @@ invariati. Non cambiare kernel, ritardi o soglia del gate.
 
 ## Fase predictive-temporal
 
+Lo screen del futuro sensoriale usa solo il development-train. Dopo aver sincronizzato un
+commit pulito, lanciare i due target iniziali su due server distinti:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh sensory-fepf2-42 -- future-sensory-fit --config configs/dvslip_future_sensory_screen.yaml --mode fepf2 --output artifacts/future_sensory_fepf2_seed42
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh sensory-voxel4-42 -- future-sensory-fit --config configs/dvslip_future_sensory_screen.yaml --mode voxel4 --output artifacts/future_sensory_voxel4_seed42
+```
+
+Se uno dei due `fit_report.json` ha `extension_requested_by_this_arm: true`, riprendere
+**entrambi** aggiungendo `--resume` agli stessi comandi, con nuove sessioni `screen`. Solo
+dopo la fine di entrambi valutare l'holdout interno una volta:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash scripts/smilies/run_command.sh sensory-evaluate -- future-sensory-evaluate --config configs/dvslip_future_sensory_screen.yaml --fit-dirs artifacts/future_sensory_fepf2_seed42 artifacts/future_sensory_voxel4_seed42 --output artifacts/future_sensory_evaluation_seed42
+```
+
 Usare una GPU libera per server e un commit pulito. Ogni workflow `predictive-scratch` esegue
 preflight, bounded overfit, full e profiling; se il gate fallisce, il full non parte. Le decisioni
 correnti sono in [DECISIONS.md](DECISIONS.md).
