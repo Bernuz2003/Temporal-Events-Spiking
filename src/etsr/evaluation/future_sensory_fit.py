@@ -127,33 +127,38 @@ def train_causality_preflight(
         future = source.clone()
         future[:, prefix_steps:] = torch.rand_like(future[:, prefix_steps:]) * 9
 
-        def run(frames: torch.Tensor):
+        def run(frames: torch.Tensor, *, autocast: bool):
             with torch.autocast(
                 device_type=device.type, dtype=torch.float16,
-                enabled=amp and device.type == "cuda",
+                enabled=autocast and device.type == "cuda",
             ):
                 stage = model._encode(frames)
                 count, q = decoder(stage)
             return stage[:prefix_steps], count[:, :prefix_steps], q[:, :prefix_steps]
 
-        reference = run(source)
-        changed = run(future)
-        prefix = run(source[:, :prefix_steps])
+        reference = run(source, autocast=amp)
+        changed = run(future, autocast=amp)
+        prefix = run(source[:, :prefix_steps], autocast=amp)
         value_tolerance = 2e-3 if amp else 2e-5
         for left, right in (*zip(reference, changed, strict=True), *zip(reference, prefix, strict=True)):
+            if not bool(torch.isfinite(left).all() and torch.isfinite(right).all()):
+                raise RuntimeError("Causality preflight produced a non-finite forward value")
             torch.testing.assert_close(left, right, atol=value_tolerance, rtol=value_tolerance)
         a = source.detach().requires_grad_()
         b = future.detach().requires_grad_()
-        # Scale before the AMP backward so tiny surrogate gradients do not
-        # underflow and make the causality check vacuous.
-        loss_a = run(a)[1].float().sum() * (1024 if amp else 1)
-        loss_b = run(b)[1].float().sum() * (1024 if amp else 1)
+        # Causality is an architectural property. Check its input Jacobian in
+        # float32: a fixed 1024x scale on the sum of thousands of AMP outputs
+        # can overflow after the bounded fit, even when training is healthy.
+        loss_a = run(a, autocast=False)[1].sum()
+        loss_b = run(b, autocast=False)[1].sum()
         grad_a = torch.autograd.grad(loss_a, a)[0]
         grad_b = torch.autograd.grad(loss_b, b)[0]
+        if not bool(torch.isfinite(grad_a).all() and torch.isfinite(grad_b).all()):
+            raise RuntimeError("Causality preflight produced a non-finite float32 input gradient")
         prefix_gradient_norm = float(grad_a[:, :prefix_steps].norm().item())
         if prefix_gradient_norm <= 1e-8:
             raise RuntimeError("Causality test is vacuous: prefix prediction has no input gradient")
-        gradient_tolerance = 3e-3 if amp else 3e-5
+        gradient_tolerance = 3e-5
         torch.testing.assert_close(
             grad_a[:, :prefix_steps], grad_b[:, :prefix_steps],
             atol=gradient_tolerance, rtol=gradient_tolerance

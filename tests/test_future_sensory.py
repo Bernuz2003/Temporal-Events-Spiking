@@ -363,3 +363,6 @@ def test_future_screen_cuda_amp_preflight_and_backward():
         scaler.step(optimizer)
         scaler.update()
     assert router_gradient > 0
+    trained_report = train_causality_preflight(model, decoder, device, amp=True)
+    assert trained_report["train"]["prefix_gradient_norm"] > 0
+    assert trained_report["eval"]["gradient_max_abs"] == 0
