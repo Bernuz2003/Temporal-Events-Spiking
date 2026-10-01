@@ -31,7 +31,8 @@ la variante. Nessuno sweep di G e nessuna compressione prematura.
 Il disegno dello screen sul **futuro sensoriale** è fissato nel
 [protocollo dedicato](FUTURE_SENSORY_SCREEN_PROTOCOL.md): passato E0 causale, FEPF-2 e voxel-4
 come due target alternativi, controllo `M0` derivato senza un terzo training, holdout interno al
-development-train e confronto con ricostruzione del presente prima del full. Lo screen precedente
+development-train e confronto con un target fine non-futuro prima del full. La ricostruzione
+esatta di E0 è un controllo distinto, previsto soltanto se il full predittivo è positivo. Lo screen precedente
 non fornisce un protocollo valido da riutilizzare.
 
 Uno screen positivo deve mostrare che il segnale previsto è accessibile causalmente e che la
@@ -40,9 +41,9 @@ vincolo di scoperta: misurarlo, poi comprimere soltanto un meccanismo valido. La
 mescola tempo e batch può far trapelare il futuro in train; il test di causalità va superato sia
 in eval sia in train prima di un full.
 
-Un esperimento distinto, checkpoint-only, sull'**innovazione latente di D congelato** è fissato
-nel [protocollo dedicato](INNOVATION_PROBE_PROTOCOL.md). Un esito positivo autorizza un solo
-run end-to-end; non sostituisce lo screen sul futuro sensoriale.
+Il probe distinto, checkpoint-only, sull'**innovazione latente di D congelato** è fissato nel
+[protocollo dedicato](INNOVATION_PROBE_PROTOCOL.md). Il suo gate è fallito: C non batte B_rand,
+quindi non autorizza un full end-to-end e non sostituisce lo screen sul futuro sensoriale.
 
 ## Passo 3 — Conferma, trasferimento, raffinamento
 

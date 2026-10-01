@@ -1,6 +1,6 @@
 # Decisioni attive
 
-**Aggiornate:** 2026-09-30
+**Aggiornate:** 2026-10-01
 
 ## Fase predittiva e memoria condizionale
 
@@ -13,7 +13,7 @@
    Il collo di bottiglia k limita le direzioni del gradiente ma non impedisce la lentezza/il settling tardivo indotti dalla loss: il suo esito resta nel range dei seed di C0. Implementazioni e comandi relativi sono rimossi; S0 è l'unico controllo S mantenuto.
 7. **Nuovo predictive screen:** il [protocollo sul futuro sensoriale](FUTURE_SENSORY_SCREEN_PROTOCOL.md) fissa contesto E0, target FEPF-2/voxel-4, controlli informativi e causalità train/eval. Il precedente screen è ritirato; nessun suo full run o implementazione va riutilizzato. Nessun full prima del gate sul development-train.
 8. **Sequenza:** completare Groupwise-D, definire e validare lo screen, poi considerare un solo full predittivo se il segnale è interpretabile. Solo dopo si congelano struttura e seed appaiati, quindi si riprendono augmentation e compressione. I negativi validi restano conservati come evidenza negli artifact, senza mantenere rami software obsoleti.
-9. **Innovazione latente su D congelato:** il [protocollo dedicato](INNOVATION_PROBE_PROTOCOL.md) confronta C con B a topologia identica e B_rand su cinque seed, con fit train-only e una sola lettura della development validation. Il doppio gate precede ogni eventuale run end-to-end; lo screen sul futuro sensoriale resta separato e aperto.
+9. **Innovazione latente su D congelato:** il [protocollo dedicato](INNOVATION_PROBE_PROTOCOL.md) ha confrontato C con B a topologia identica e B_rand su cinque seed. Q predice il latente, ma C non supera B_rand: il doppio gate fallisce e non si avvia un full end-to-end di questa variante. Lo screen sul futuro sensoriale resta distinto.
 
 ## Decisioni della discovery al 13 settembre — contesto storico
 
